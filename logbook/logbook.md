@@ -6,6 +6,8 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 
 ## Open questions
 ### Important
+- Can we detect `c` with a probe? What types of probes?
+- Can we train `c` to be undetectable through a linear probe (e.g. difference of means -> optimize for minimum distance between means when c=1 vs c=2)
 
 ### Back-burner
 - Does it matter if $x$ is sparsely activating instead of densely activating?
@@ -14,10 +16,17 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 ## Daily log
 ### 2026-07-16
 - Spent a large chunk of the day debugging permissions/sandbox issues :(
+- Claude worked out the analytic solution: `sat(x,c) = x - ReLU(x-c) + ReLU(-x-c)`
+    - And wrote an analytic check
 - Faced issues with training with len(x) = 32. Picture is worth a thousand words - here's the function that gets learned (plot y(x) for fixed c, for each x):
 ![Curves that get learned - some features learn the proper saturation functions, other just seem to fit a straight line](img/nx32_curves.png)
 Training dynamics show that loss isn't decreasing further:
 ![Training dynamics: Loss plateaus](img/nx32_dynamics.png)
+- Notably - training seems to work when feature count is smaller (1,2, 4), although even then, higher number of features => longer training time.
+- Things to try:
+    - Use leaky ReLU. Maybe we have dead neurons?
+    - Increasing depth of model. Point is to give the model more nonlinearities to use, but don't want to increase width since we need c to be accessible at middle layer
+    - Check weights on 1/2/4-feature model, see if the model learned what we expect
 
 
 ### 2026-07-15
