@@ -1,1 +1,1 @@
-This directory contains plans - both for agents and for humans. Unless otherwise specified, assume the plans/todo lists present here were written by the user, for the user. This means that they may be incomplete or misleading, and should not be blindly followed.
+This directory contains plans - both for agents and for humans. The ones specified below are for agents; any files not explicitly listed are plans/todo lists written by the user, for the user. This means that they may be incomplete or misleading - you probably shouldn't be reading from them,

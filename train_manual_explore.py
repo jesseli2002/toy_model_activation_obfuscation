@@ -14,7 +14,7 @@ from model import ResidualMLP
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--tag", type=str, default="default")
+    p.add_argument("--tag", type=str, default="nx2")
     p.add_argument("--ckpt", type=str, default="best", choices=["best", "last"])
     p.add_argument("--n", type=int, default=1_000_000)
     p.add_argument("--batch", type=int, default=50_000)

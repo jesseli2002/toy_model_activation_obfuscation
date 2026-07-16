@@ -25,4 +25,4 @@ EARLY_STOP_LOSS = 1e-12  # float32 eps^2 ~ 1.4e-14; 1e-12 is a sane "exact" bar
 
 def d_mlp_for(num_x: int) -> int:
     """Default d_mlp given num_x (exact construction needs num_x per block)."""
-    return num_x + 1
+    return num_x

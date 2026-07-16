@@ -19,14 +19,16 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 - Claude worked out the analytic solution: `sat(x,c) = x - ReLU(x-c) + ReLU(-x-c)`
     - And wrote an analytic check
 - Faced issues with training with len(x) = 32. Picture is worth a thousand words - here's the function that gets learned (plot y(x) for fixed c, for each x):
-![Curves that get learned - some features learn the proper saturation functions, other just seem to fit a straight line](img/nx32_curves.png)
+![Curves that get learned - some features learn the proper saturation functions, other just seem to fit a straight line](img/2026-06-16_nx32_curves.png)
 Training dynamics show that loss isn't decreasing further:
-![Training dynamics: Loss plateaus](img/nx32_dynamics.png)
+![Training dynamics: Loss plateaus](2026-06-16_img/nx32_dynamics.png)
 - Notably - training seems to work when feature count is smaller (1,2, 4), although even then, higher number of features => longer training time.
+- Found bug in d_mlp config
 - Things to try:
     - Use leaky ReLU. Maybe we have dead neurons?
     - Increasing depth of model. Point is to give the model more nonlinearities to use, but don't want to increase width since we need c to be accessible at middle layer
     - Check weights on 1/2/4-feature model, see if the model learned what we expect
+
 
 
 ### 2026-07-15
