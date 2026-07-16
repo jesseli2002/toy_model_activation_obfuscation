@@ -1,0 +1,11 @@
+__pycache__
+.claude
+
+# Miscellaneous log files
+logs
+
+# Result plots
+plot
+
+# Training checkpoints (ephermal)
+checkpoints
