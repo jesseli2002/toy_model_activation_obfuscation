@@ -1,11 +1,5 @@
-"""Gate 1: confirm the trained model reproduces sat(x, -c, c).
-
-Loads a checkpoint and reports the maximum absolute elementwise error over a large
-fresh eval set. Small error => Gate 1 PASS. Plateau far from zero => FAIL (stop and
-report; do not tune indefinitely).
-
-Usage:
-    python train_validation.py --tag nx1 --ckpt best
+"""
+Manually exploring learned model weights
 """
 
 import argparse

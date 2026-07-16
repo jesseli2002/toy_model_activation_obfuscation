@@ -14,11 +14,10 @@ import os
 
 import matplotlib
 
-matplotlib.use("Agg")
+# matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import torch
 
-from data import sample_fixed_c  # noqa: F401  (kept for parity; curves built below)
 from model import ResidualMLP
 
 
@@ -26,6 +25,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument("--tag", type=str, default="default")
     p.add_argument("--ckpt", type=str, default="best", choices=["best", "last"])
+    p.add_argument("--show", action="store_true")
     return p.parse_args()
 
 
@@ -52,7 +52,6 @@ def plot_dynamics(tag, out_dir):
     fig.tight_layout()
     path = os.path.join(out_dir, f"{tag}_dynamics.png")
     fig.savefig(path, dpi=120)
-    plt.close(fig)
     print(f"[plot] wrote {path}")
 
 
@@ -81,9 +80,14 @@ def plot_curves(tag, ckpt, out_dir):
             x[:, j] = xs
             x_full = torch.cat([x, torch.full((len(xs), 1), c)], dim=1)
             y = model.task_output(x_full)[:, j]
-            ax.plot(xs.numpy(), y.numpy(), alpha=0.5)
+            ax.plot(xs.numpy(), y.numpy(), alpha=0.5, zorder=5)
         ax.plot(
-            xs.numpy(), torch.clamp(xs, -c, c).numpy(), "k--", lw=1, label="target sat"
+            xs.numpy(),
+            torch.clamp(xs, -c, c).numpy(),
+            "k--",
+            lw=1,
+            label="target sat",
+            zorder=2,
         )
         ax.set_title(f"c = {c:.3f}")
         ax.set_xlabel("x")
@@ -94,7 +98,6 @@ def plot_curves(tag, ckpt, out_dir):
     fig.tight_layout()
     p = os.path.join(out_dir, f"{tag}_curves.png")
     fig.savefig(p, dpi=120)
-    plt.close(fig)
     print(f"[plot] wrote {p}")
 
 
@@ -104,6 +107,9 @@ def main():
     os.makedirs(out_dir, exist_ok=True)
     plot_dynamics(args.tag, out_dir)
     plot_curves(args.tag, args.ckpt, out_dir)
+
+    if args.show:
+        plt.show()
 
 
 if __name__ == "__main__":
