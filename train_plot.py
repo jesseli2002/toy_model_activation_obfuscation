@@ -19,6 +19,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from model import ResidualMLP
+from paths import ckpt_dir, log_dir
 
 
 def parse_args():
@@ -30,7 +31,7 @@ def parse_args():
 
 
 def plot_dynamics(tag, out_dir):
-    hist_path = os.path.join("logs", tag, "history.json")
+    hist_path = os.path.join(log_dir(tag), "history.json")
     with open(hist_path) as f:
         hist = json.load(f)
     its = [h[0] for h in hist]
@@ -57,7 +58,7 @@ def plot_dynamics(tag, out_dir):
 
 @torch.no_grad()
 def plot_curves(tag, ckpt, out_dir):
-    path = os.path.join("checkpoints", tag, f"{ckpt}.pt")
+    path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
     ck = torch.load(path, map_location="cpu")
     cfg = ck["config"]
     num_x = cfg["num_x"]

@@ -16,6 +16,7 @@ import torch
 import config
 from data import sample_batch
 from model import ResidualMLP
+from paths import ckpt_dir
 
 
 def parse_args():
@@ -35,7 +36,7 @@ def parse_args():
 def main():
     args = parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    path = os.path.join("checkpoints", args.tag, f"{args.ckpt}.pt")
+    path = os.path.join(ckpt_dir(args.tag), f"{args.ckpt}.pt")
     ck = torch.load(path, map_location=device)
     cfg = ck["config"]
     model = ResidualMLP(
