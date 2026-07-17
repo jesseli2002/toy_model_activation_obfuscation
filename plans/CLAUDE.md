@@ -2,3 +2,6 @@ This directory contains plans - both for agents and for humans. The ones specifi
 
 - detailed_plan.md
     - Original generated plan at project start (i.e. greenfield plan).
+- step3_plan.md
+    - Focused plan for Step 3 (adversarial training). Supersedes the stale Step 3
+      sections of detailed_plan.md.
