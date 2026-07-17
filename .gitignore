@@ -7,11 +7,8 @@ __pycache__
 .env
 *.env
 
-# Miscellaneous log files
-logs
-
 # Result plots
 plot
 
-# Training checkpoints (ephermal)
-checkpoints
+# Per-run checkpoints & logs (ephemeral)
+runs

@@ -2,7 +2,7 @@
 
 Fresh synthetic data every step (infinite data). MSE over the first num_x outputs
 only. Early-stop when loss < EARLY_STOP_LOSS. Checkpoints best + last to
-checkpoints/<tag>/, resumable with --resume.
+runs/<tag>/checkpoints/, resumable with --resume.
 
 Convergence note: an exact zero-loss solution exists (see analytic.py), so any
 plateau is an OPTIMIZATION problem, not a capacity one. Escalation ladder if a
@@ -27,6 +27,7 @@ import torch
 import config
 from data import sample_batch
 from model import ResidualMLP
+from paths import ckpt_dir, log_dir
 
 
 def parse_args():
@@ -90,10 +91,10 @@ def main():
     num_x = args.num_x
     d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
 
-    ckpt_dir = os.path.join("checkpoints", args.tag)
-    log_dir = os.path.join("logs", args.tag)
-    os.makedirs(ckpt_dir, exist_ok=True)
-    os.makedirs(log_dir, exist_ok=True)
+    run_ckpt_dir = ckpt_dir(args.tag)
+    run_log_dir = log_dir(args.tag)
+    os.makedirs(run_ckpt_dir, exist_ok=True)
+    os.makedirs(run_log_dir, exist_ok=True)
 
     torch.manual_seed(args.seed)
     model = ResidualMLP(
@@ -115,9 +116,9 @@ def main():
     start_iter = 0
     history = []  # list of (iter, loss, max_err)
     best_loss = float("inf")
-    last_path = os.path.join(ckpt_dir, "last.pt")
-    best_path = os.path.join(ckpt_dir, "best.pt")
-    hist_path = os.path.join(log_dir, "history.json")
+    last_path = os.path.join(run_ckpt_dir, "last.pt")
+    best_path = os.path.join(run_ckpt_dir, "best.pt")
+    hist_path = os.path.join(run_log_dir, "history.json")
 
     if args.resume and os.path.exists(last_path):
         ck = torch.load(last_path, map_location=device)
