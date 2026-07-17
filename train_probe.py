@@ -30,6 +30,7 @@ Usage:
 import argparse
 import os
 
+import matplotlib.pyplot as plt
 import torch
 
 from data import sample_fixed_c
@@ -59,6 +60,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=20260717)
     p.add_argument("--dom-gate", type=float, default=0.70)
     p.add_argument("--logreg-gate", type=float, default=0.99)
+    p.add_argument("--show", action="store_true")
     return p.parse_args()
 
 
@@ -93,6 +95,50 @@ def binary_dataset(model, num_x, n, c_lo, c_hi, layers, generator, device):
     r_lo = capture_layers(model, xf_lo, layers)
     r_hi = capture_layers(model, xf_hi, layers)
     return r_lo, r_hi
+
+
+def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
+    from sklearn.decomposition import PCA
+
+    proj_dom = X_test @ w_dom - midpoint
+    proj_logreg = logreg.decision_function(X_test)
+    pca_xy = PCA(n_components=2).fit_transform(X_test)
+
+    lo_mask = y_test == 0.0
+    hi_mask = y_test == 1.0
+
+    fig, (ax_dom, ax_logreg, ax_pca) = plt.subplots(1, 3, figsize=(15, 4))
+
+    for ax, proj, title in (
+        (ax_dom, proj_dom, "DoM projection"),
+        (ax_logreg, proj_logreg, "logreg decision function"),
+    ):
+        ax.hist(proj[lo_mask], bins=60, alpha=0.6, label="c=1")
+        ax.hist(proj[hi_mask], bins=60, alpha=0.6, label="c=2")
+        ax.axvline(0.0, color="k", ls="--", lw=1, label="threshold")
+        ax.set_title(title)
+        ax.set_xlabel("projection (test set)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    ax_pca.scatter(
+        pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1"
+    )
+    ax_pca.scatter(
+        pca_xy[hi_mask, 0], pca_xy[hi_mask, 1], s=4, alpha=0.4, label="c=2"
+    )
+    ax_pca.set_title("PCA (top 2 components)")
+    ax_pca.set_xlabel("PC1")
+    ax_pca.set_ylabel("PC2")
+    ax_pca.legend(fontsize=8)
+    ax_pca.grid(True, alpha=0.3)
+
+    layer_str = "-".join(str(i) for i in layers)
+    fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
+    fig.tight_layout()
+    path = os.path.join(out_dir, f"{tag}_L{layer_str}_probe.png")
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
 
 
 def main():
@@ -155,6 +201,15 @@ def main():
         f"[Gate 2] overall (keyed on logreg, DoM reported as diagnostic) -> "
         f"{'PASS' if all_pass_key else 'FAIL'}"
     )
+
+    out_dir = "plot"
+    os.makedirs(out_dir, exist_ok=True)
+    plot_probe(
+        args.tag, args.layers, w_dom, midpoint, logreg, X_test, y_test, out_dir
+    )
+    if args.show:
+        plt.show()
+
     return all_pass_key
 
 
