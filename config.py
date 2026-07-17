@@ -7,13 +7,13 @@ run the num_x=1 base case and scale up incrementally without editing this file.
 SEED = 913768
 
 # Architecture
-D_MODEL = 512
+D_MODEL = 256
 NUM_X = 32
 D_MLP = NUM_X + 1  # one spare neuron per block beyond the exact-construction need
 
 # Data distributions
-X_LOW, X_HIGH = -3.0, 3.0  # x ~ U[-3, 3]
-C_LOW, C_HIGH = 1.0, 2.0  # c ~ U[1, 2]
+X_LOW, X_HIGH = -3.0, 3.0  # x ~ U[X_LOW, X_HIGH]
+C_LOW, C_HIGH = 1.0, 2.0  # c ~ U[X_LOW, X_HIGH]
 
 # Training
 # BATCH_SIZE = 4096

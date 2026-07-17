@@ -19,7 +19,7 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-NUM_BLOCKS = 2
+NUM_BLOCKS = 4
 
 
 class ResidualMLPBlock(nn.Module):
