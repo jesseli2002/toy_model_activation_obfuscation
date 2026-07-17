@@ -29,7 +29,7 @@ from torch import Tensor
 import config
 from data import sample_batch
 from model import ResidualMLP
-from paths import ckpt_dir, log_dir
+from paths import ckpt_dir, log_dir, run_dir
 
 
 def parse_args():
@@ -113,6 +113,12 @@ def main():
     device = "cuda" if torch.cuda.is_available() else "cpu"
     num_x = args.num_x
     d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
+
+    if os.path.exists(run_dir(args.tag)) and not args.resume:
+        raise SystemExit(
+            f"[error] runs/{args.tag} already exists. Use --resume to continue "
+            f"that run, or pick a different --tag."
+        )
 
     run_ckpt_dir = ckpt_dir(args.tag)
     run_log_dir = log_dir(args.tag)
