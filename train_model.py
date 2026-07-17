@@ -20,6 +20,7 @@ Usage examples:
 import argparse
 import json
 import os
+import shutil
 import time
 
 import torch
@@ -60,6 +61,11 @@ def parse_args():
     )
     p.add_argument("--tag", type=str, default="default")
     p.add_argument("--resume", action="store_true")
+    p.add_argument(
+        "--tag-force",
+        action="store_true",
+        help="delete an existing runs/<tag> directory before starting a fresh run",
+    )
     p.add_argument("--log-interval", type=int, default=200)
     p.add_argument("--ckpt-interval", type=int, default=2000)
     p.add_argument(
@@ -115,10 +121,13 @@ def main():
     d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
 
     if os.path.exists(run_dir(args.tag)) and not args.resume:
-        raise SystemExit(
-            f"[error] runs/{args.tag} already exists. Use --resume to continue "
-            f"that run, or pick a different --tag."
-        )
+        if args.tag_force:
+            shutil.rmtree(run_dir(args.tag))
+        else:
+            raise SystemExit(
+                f"[error] runs/{args.tag} already exists. Use --resume to continue "
+                f"that run, --tag-force to overwrite it, or pick a different --tag."
+            )
 
     run_ckpt_dir = ckpt_dir(args.tag)
     run_log_dir = log_dir(args.tag)
