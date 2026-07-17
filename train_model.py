@@ -37,6 +37,7 @@ def parse_args():
     p.add_argument("--num-x", type=int, default=config.NUM_X)
     p.add_argument("--d-model", type=int, default=config.D_MODEL)
     p.add_argument("--d-mlp", type=int, default=None, help="default: num_x+1")
+    p.add_argument("--num-blocks", type=int, default=config.NUM_BLOCKS)
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     p.add_argument("--lr", type=float, default=config.LR)
     p.add_argument(
@@ -125,11 +126,14 @@ def main():
         d_mlp,
         out_init_scale=args.out_init_scale,
         leaky_relu_slope=args.leaky_relu_slope,
+        num_blocks=args.num_blocks,
     ).to(device)
     if args.warm_start:
         from analytic import build_exact_model
 
-        exact = build_exact_model(num_x, args.d_model, d_mlp)
+        exact = build_exact_model(
+            num_x, args.d_model, d_mlp, num_blocks=args.num_blocks
+        )
         model.load_state_dict(exact.state_dict())
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -164,6 +168,7 @@ def main():
                     "num_x": num_x,
                     "d_model": args.d_model,
                     "d_mlp": d_mlp,
+                    "num_blocks": args.num_blocks,
                     "seed": args.seed,
                     "leaky_relu_slope": args.leaky_relu_slope,
                 },
@@ -173,7 +178,7 @@ def main():
 
     print(
         f"[train] tag={args.tag} num_x={num_x} d_model={args.d_model} "
-        f"d_mlp={d_mlp} bs={args.batch_size} lr={args.lr} "
+        f"d_mlp={d_mlp} num_blocks={args.num_blocks} bs={args.batch_size} lr={args.lr} "
         f"leaky_relu_slope={args.leaky_relu_slope} device={device} "
         f"iters {start_iter}->{args.max_iters}"
     )
