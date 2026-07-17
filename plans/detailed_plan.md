@@ -81,7 +81,7 @@ not tune indefinitely.
 `train_plot.py` → `plot/`: (a) iteration vs loss and vs max-abs-error; (b) `y` vs `x`
 for `c ∈ [1, 1.333, 1.667, 2]`, `num_x` lines each tracing `sat`.
 
-### Step 2 — `probe.py` + validation script
+### Step 2 — `train_probe.py` + validation script
 
 Datasets: N samples at `c=1`, N at `c=2` (x resampled). Forward pass, capture `r_1`.
 Probe types: **difference-of-means**, **logistic regression**, **ridge regression on
@@ -103,7 +103,7 @@ raw-DoM number, and do not inflate probe training data to "fix" it.** Gate 2 key
 logreg/ridge/LDA. Use sklearn LDA with `solver='lsqr', shrinkage='auto'` (the default
 `svd` solver is a known landmine here).
 
-### Step 3 — `adversarial.py`  **(DEFERRED — do not attempt yet, per user 2026-07-16)**
+### Step 3 — `train_adversarial.py`  **(DEFERRED — do not attempt yet, per user 2026-07-16)**
 
 Loss = task MSE + `λ · |difference of means|` along the DoM direction at `r_1`. One
 run, then stop and review. No gate. **Getting through Steps 1–2 cleanly is the

@@ -1,5 +1,9 @@
 ## Miscellaneous
 ###
+(Manual)
+Rename train* to train_model*, then train_probe
+
+###
 Can you modify train.py to check if the directory given by --tag is present, and if so, to not run/clobber the previous run (if --resume isn't present)?
 - In a second commit, add a --tag-force option which deletes the existing directory if present.
 

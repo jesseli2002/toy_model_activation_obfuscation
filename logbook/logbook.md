@@ -18,7 +18,11 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 - Leaky ReLU is implemented, but upon further thought, might not be best choice (can't use exact expression as easily)
 - Comment: Since `d_mlp = 32 << d_model = 512`, it's actually impossible to achieve full utilization of the residual stream (by way of a matrix rank argument). We can decrease d_model to 256 probably.
 - Inspecting num_x=1 case - model learns to put the nonlinearity outside the data range (since $x \in [-3, 3]$), then never learns to put it back.
-- Using deeper model (4 blocks instead of bare minimium 2) helps; much more reliable at training correct results. Guess is that it's much more likely that at least some nonlinearity are still kept in the data range after easy wins are obtained, which can be used to implement saturation. Three separate runs:
+- Using deeper model (4 blocks instead of bare minimium 2) helps; much more reliable at training correct results. Guess is that it's much more likely that at least some nonlinearity are still kept in the data range after easy wins are obtained, which can be used to implement saturation. Three separate runs all resulted in good learned functions::
+![Things work (0)](img/2026-06-17/nx32_0_curves.png)
+![Things work (1)](img/2026-06-17/nx32_1_curves.png)
+![Things work (2)](img/2026-06-17/nx32_2_curves.png)
+
 
 Next steps: Train probe
 
