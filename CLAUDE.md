@@ -1,6 +1,9 @@
 ## Style
 Most scripts have some heavy imports e.g. (torch), which can take some time. This is annoying if you only call --help on a command-line script. So, preferably parse_args should be defined & called before all the imports are completed. This is not a hard rule; if argument parsing necessarily relies on some heavy libraries, don't sacrifice code readability or command line ease-of-use for this one specific problem.
 
+## Workflow
+Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
+
 ## Autonomous engineering
 Due to machine resource limitations, realistically at most one agent should be running training code at a time. If tasking subagents to complete work, this should be considered for task allocation.
 
