@@ -1,0 +1,1 @@
+throwaway file to verify MCP read-write server push access
