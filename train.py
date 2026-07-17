@@ -61,6 +61,12 @@ def parse_args():
     p.add_argument("--resume", action="store_true")
     p.add_argument("--log-interval", type=int, default=200)
     p.add_argument("--ckpt-interval", type=int, default=2000)
+    p.add_argument(
+        "--save-every",
+        type=int,
+        default=0,
+        help="also save a numbered snapshot checkpoint every N iters (0 = off)",
+    )
     return p.parse_args()
 
 
@@ -199,6 +205,9 @@ def main():
 
         if it % args.ckpt_interval == 0 and it > start_iter:
             save(last_path, it)
+
+        if args.save_every > 0 and it % args.save_every == 0 and it > start_iter:
+            save(os.path.join(run_ckpt_dir, f"iter_{it}.pt"), it)
 
         if lv < args.early_stop_loss:
             print(
