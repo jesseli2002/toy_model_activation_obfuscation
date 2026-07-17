@@ -10,7 +10,8 @@ SEED = 913768
 D_MODEL = 256
 NUM_X = 32
 NUM_BLOCKS = 4  # trainable residual MLP blocks (train.py --num-blocks overrides)
-D_MLP = NUM_X + 1  # one spare neuron per block beyond the exact-construction need
+# d_mlp is not a module constant: it depends on num_x. Use d_mlp_for(num_x) below
+# (train.py resolves --d-mlp through it). The canonical nx32 run uses d_mlp = num_x.
 
 # Data distributions
 X_LOW, X_HIGH = -3.0, 3.0  # x ~ U[X_LOW, X_HIGH]
