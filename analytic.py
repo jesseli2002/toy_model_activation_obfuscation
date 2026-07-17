@@ -15,6 +15,29 @@ Identity used:  sat(x, c) = x - ReLU(x - c) + ReLU(-x - c)   (for c > 0).
 
 Needs num_x hidden neurons per block; d_mlp = num_x+1 leaves one spare (left zero).
 Use this as a representability anchor and, if optimization struggles, as a warm start.
+
+This construction is ReLU-only: build_exact_model() below hardwires plain ReLU
+weights, so warm-starting a leaky-ReLU model (model.py's leaky_relu_slope != 0.0)
+with it is only exact at slope 0.0. An exact leaky-ReLU analytic solution does
+exist, just not implemented here (it would need d_mlp >= 2*num_x per block instead
+of num_x+1). Sketch, using L_a(z) = LeakyReLU(z, negative_slope=a):
+
+    Key identity (exact for any a with a**2 != 1):
+        ReLU(z) = [L_a(z) + a * L_a(-z)] / (1 - a**2)
+    Proof by cases:
+        z >= 0:  L_a(z) = z,    L_a(-z) = -a*z  => numerator = z*(1-a**2) => z = ReLU(z)
+        z <  0:  L_a(z) = a*z,  L_a(-z) = -z     => numerator = 0          => 0 = ReLU(z)
+
+    So every single ReLU neuron above can be reproduced exactly by a *pair* of
+    leaky-ReLU neurons, one fed z and one fed -z, with output weights scaled by
+    1/(1-a**2) and a/(1-a**2) respectively (coeff = the original neuron's output
+    weight):
+      Block 0, coordinate i (was: input e_i-e_c, output -1):
+        neuron A: input  e_i-e_c, output -1/(1-a**2)
+        neuron B: input  e_c-e_i, output -a/(1-a**2)
+      Block 1, coordinate i (was: input -e_i-e_c, output +1):
+        neuron C: input -e_i-e_c, output +1/(1-a**2)
+        neuron D: input  e_i+e_c, output +a/(1-a**2)
 """
 
 import torch

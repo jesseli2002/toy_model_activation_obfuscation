@@ -19,6 +19,7 @@ C_LOW, C_HIGH = 1.0, 2.0  # c ~ U[1, 2]
 # BATCH_SIZE = 4096
 BATCH_SIZE = 4096 * 4
 LR = 3e-3
+LEAKY_RELU_SLOPE = 0.0  # 0.0 = plain ReLU
 MAX_ITERS = 100_000_000
 EARLY_STOP_LOSS = 1e-12  # float32 eps^2 ~ 1.4e-14; 1e-12 is a sane "exact" bar
 

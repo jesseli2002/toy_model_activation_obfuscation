@@ -12,6 +12,9 @@ Architecture (row-vector convention, batch on dim 0):
 W_E / W_U are fixed (non-trainable buffers) with unit-norm orthogonal rows: the
 first num_x+1 residual directions are the input coordinates, the rest are unused
 at init. Loss is taken over the first num_x outputs only; the c-slot is free.
+
+The nonlinearity is LeakyReLU(negative_slope=leaky_relu_slope); leaky_relu_slope=0.0
+(the default) reproduces plain ReLU exactly.
 """
 
 import torch
@@ -20,13 +23,19 @@ import torch.nn as nn
 
 class ResidualMLP(nn.Module):
     def __init__(
-        self, num_x: int, d_model: int, d_mlp: int, out_init_scale: float = 0.1
+        self,
+        num_x: int,
+        d_model: int,
+        d_mlp: int,
+        out_init_scale: float = 0.1,
+        leaky_relu_slope: float = 0.0,
     ):
         super().__init__()
         self.num_x = num_x
         self.d_in = num_x + 1  # x plus the scalar c
         self.d_model = d_model
         self.d_mlp = d_mlp
+        self.leaky_relu_slope = leaky_relu_slope
         assert d_model >= self.d_in, "d_model must fit the input coordinates"
 
         # Fixed embedding W_E = [I; 0], shape (d_in, d_model); unembed = W_E^T.
@@ -52,8 +61,11 @@ class ResidualMLP(nn.Module):
 
     def reset_parameters(self, out_init_scale: float = 0.1):
         for i in range(2):
-            # W_in: standard Kaiming for a ReLU layer.
-            nn.init.kaiming_uniform_(self.W_in[i], a=0.0, nonlinearity="relu")
+            # W_in: standard Kaiming, accounting for the leaky-ReLU negative slope
+            # (a=0.0 reduces to the plain-ReLU case).
+            nn.init.kaiming_uniform_(
+                self.W_in[i], a=self.leaky_relu_slope, nonlinearity="leaky_relu"
+            )
             nn.init.zeros_(self.b_in[i])
             # W_out: small but nonzero. Nonzero so W_in gets gradient at step 0
             # (zeros would stall it); small so blocks start near identity (r2 ~ r0,
@@ -63,10 +75,14 @@ class ResidualMLP(nn.Module):
 
     def forward(self, x_full, return_cache: bool = False):
         r0 = x_full @ self.W_E
-        h0 = torch.relu(r0 @ self.W_in[0] + self.b_in[0])
+        h0 = torch.nn.functional.leaky_relu(
+            r0 @ self.W_in[0] + self.b_in[0], negative_slope=self.leaky_relu_slope
+        )
         o0 = h0 @ self.W_out[0] + self.b_out[0]
         r1 = r0 + o0
-        h1 = torch.relu(r1 @ self.W_in[1] + self.b_in[1])
+        h1 = torch.nn.functional.leaky_relu(
+            r1 @ self.W_in[1] + self.b_in[1], negative_slope=self.leaky_relu_slope
+        )
         o1 = h1 @ self.W_out[1] + self.b_out[1]
         r2 = r1 + o1
         y = r2 @ self.W_U  # (B, num_x+1)
