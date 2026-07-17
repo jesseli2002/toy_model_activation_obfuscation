@@ -37,6 +37,9 @@ from data import sample_fixed_c
 from model import ResidualMLP
 from paths import ckpt_dir
 
+device = "cuda" if torch.cuda.is_available() else "cpu"
+torch.set_default_device(device)
+
 
 def parse_layers(s: str) -> list[int]:
     return [int(v) for v in s.split(",")]
@@ -60,6 +63,21 @@ def parse_args():
     p.add_argument("--seed", type=int, default=20260717)
     p.add_argument("--dom-gate", type=float, default=0.70)
     p.add_argument("--logreg-gate", type=float, default=0.99)
+    p.add_argument(
+        "--steer",
+        action="store_true",
+        help=(
+            "causal test: add the DoM(c=1->c=2) direction at the probed layer to "
+            "c=1 inputs and plot the resulting y(x), vs c=1/c=2 targets. Requires "
+            "a single --layers entry (the injection point)."
+        ),
+    )
+    p.add_argument(
+        "--steer-scale",
+        type=float,
+        default=1.0,
+        help="multiple of the full DoM(c=1->c=2) shift to inject (1.0 = full)",
+    )
     p.add_argument("--show", action="store_true")
     return p.parse_args()
 
@@ -97,6 +115,79 @@ def binary_dataset(model, num_x, n, c_lo, c_hi, layers, generator, device):
     return r_lo, r_hi
 
 
+@torch.no_grad()
+def forward_steered(
+    model: ResidualMLP,
+    x_full: torch.Tensor,
+    steer_layer: int,
+    steer_vec: torch.Tensor | None,
+) -> torch.Tensor:
+    """Manual replay of ResidualMLP.forward, injecting steer_vec into the
+    residual stream at index steer_layer (0=embedding, i=after block i-1)."""
+    r = x_full @ model.W_E
+    if steer_layer == 0 and steer_vec is not None:
+        r = r + steer_vec
+    for i, block in enumerate(model.blocks):
+        r = r + block(r)
+        if (i + 1) == steer_layer and steer_vec is not None:
+            r = r + steer_vec
+    y = r @ model.W_U
+    return y[:, : model.num_x]
+
+
+@torch.no_grad()
+def plot_steering(model, num_x, steer_layer, steer_vec, tag, out_dir):
+    xs = torch.linspace(-3, 3, 400, device=device)
+    panels = [
+        ("c=1, unsteered", 1.0, None, [1.0]),
+        (
+            f"c=1, steered @ layer {steer_layer} toward c=2",
+            1.0,
+            steer_vec,
+            [1.0, 2.0],
+        ),
+        ("c=2, unsteered (reference)", 2.0, None, [2.0]),
+    ]
+    fig, axes = plt.subplots(1, len(panels), figsize=(5 * len(panels), 4), sharey=True)
+    for ax, (title, c_val, vec, targets) in zip(axes, panels):
+        for j in range(num_x):
+            x = torch.zeros(len(xs), num_x)
+            x[:, j] = xs
+            x_full = torch.cat([x, torch.full((len(xs), 1), c_val)], dim=1)
+            y = forward_steered(model, x_full, steer_layer, vec)[:, j]
+            ax.plot(
+                xs.cpu().numpy(),
+                y.cpu().numpy(),
+                color="steelblue",
+                alpha=0.3,
+                zorder=5,
+            )
+        styles = {1.0: ("k--", "target sat(x,1)"), 2.0: ("r--", "target sat(x,2)")}
+        for t in targets:
+            ls, label = styles[t]
+            ax.plot(
+                xs.cpu().numpy(),
+                torch.clamp(xs, -t, t).cpu().numpy(),
+                ls,
+                lw=1.5,
+                label=label,
+                zorder=2,
+            )
+        ax.set_title(title)
+        ax.set_xlabel("x")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+    axes[0].set_ylabel("y")
+    fig.suptitle(
+        f"causal steering test ({tag}); {num_x} lines/panel, "
+        f"steer @ layer {steer_layer}"
+    )
+    fig.tight_layout()
+    path = os.path.join(out_dir, f"{tag}_L{steer_layer}_steer.png")
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+
 def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
     from sklearn.decomposition import PCA
 
@@ -121,12 +212,8 @@ def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    ax_pca.scatter(
-        pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1"
-    )
-    ax_pca.scatter(
-        pca_xy[hi_mask, 0], pca_xy[hi_mask, 1], s=4, alpha=0.4, label="c=2"
-    )
+    ax_pca.scatter(pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1")
+    ax_pca.scatter(pca_xy[hi_mask, 0], pca_xy[hi_mask, 1], s=4, alpha=0.4, label="c=2")
     ax_pca.set_title("PCA (top 2 components)")
     ax_pca.set_xlabel("PC1")
     ax_pca.set_ylabel("PC2")
@@ -145,7 +232,6 @@ def main():
     args = parse_args()
     from sklearn.linear_model import LogisticRegression
 
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     model, cfg = load_model(args.tag, args.ckpt, device)
     num_x = cfg["num_x"]
     num_blocks = cfg.get("num_blocks", 4)
@@ -166,9 +252,13 @@ def main():
     )
 
     X_train = torch.cat([r_lo_tr, r_hi_tr], dim=0).cpu().numpy()
-    y_train = torch.cat([torch.zeros(args.n_train), torch.ones(args.n_train)]).numpy()
+    y_train = (
+        torch.cat([torch.zeros(args.n_train), torch.ones(args.n_train)]).cpu().numpy()
+    )
     X_test = torch.cat([r_lo_te, r_hi_te], dim=0).cpu().numpy()
-    y_test = torch.cat([torch.zeros(args.n_test), torch.ones(args.n_test)]).numpy()
+    y_test = (
+        torch.cat([torch.zeros(args.n_test), torch.ones(args.n_test)]).cpu().numpy()
+    )
 
     # --- raw difference-of-means ---
     mu_lo = r_lo_tr.mean(dim=0)
@@ -204,9 +294,15 @@ def main():
 
     out_dir = "plot"
     os.makedirs(out_dir, exist_ok=True)
-    plot_probe(
-        args.tag, args.layers, w_dom, midpoint, logreg, X_test, y_test, out_dir
-    )
+    plot_probe(args.tag, args.layers, w_dom, midpoint, logreg, X_test, y_test, out_dir)
+
+    if args.steer:
+        assert len(args.layers) == 1, "--steer needs a single --layers entry"
+        steer_vec = args.steer_scale * torch.tensor(
+            w_dom, dtype=r_lo_tr.dtype, device=device
+        )
+        plot_steering(model, num_x, args.layers[0], steer_vec, args.tag, out_dir)
+
     if args.show:
         plt.show()
 
