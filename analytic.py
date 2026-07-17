@@ -56,14 +56,14 @@ def build_exact_model(num_x: int, d_model: int, d_mlp: int) -> ResidualMLP:
         c_dir = num_x  # residual/index of the c coordinate
         # Block 0: neuron i computes ReLU(x_i - c), written back with weight -1.
         for i in range(num_x):
-            m.W_in[0][i, i] = 1.0
-            m.W_in[0][c_dir, i] = -1.0
-            m.W_out[0][i, i] = -1.0
+            m.blocks[0].W_in[i, i] = 1.0
+            m.blocks[0].W_in[c_dir, i] = -1.0
+            m.blocks[0].W_out[i, i] = -1.0
         # Block 1: neuron i computes ReLU(-r1[i] - c), written back with weight +1.
         for i in range(num_x):
-            m.W_in[1][i, i] = -1.0
-            m.W_in[1][c_dir, i] = -1.0
-            m.W_out[1][i, i] = 1.0
+            m.blocks[1].W_in[i, i] = -1.0
+            m.blocks[1].W_in[c_dir, i] = -1.0
+            m.blocks[1].W_out[i, i] = 1.0
     return m
 
 
