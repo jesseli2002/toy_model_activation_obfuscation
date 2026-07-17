@@ -67,6 +67,7 @@ def plot_curves(tag, ckpt, out_dir):
         cfg["d_model"],
         cfg["d_mlp"],
         leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
+        num_blocks=cfg.get("num_blocks", 4),  # 4 = pre-num_blocks-config default
     )
     model.load_state_dict(ck["model"])
     model.eval()
