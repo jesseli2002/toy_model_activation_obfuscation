@@ -61,7 +61,12 @@ def plot_curves(tag, ckpt, out_dir):
     ck = torch.load(path, map_location="cpu")
     cfg = ck["config"]
     num_x = cfg["num_x"]
-    model = ResidualMLP(num_x, cfg["d_model"], cfg["d_mlp"])
+    model = ResidualMLP(
+        num_x,
+        cfg["d_model"],
+        cfg["d_mlp"],
+        leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
+    )
     model.load_state_dict(ck["model"])
     model.eval()
 

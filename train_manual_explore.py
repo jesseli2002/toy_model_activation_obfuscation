@@ -32,7 +32,12 @@ def main():
     path = os.path.join("checkpoints", args.tag, f"{args.ckpt}.pt")
     ck = torch.load(path, map_location=device)
     cfg = ck["config"]
-    model = ResidualMLP(cfg["num_x"], cfg["d_model"], cfg["d_mlp"]).to(device)
+    model = ResidualMLP(
+        cfg["num_x"],
+        cfg["d_model"],
+        cfg["d_mlp"],
+        leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
+    ).to(device)
     model.load_state_dict(ck["model"])
     model.eval()
 

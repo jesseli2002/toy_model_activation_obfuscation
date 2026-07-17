@@ -44,6 +44,12 @@ def parse_args():
     p.add_argument("--early-stop-loss", type=float, default=config.EARLY_STOP_LOSS)
     p.add_argument("--out-init-scale", type=float, default=0.1)
     p.add_argument(
+        "--leaky-relu-slope",
+        type=float,
+        default=config.LEAKY_RELU_SLOPE,
+        help="negative slope for LeakyReLU; 0.0 = plain ReLU",
+    )
+    p.add_argument(
         "--warm-start",
         action="store_true",
         help="initialize from analytic.py exact weights (diagnostic)",
@@ -91,7 +97,11 @@ def main():
 
     torch.manual_seed(args.seed)
     model = ResidualMLP(
-        num_x, args.d_model, d_mlp, out_init_scale=args.out_init_scale
+        num_x,
+        args.d_model,
+        d_mlp,
+        out_init_scale=args.out_init_scale,
+        leaky_relu_slope=args.leaky_relu_slope,
     ).to(device)
     if args.warm_start:
         from analytic import build_exact_model
@@ -132,6 +142,7 @@ def main():
                     "d_model": args.d_model,
                     "d_mlp": d_mlp,
                     "seed": args.seed,
+                    "leaky_relu_slope": args.leaky_relu_slope,
                 },
             },
             path,
@@ -139,7 +150,8 @@ def main():
 
     print(
         f"[train] tag={args.tag} num_x={num_x} d_model={args.d_model} "
-        f"d_mlp={d_mlp} bs={args.batch_size} lr={args.lr} device={device} "
+        f"d_mlp={d_mlp} bs={args.batch_size} lr={args.lr} "
+        f"leaky_relu_slope={args.leaky_relu_slope} device={device} "
         f"iters {start_iter}->{args.max_iters}"
     )
 
