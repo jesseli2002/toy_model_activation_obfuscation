@@ -41,11 +41,13 @@ of num_x+1). Sketch, using L_a(z) = LeakyReLU(z, negative_slope=a):
 """
 
 import torch
+from jaxtyping import Float
+from torch import Tensor
 
 from model import ResidualMLP
 
 
-def build_exact_model(num_x, d_model, d_mlp):
+def build_exact_model(num_x: int, d_model: int, d_mlp: int) -> ResidualMLP:
     assert d_mlp >= num_x, "need at least num_x hidden neurons per block"
     m = ResidualMLP(num_x, d_model, d_mlp)
     with torch.no_grad():
@@ -65,7 +67,13 @@ def build_exact_model(num_x, d_model, d_mlp):
     return m
 
 
-def verify(num_x=32, d_model=512, d_mlp=None, n=200_000, seed=0):
+def verify(
+    num_x: int = 32,
+    d_model: int = 512,
+    d_mlp: int | None = None,
+    n: int = 200_000,
+    seed: int = 0,
+) -> float:
     from config import d_mlp_for
     from data import sample_batch
 
@@ -75,7 +83,7 @@ def verify(num_x=32, d_model=512, d_mlp=None, n=200_000, seed=0):
     g = torch.Generator().manual_seed(seed)
     x_full, y = sample_batch(n, num_x, generator=g)
     with torch.no_grad():
-        pred = m.task_output(x_full)
+        pred: Float[Tensor, "n num_x"] = m.task_output(x_full)
     max_err = (pred - y).abs().max().item()
     print(
         f"[analytic] num_x={num_x} d_model={d_model} d_mlp={d_mlp} "

@@ -23,6 +23,8 @@ import os
 import time
 
 import torch
+from jaxtyping import Float
+from torch import Tensor
 
 import config
 from data import sample_batch
@@ -62,7 +64,7 @@ def parse_args():
     return p.parse_args()
 
 
-def cosine_lr(step, total, lr0, lr1):
+def cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
     import math
 
     if total <= 1:
@@ -72,14 +74,21 @@ def cosine_lr(step, total, lr0, lr1):
 
 
 @torch.no_grad()
-def eval_max_err(model, num_x, n=100_000, batch=20_000, seed=12345, device="cpu"):
+def eval_max_err(
+    model: ResidualMLP,
+    num_x: int,
+    n: int = 100_000,
+    batch: int = 20_000,
+    seed: int = 12345,
+    device: str = "cpu",
+) -> float:
     g = torch.Generator(device=device).manual_seed(seed)
     worst = 0.0
     done = 0
     while done < n:
         b = min(batch, n - done)
         x_full, y = sample_batch(b, num_x, generator=g, device=device)
-        pred = model.task_output(x_full)
+        pred: Float[Tensor, "b num_x"] = model.task_output(x_full)
         worst = max(worst, (pred - y).abs().max().item())
         done += b
     return worst

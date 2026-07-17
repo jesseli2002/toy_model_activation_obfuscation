@@ -19,6 +19,8 @@ The nonlinearity is LeakyReLU(negative_slope=leaky_relu_slope); leaky_relu_slope
 
 import torch
 import torch.nn as nn
+from jaxtyping import Float
+from torch import Tensor
 
 
 class ResidualMLP(nn.Module):
@@ -39,7 +41,7 @@ class ResidualMLP(nn.Module):
         assert d_model >= self.d_in, "d_model must fit the input coordinates"
 
         # Fixed embedding W_E = [I; 0], shape (d_in, d_model); unembed = W_E^T.
-        W_E = torch.zeros(self.d_in, d_model)
+        W_E: Float[Tensor, "d_in d_model"] = torch.zeros(self.d_in, d_model)
         W_E[:, : self.d_in] = torch.eye(self.d_in)
         self.register_buffer("W_E", W_E)
         self.register_buffer("W_U", W_E.t().contiguous())  # (d_model, d_in)
@@ -73,23 +75,30 @@ class ResidualMLP(nn.Module):
             nn.init.normal_(self.W_out[i], std=out_init_scale / (self.d_mlp**0.5))
             nn.init.zeros_(self.b_out[i])
 
-    def forward(self, x_full, return_cache: bool = False):
-        r0 = x_full @ self.W_E
-        h0 = torch.nn.functional.leaky_relu(
+    def forward(
+        self, x_full: Float[Tensor, "batch d_in"], return_cache: bool = False
+    ) -> (
+        Float[Tensor, "batch d_in"]
+        | tuple[Float[Tensor, "batch d_in"], list[Float[Tensor, "batch d_model"]]]
+    ):
+        r0: Float[Tensor, "batch d_model"] = x_full @ self.W_E
+        h0: Float[Tensor, "batch d_mlp"] = torch.nn.functional.leaky_relu(
             r0 @ self.W_in[0] + self.b_in[0], negative_slope=self.leaky_relu_slope
         )
-        o0 = h0 @ self.W_out[0] + self.b_out[0]
-        r1 = r0 + o0
-        h1 = torch.nn.functional.leaky_relu(
+        o0: Float[Tensor, "batch d_model"] = h0 @ self.W_out[0] + self.b_out[0]
+        r1: Float[Tensor, "batch d_model"] = r0 + o0
+        h1: Float[Tensor, "batch d_mlp"] = torch.nn.functional.leaky_relu(
             r1 @ self.W_in[1] + self.b_in[1], negative_slope=self.leaky_relu_slope
         )
-        o1 = h1 @ self.W_out[1] + self.b_out[1]
-        r2 = r1 + o1
-        y = r2 @ self.W_U  # (B, num_x+1)
+        o1: Float[Tensor, "batch d_model"] = h1 @ self.W_out[1] + self.b_out[1]
+        r2: Float[Tensor, "batch d_model"] = r1 + o1
+        y: Float[Tensor, "batch d_in"] = r2 @ self.W_U
         if return_cache:
-            return y, r0, r1, r2
+            return y, [r0, r1, r2]
         return y
 
-    def task_output(self, x_full):
+    def task_output(
+        self, x_full: Float[Tensor, "batch d_in"]
+    ) -> Float[Tensor, "batch num_x"]:
         """The first num_x outputs (the part the loss constrains)."""
         return self.forward(x_full)[:, : self.num_x]
