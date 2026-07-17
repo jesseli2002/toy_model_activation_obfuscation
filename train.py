@@ -61,6 +61,17 @@ def parse_args():
     p.add_argument("--resume", action="store_true")
     p.add_argument("--log-interval", type=int, default=200)
     p.add_argument("--ckpt-interval", type=int, default=2000)
+    p.add_argument(
+        "--save-every-n",
+        type=int,
+        nargs="?",
+        const=-1,
+        default=None,
+        help=(
+            "also save a numbered snapshot checkpoint every N iters "
+            "(omitted = off; given with no value = use --ckpt-interval)"
+        ),
+    )
     return p.parse_args()
 
 
@@ -96,6 +107,8 @@ def eval_max_err(
 
 def main():
     args = parse_args()
+    if args.save_every_n == -1:
+        args.save_every_n = args.ckpt_interval
     device = "cuda" if torch.cuda.is_available() else "cpu"
     num_x = args.num_x
     d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
@@ -199,6 +212,13 @@ def main():
 
         if it % args.ckpt_interval == 0 and it > start_iter:
             save(last_path, it)
+
+        if (
+            args.save_every_n is not None
+            and it % args.save_every_n == 0
+            and it > start_iter
+        ):
+            save(os.path.join(run_ckpt_dir, f"iter_{it}.pt"), it)
 
         if lv < args.early_stop_loss:
             print(
