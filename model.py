@@ -1,10 +1,10 @@
-"""Residual MLP for the saturation task, with NUM_BLOCKS trainable MLP blocks.
+"""Residual MLP for the saturation task, with num_blocks trainable MLP blocks.
 
 Architecture (row-vector convention, batch on dim 0):
     x_full = [x, c]                      # (B, num_x+1)
     r_0 = x_full @ W_E                   # (B, d_model),  W_E = [I; 0] fixed
     r_{i+1} = r_i + ReLU(r_i @ W_in_i + b_in_i) @ W_out_i + b_out_i   # per block
-    y  = r_NUM_BLOCKS @ W_U               # (B, num_x+1),  W_U = W_E^T fixed
+    y  = r_num_blocks @ W_U               # (B, num_x+1),  W_U = W_E^T fixed
 
 W_E / W_U are fixed (non-trainable buffers) with unit-norm orthogonal rows: the
 first num_x+1 residual directions are the input coordinates, the rest are unused
@@ -18,8 +18,6 @@ import torch
 import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
-
-NUM_BLOCKS = 4
 
 
 class ResidualMLPBlock(nn.Module):
@@ -65,7 +63,7 @@ class ResidualMLP(nn.Module):
         d_mlp: int,
         out_init_scale: float = 0.1,
         leaky_relu_slope: float = 0.0,
-        num_blocks: int = NUM_BLOCKS,
+        num_blocks: int = 4,
     ):
         super().__init__()
         self.num_x = num_x

@@ -9,6 +9,7 @@ SEED = 913768
 # Architecture
 D_MODEL = 256
 NUM_X = 32
+NUM_BLOCKS = 4  # trainable residual MLP blocks (train.py --num-blocks overrides)
 D_MLP = NUM_X + 1  # one spare neuron per block beyond the exact-construction need
 
 # Data distributions

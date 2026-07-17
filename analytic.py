@@ -47,9 +47,13 @@ from torch import Tensor
 from model import ResidualMLP
 
 
-def build_exact_model(num_x: int, d_model: int, d_mlp: int) -> ResidualMLP:
+def build_exact_model(
+    num_x: int, d_model: int, d_mlp: int, num_blocks: int = 4
+) -> ResidualMLP:
     assert d_mlp >= num_x, "need at least num_x hidden neurons per block"
-    m = ResidualMLP(num_x, d_model, d_mlp)
+    # The exact construction wires blocks 0 and 1; extra blocks stay ~identity.
+    assert num_blocks >= 2, "exact construction requires num_blocks >= 2"
+    m = ResidualMLP(num_x, d_model, d_mlp, num_blocks=num_blocks)
     with torch.no_grad():
         for p in m.parameters():
             p.zero_()
