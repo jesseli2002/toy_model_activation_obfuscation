@@ -93,6 +93,8 @@ import torch
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import r2_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from data import sample_batch
 from model import ResidualMLP
@@ -134,7 +136,10 @@ def binary_probe_metrics(
     X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
     y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
 
-    logreg = LogisticRegression(max_iter=2000).fit(X_tr, y_tr)
+    # DoM above needs no normalization: it's just a difference of means,
+    # invariant to a shared affine rescaling of features.
+    logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
+    logreg.fit(X_tr, y_tr)
     lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
     return {
         "dom": dom_acc,
