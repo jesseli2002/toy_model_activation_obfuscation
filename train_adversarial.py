@@ -4,7 +4,12 @@ We add a penalty that pressures the model to make c=1 and c=2 activations share
 the *same mean* at every hidden residual layer (defeating a difference-of-means
 probe) while still computing sat(x,-c,c) correctly across the full c-range.
 
-    L = L_task(full-range c ~ U[1,2])  +  lam * L_probe(pinned c in {1,2})
+    L = lam * L_probe(pinned c in {1,2})  +  (1 - lam) * L_task(full-range c ~ U[1,2])
+
+  lam=1 optimizes ENTIRELY for hiding c (task loss has zero weight) — useful for
+  testing whether hiding is achievable *in principle* at a given set of layers
+  before worrying about how much task fidelity it costs. lam=0 recovers plain
+  task training with no probe pressure at all.
 
   L_task  — MSE over the first num_x outputs on a batch with c ~ U[1,2]. Keeping
             the task trained across ALL c is the single most important design
@@ -33,11 +38,14 @@ erase linear c-information across the range ("erased")?
 
 Usage:
     # primary run: warm-start a capable model, then apply probe pressure
-    python train_adversarial.py --tag adv1 --lam 1.0 \
+    python train_adversarial.py --tag adv1 --lam 0.5 \
         --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
     # from scratch (conflates learning + hiding; kept for contrast)
-    python train_adversarial.py --tag advscratch --init scratch --lam 1.0
+    python train_adversarial.py --tag advscratch --init scratch --lam 0.5
     python train_adversarial.py --resume --tag adv1 --max-iters 12000
+    # feasibility check: can c be hidden at layer 1 at all, ignoring task loss
+    python train_adversarial.py --tag adv-feas-l1 --lam 1.0 --penalty-layers 1 \
+        --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
 """
 
 import argparse
@@ -79,19 +87,23 @@ def parse_args():
     p.add_argument(
         "--lam",
         type=float,
-        default=1.0,
-        help="weight on the DoM penalty. Tune so the penalty bites without "
-        "wrecking the task.",
+        default=0.5,
+        help="convex-combination weight: loss = lam * L_probe + (1-lam) * L_task. "
+        "lam=1 optimizes purely for hiding c (task loss ignored) -- use this to "
+        "test whether hiding is achievable in principle at a given set of "
+        "layers. lam=0 is plain task training. Tune in between so the penalty "
+        "bites without wrecking the task.",
     )
     p.add_argument(
         "--lam-warmup-iters",
         type=int,
         default=0,
-        help="linearly ramp the penalty weight 0 -> lam over this many iters. "
-        "Warm-starting from a near-exact solution and hitting it with the full "
-        "penalty at once knocks the model off the task manifold into a bad basin "
-        "it can't climb back from; ramping keeps the task intact while probe "
-        "pressure grows in. 0 = no ramp (constant lam).",
+        help="linearly ramp the penalty weight 0 -> lam over this many iters "
+        "(task weight ramps 1 -> 1-lam correspondingly). Warm-starting from a "
+        "near-exact solution and hitting it with the full penalty at once knocks "
+        "the model off the task manifold into a bad basin it can't climb back "
+        "from; ramping keeps the task intact while probe pressure grows in. "
+        "0 = no ramp (constant lam).",
     )
     p.add_argument(
         "--penalty-layers",
@@ -346,7 +358,7 @@ def main(args):
             lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
         else:
             lam_eff = args.lam
-        loss = l_task + lam_eff * l_probe
+        loss = lam_eff * l_probe + (1 - lam_eff) * l_task
 
         opt.zero_grad(set_to_none=True)
         loss.backward()
