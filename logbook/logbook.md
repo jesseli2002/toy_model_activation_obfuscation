@@ -13,14 +13,24 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 
 ## Open questions
 ### Important
-- Can we detect `c` with a probe? What types of probes?
-- Can we train `c` to be undetectable through a linear probe (e.g. difference of means -> optimize for minimum distance between means when c=1 vs c=2)
+- Can we train `c` to be undetectable through a linear probe? How to do this? Ideas:
+    - Minimize difference of means (DoM) (directly attacking difference-of-means probe) -> optimize for minimum distance between means when c=1 vs c=2
+        - Possibly fails by optimizer just learning to scale everything down...
+    - Minimize ratio of DoM to standard deviation along probe direction. In other words, make the activations noisy
 
 ### Back-burner
 - Does it matter if $x$ is sparsely activating instead of densely activating?
 - Can we try some other functions to learn?
 
+### Answered questions
+- Can we detect `c` with a probe? What types of probes?
+    - Yes! At least when not adversarially trained. See log for 2026-07-17, but basically any probe type will work.
+
+
 ## Daily log
+### 2026-07-18
+- Spent some time implementing adversarial training of probe & model, but haven't investigated the results fully.
+
 ### 2026-07-17
 - Leaky ReLU is implemented, but upon further thought, might not be best choice (can't use exact expression as easily)
 - Comment: Since `d_mlp = 32 << d_model = 512`, it's actually impossible to achieve full utilization of the residual stream (by way of a matrix rank argument). We can decrease d_model to 256 probably.

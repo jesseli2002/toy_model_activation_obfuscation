@@ -1,5 +1,18 @@
 ## Style
-Most scripts have some heavy imports e.g. (torch), which can take some time. This is annoying if you only call --help on a command-line script. So, preferably parse_args should be defined & called before all the imports are completed. This is not a hard rule; if argument parsing necessarily relies on some heavy libraries, don't sacrifice code readability or command line ease-of-use for this one specific problem.
+- Most scripts have some heavy imports e.g. (torch), which can take some time. This is annoying if you only call --help on a command-line script. So, preferably structure CLI scripts like this:
+```python
+import argparse # and other light imports
+
+def parse_args():
+    ...
+
+if __name__ == "__main__":
+    args = parse_args() # ArgumentParser should early exit if --help called
+
+import torch # and other heavy imports
+... # rest of code
+```
+This is not a hard rule; if argument parsing necessarily relies on some heavy libraries, don't sacrifice code readability or command line ease-of-use for this one specific problem.
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
@@ -24,6 +37,7 @@ This environment is in a sandbox. Writes and sensitive reads outside this direct
 - The safety classifier favors simple, single-purpose calls over multi-command bundles. Avoid needing the classifier by construction:
     - For read tasks use native tools (Read/Grep/Glob). Write-capabale tools like `sed` are not automatically approved, even if individual calls are read-only.
     - `black` is allow-listed only via its absolute path `/home/jesse/v/bin/black` (guards against a shadowed `black` on PATH); invoke it that way. `black --check <file>` doubles as a read-only syntax check and is preferred over `py_compile`.
+- For non-trivial Python, write it to a temporary file and run `python tmp.py` rather than `python -c "…"`. Inline `-c` trips the command-safety classifier and forces a permission prompt — specifically a newline-then-`#` comment inside the quoted arg, or an embedded deny-listed path. Reserve `-c` for short, comment-free, single-line snippets.
 - If you run into permissions issues, prefer trying to solve the cause (and ask the user to help debug permissions), rather than working around the symptoms and trying a bunch of techniques to get past them.
 - Use the Github MCP servers to push features, instead of Bash git/gh commands.
-    - There are two identified servers (github-readonly and github-write): One dedicated for reading (highly permissive), and one dedicated for writing (highly restricted). Make sure to use the right server.
+    - There are two identified servers (github-readonly and github-write): One dedicated for reading (highly permissive), and one dedicated for writing (highly restricted). USE THE READONLY SERVER IF ONLY READING; OTHERWISE THE COMMAND MAY GET REJECTED

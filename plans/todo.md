@@ -1,17 +1,21 @@
-## Miscellaneous
-###
-(Manual)
-Rename train* to train_model*, then train_probe
+## Needs human review
+- On adversarially trained probe:
+    - Why is LDA performing much better?
+        - What happens if we do logistic regression with C=np.inf (no regularization)?
+    - What is ridge regression good for?
+
+
+## Miscellaneous code quality
+
+### Improvements to adversarial_report.py
+- Logistic regression data should be normalized; use StandardScaler(). This applies in train_probe.py and adversarial_report.py
+    - Correct me if I'm wrong, but difference-of-means doesn't have such a need for normalization.
+- Add a plot of the learned function (similar to the one in train_model_plot.plot_curves - actually, doing a little bit of refactoring so that the plot code can be imported and reused would be ideal)
+- Add the histogram and PCA plots from train_probe.py. Similarly to the previous bullet - some light refactoring so that the code can be reused would be ideal.
+
 
 ###
-Can you modify train.py to check if the directory given by --tag is present, and if so, to not run/clobber the previous run (if --resume isn't present)?
-- In a second commit, add a --tag-force option which deletes the existing directory if present.
+Do we nead the lr_cosine decay? I'd like to validate it helps meaningfully (especially since, IIRC, Adam is adaptive and will automatically pick up an effective learning rate), and prune it if they're unnecessary.
 
 ###
-What are the implications of moving model.NUM_BLOCKS into config.py?
-
-### Security
-Help me lockdown the settings.local.json against prompt injection attacks from Github.
-    - The Github MCP server is linked to a personal access token that only permits access to one public repository that I own.
-    - However, potentially a malicious user could e.g. create an issue with a prompt injection? or a PR?
-I'm OK with a multi-pronged approach - e.g. restrict read permissions only to some subset of actions, then restrict on Github who can e.g. make PRs, so that the MCP server can only read from trusted content.
+There's a lot of generator constructions, repeated multiple times. I think it'd be better to create a single global generator at the start once?
