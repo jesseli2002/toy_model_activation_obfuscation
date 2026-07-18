@@ -83,13 +83,29 @@ def parse_args():
     return p.parse_args()
 
 
+# parse_args early-exits on --help before the heavy imports below are reached.
+if __name__ == "__main__":
+    args = parse_args()
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LogisticRegression, Ridge
+from sklearn.metrics import r2_score
+
+from data import sample_batch
+from model import ResidualMLP
+from paths import log_dir
+from train_model import eval_max_err
+from train_probe import binary_dataset, capture_layers, load_model
+
+
 # ----------------------------------------------------------------------------
 # Probe primitives (reuse train_probe's harness where possible)
 # ----------------------------------------------------------------------------
 def dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     """Raw difference-of-means classifier (train direction, test accuracy)."""
-    import numpy as np
-
     mu_lo = r_lo_tr.mean(dim=0)
     mu_hi = r_hi_tr.mean(dim=0)
     w = (mu_hi - mu_lo).cpu().numpy()
@@ -105,11 +121,6 @@ def binary_probe_metrics(
     model, num_x, c_lo, c_hi, layer, n_train, n_test, g_train, g_test, device
 ):
     """DoM / logreg / LDA accuracy for one layer, one (c_lo, c_hi) pair."""
-    import numpy as np
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-    from sklearn.linear_model import LogisticRegression
-    from train_probe import binary_dataset
-
     r_lo_tr, r_hi_tr = binary_dataset(
         model, num_x, n_train, c_lo, c_hi, [layer], g_train, device
     )
@@ -135,10 +146,6 @@ def binary_probe_metrics(
 
 def ridge_r2(model, num_x, layer, n_train, n_test, alpha, g_train, g_test, device):
     """R^2 of a ridge probe recovering continuous c ~ U[1,2] from layer l."""
-    from data import sample_batch
-    from sklearn.linear_model import Ridge
-    from sklearn.metrics import r2_score
-    from train_probe import capture_layers
 
     def ds(n, g):
         x_full, _ = sample_batch(n, num_x, generator=g, device=device)
@@ -156,8 +163,6 @@ def ridge_r2(model, num_x, layer, n_train, n_test, alpha, g_train, g_test, devic
 # Plots
 # ----------------------------------------------------------------------------
 def plot_training_traces(tag, history, hidden_layers, out_dir):
-    import matplotlib.pyplot as plt
-
     pts = [h for h in history if h.get("l_task") is not None]
     if not pts:
         return
@@ -196,9 +201,6 @@ def plot_training_traces(tag, history, hidden_layers, out_dir):
 
 
 def plot_heldout_r2(tag, layers, r2_adv, r2_base, out_dir):
-    import matplotlib.pyplot as plt
-    import numpy as np
-
     x = np.arange(len(layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
     if r2_base is not None:
@@ -223,9 +225,6 @@ def plot_heldout_r2(tag, layers, r2_adv, r2_base, out_dir):
 
 
 def plot_probe_gap(tag, hidden_layers, gap, out_dir):
-    import matplotlib.pyplot as plt
-    import numpy as np
-
     x = np.arange(len(hidden_layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
     for off, key, lbl in [
@@ -250,14 +249,7 @@ def plot_probe_gap(tag, hidden_layers, gap, out_dir):
 
 
 # ----------------------------------------------------------------------------
-def main():
-    args = parse_args()
-
-    import torch
-
-    from paths import log_dir
-    from train_probe import load_model
-
+def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     model, cfg = load_model(args.tag, args.ckpt, device)
@@ -269,11 +261,9 @@ def main():
 
     base_model = None
     if args.baseline_path:
-        from model import ResidualMLP as _RMLP
-
         bck = torch.load(args.baseline_path, map_location=device)
         bcfg = bck["config"]
-        base_model = _RMLP(
+        base_model = ResidualMLP(
             bcfg["num_x"],
             bcfg["d_model"],
             bcfg["d_mlp"],
@@ -299,8 +289,6 @@ def main():
     emit()
 
     # --- 1. task fidelity ---
-    from train_model import eval_max_err
-
     me = eval_max_err(model, num_x, device=device)
     emit(f"## 1. Task fidelity")
     emit(f"max abs elementwise error (c~U[1,2]): {me:.3e}")
@@ -451,10 +439,8 @@ def main():
     plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, out_dir)
 
     if args.show:
-        import matplotlib.pyplot as plt
-
         plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    main(args)

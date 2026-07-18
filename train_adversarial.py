@@ -42,9 +42,12 @@ Usage:
 
 import argparse
 import json
+import math
 import os
 import shutil
 import time
+
+import config
 
 
 def parse_penalty_layers(s: str) -> str | list[int]:
@@ -54,8 +57,6 @@ def parse_penalty_layers(s: str) -> str | list[int]:
 
 
 def parse_args():
-    import config
-
     p = argparse.ArgumentParser(
         description="Step 3 adversarial training (model vs. DoM probe).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -130,9 +131,19 @@ def parse_args():
     return p.parse_args()
 
 
-def cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
-    import math
+# parse_args early-exits on --help before the heavy imports below are reached.
+if __name__ == "__main__":
+    args = parse_args()
 
+import torch
+
+from data import sample_batch, sample_fixed_c
+from model import ResidualMLP
+from paths import ckpt_dir, log_dir, run_dir
+from train_model import eval_max_err
+
+
+def cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
     if total <= 1:
         return lr0
     t = min(step, total) / total
@@ -170,8 +181,6 @@ def probe_delta_means(model, num_x, n_per_class, layers, generator, device):
 
     Returns {layer: mean(r_l|c=2) - mean(r_l|c=1)} with x resampled each call.
     """
-    from data import sample_fixed_c
-
     xf_lo, _ = sample_fixed_c(n_per_class, num_x, 1.0, generator, device)
     xf_hi, _ = sample_fixed_c(n_per_class, num_x, 2.0, generator, device)
     _, caches_lo = model.forward(xf_lo, return_cache=True)
@@ -179,16 +188,7 @@ def probe_delta_means(model, num_x, n_per_class, layers, generator, device):
     return {lyr: caches_hi[lyr].mean(0) - caches_lo[lyr].mean(0) for lyr in layers}
 
 
-def main():
-    args = parse_args()
-
-    import torch
-
-    from data import sample_batch
-    from model import ResidualMLP
-    from paths import ckpt_dir, log_dir, run_dir
-    from train_model import eval_max_err
-
+def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if os.path.exists(run_dir(args.tag)) and not args.resume:
@@ -227,8 +227,6 @@ def main():
         model.load_state_dict(ck["model"])
         print(f"[init] warm-started from {args.warmstart_path} (cfg={cfg})")
     else:
-        import config
-
         num_x = args.num_x
         d_model = args.d_model
         d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
@@ -404,4 +402,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(args)
