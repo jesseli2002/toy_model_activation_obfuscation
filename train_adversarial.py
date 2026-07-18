@@ -258,9 +258,6 @@ def main(args):
         )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    # One RNG for all training draws. The probe sub-batch is "separate" from the
-    # task batch simply by being the next fresh draw off this stream; it needs no
-    # generator of its own.
     gen = torch.Generator(device=device).manual_seed(args.seed + 1)
 
     start_iter = 0
@@ -309,12 +306,10 @@ def main(args):
             path,
         )
 
-    # Fixed eval batch, sampled once and reused so the delta-mean trace reflects
-    # the model changing, not the batch. Its own seed keeps it independent of the
-    # training stream (and of --probe-batch-size).
-    eval_gen = torch.Generator(device=device).manual_seed(args.seed + 99)
-    eval_x_lo, _ = sample_fixed_c(20_000, num_x, 1.0, eval_gen, device)
-    eval_x_hi, _ = sample_fixed_c(20_000, num_x, 2.0, eval_gen, device)
+    # Fixed eval batch, drawn once from gen so the delta-mean trace reflects the
+    # model changing, not the batch.
+    eval_x_lo, _ = sample_fixed_c(20_000, num_x, 1.0, gen, device)
+    eval_x_hi, _ = sample_fixed_c(20_000, num_x, 2.0, gen, device)
 
     @torch.no_grad()
     def eval_delta_norms():
