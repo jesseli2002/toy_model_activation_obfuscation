@@ -100,6 +100,7 @@ from data import sample_batch
 from model import ResidualMLP
 from paths import log_dir
 from train_model import eval_max_err
+from train_model_plot import plot_learned_curves
 from train_probe import binary_dataset, capture_layers, load_model
 
 
@@ -442,6 +443,11 @@ def main(args):
         plot_training_traces(args.tag, history, hidden_layers, out_dir)
     plot_probe_gap(args.tag, hidden_layers, gap, out_dir)
     plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, out_dir)
+    plot_learned_curves(model, num_x, args.tag, out_dir, device=device)
+    if base_model is not None:
+        plot_learned_curves(
+            base_model, num_x, f"{args.tag}_baseline", out_dir, device=device
+        )
 
     if args.show:
         plt.show()
