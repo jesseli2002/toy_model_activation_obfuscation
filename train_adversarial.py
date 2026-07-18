@@ -176,16 +176,24 @@ def resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
     return layers
 
 
-def probe_delta_means(model, num_x, n_per_class, layers, generator, device):
-    """Differentiable per-layer difference of class means at pinned c in {1,2}.
+def delta_means_from_x(model, x_lo, x_hi, layers):
+    """Per-layer difference of class means for pre-sampled c=1 / c=2 batches.
 
-    Returns {layer: mean(r_l|c=2) - mean(r_l|c=1)} with x resampled each call.
+    Returns {layer: mean(r_l|c=2) - mean(r_l|c=1)}. Differentiable; the caller
+    controls grad via torch.no_grad(). Shared by the training penalty (fresh x
+    each step) and the eval trace (fixed x, built once).
     """
+    _, caches_lo = model.forward(x_lo, return_cache=True)
+    _, caches_hi = model.forward(x_hi, return_cache=True)
+    return {lyr: caches_hi[lyr].mean(0) - caches_lo[lyr].mean(0) for lyr in layers}
+
+
+def probe_delta_means(model, num_x, n_per_class, layers, generator, device):
+    """Differentiable per-layer difference of class means at pinned c in {1,2},
+    with x resampled from `generator` each call."""
     xf_lo, _ = sample_fixed_c(n_per_class, num_x, 1.0, generator, device)
     xf_hi, _ = sample_fixed_c(n_per_class, num_x, 2.0, generator, device)
-    _, caches_lo = model.forward(xf_lo, return_cache=True)
-    _, caches_hi = model.forward(xf_hi, return_cache=True)
-    return {lyr: caches_hi[lyr].mean(0) - caches_lo[lyr].mean(0) for lyr in layers}
+    return delta_means_from_x(model, xf_lo, xf_hi, layers)
 
 
 def main(args):
@@ -250,8 +258,10 @@ def main(args):
         )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    gen_task = torch.Generator(device=device).manual_seed(args.seed + 1)
-    gen_probe = torch.Generator(device=device).manual_seed(args.seed + 2)
+    # One RNG for all training draws. The probe sub-batch is "separate" from the
+    # task batch simply by being the next fresh draw off this stream; it needs no
+    # generator of its own.
+    gen = torch.Generator(device=device).manual_seed(args.seed + 1)
 
     start_iter = 0
     history = []  # list of dicts
@@ -299,11 +309,17 @@ def main(args):
             path,
         )
 
+    # Fixed eval batch, sampled once and reused so the delta-mean trace reflects
+    # the model changing, not the batch. Its own seed keeps it independent of the
+    # training stream (and of --probe-batch-size).
+    eval_gen = torch.Generator(device=device).manual_seed(args.seed + 99)
+    eval_x_lo, _ = sample_fixed_c(20_000, num_x, 1.0, eval_gen, device)
+    eval_x_hi, _ = sample_fixed_c(20_000, num_x, 2.0, eval_gen, device)
+
     @torch.no_grad()
-    def eval_delta_norms(n_per_class=20_000):
-        """Clean per-layer ||Δmean|| on a fixed-seed batch (for stable traces)."""
-        g = torch.Generator(device=device).manual_seed(args.seed + 99)
-        deltas = probe_delta_means(model, num_x, n_per_class, hidden_layers, g, device)
+    def eval_delta_norms():
+        """Clean per-layer ||Δmean|| on the fixed eval batch (for stable traces)."""
+        deltas = delta_means_from_x(model, eval_x_lo, eval_x_hi, hidden_layers)
         return {lyr: float(d.norm().item()) for lyr, d in deltas.items()}
 
     print(
@@ -321,15 +337,13 @@ def main(args):
             pg["lr"] = lr
 
         # task loss on the FULL c-range
-        x_full, y = sample_batch(
-            args.batch_size, num_x, generator=gen_task, device=device
-        )
+        x_full, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
         pred = model.task_output(x_full)
         l_task = torch.mean((pred - y) ** 2)
 
         # probe penalty on a separate pinned sub-batch (x resampled)
         deltas = probe_delta_means(
-            model, num_x, args.probe_batch_size, hidden_layers, gen_probe, device
+            model, num_x, args.probe_batch_size, hidden_layers, gen, device
         )
         l_probe = sum((d**2).sum() for d in deltas.values())
 
