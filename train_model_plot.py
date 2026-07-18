@@ -59,17 +59,17 @@ def plot_dynamics(tag, out_dir):
 @torch.no_grad()
 def plot_learned_curves(
     model,
-    num_x,
     tag,
     out_dir,
     c_values=(1.0, 1.333, 1.667, 2.0),
-    device="cpu",
 ):
     """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
 
     Split out of plot_curves so callers who already have a model in memory
     (e.g. adversarial_report.py) can reuse it without a checkpoint round-trip.
     """
+    num_x = model.num_x
+    device = next(model.parameters()).device
     xs = torch.linspace(-3, 3, 400, device=device)
     fig, axes = plt.subplots(
         1, len(c_values), figsize=(4 * len(c_values), 4), sharey=True
@@ -111,9 +111,8 @@ def plot_curves(tag, ckpt, out_dir):
     path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
     ck = torch.load(path, map_location="cpu")
     cfg = ck["config"]
-    num_x = cfg["num_x"]
     model = ResidualMLP(
-        num_x,
+        cfg["num_x"],
         cfg["d_model"],
         cfg["d_mlp"],
         leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
@@ -121,7 +120,7 @@ def plot_curves(tag, ckpt, out_dir):
     )
     model.load_state_dict(ck["model"])
     model.eval()
-    plot_learned_curves(model, num_x, tag, out_dir)
+    plot_learned_curves(model, tag, out_dir)
 
 
 def main():
