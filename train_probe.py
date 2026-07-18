@@ -231,6 +231,8 @@ def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
 def main():
     args = parse_args()
     from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
 
     model, cfg = load_model(args.tag, args.ckpt, device)
     num_x = cfg["num_x"]
@@ -269,8 +271,9 @@ def main():
     pred_dom = (proj_test > midpoint).astype(float)
     dom_acc = float((pred_dom == y_test).mean())
 
-    # --- logistic regression ---
-    logreg = LogisticRegression(max_iter=2000)
+    # --- logistic regression (DoM above needs no normalization: it's just a
+    # difference of means, invariant to a shared affine rescaling of features) ---
+    logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
     logreg.fit(X_train, y_train)
     logreg_acc = float(logreg.score(X_test, y_test))
 

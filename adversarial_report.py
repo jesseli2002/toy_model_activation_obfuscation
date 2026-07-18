@@ -93,12 +93,16 @@ import torch
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import r2_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from data import sample_batch
 from model import ResidualMLP
 from paths import log_dir
 from train_model import eval_max_err
+from train_model_plot import plot_learned_curves
 from train_probe import binary_dataset, capture_layers, load_model
+from train_probe import plot_probe as plot_probe_separation
 
 
 # ----------------------------------------------------------------------------
@@ -118,9 +122,24 @@ def dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
 
 
 def binary_probe_metrics(
-    model, num_x, c_lo, c_hi, layer, n_train, n_test, g_train, g_test, device
+    model,
+    num_x,
+    c_lo,
+    c_hi,
+    layer,
+    n_train,
+    n_test,
+    g_train,
+    g_test,
+    device,
+    tag=None,
+    out_dir=None,
 ):
-    """DoM / logreg / LDA accuracy for one layer, one (c_lo, c_hi) pair."""
+    """DoM / logreg / LDA accuracy for one layer, one (c_lo, c_hi) pair.
+
+    If tag and out_dir are given, also writes the histogram + PCA separation
+    plot for this layer/pair (see train_probe.plot_probe).
+    """
     r_lo_tr, r_hi_tr = binary_dataset(
         model, num_x, n_train, c_lo, c_hi, [layer], g_train, device
     )
@@ -134,8 +153,28 @@ def binary_probe_metrics(
     X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
     y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
 
-    logreg = LogisticRegression(max_iter=2000).fit(X_tr, y_tr)
+    # DoM above needs no normalization: it's just a difference of means,
+    # invariant to a shared affine rescaling of features.
+    logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
+    logreg.fit(X_tr, y_tr)
     lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
+
+    if tag is not None and out_dir is not None:
+        mu_lo = r_lo_tr.mean(dim=0)
+        mu_hi = r_hi_tr.mean(dim=0)
+        w_dom = (mu_hi - mu_lo).cpu().numpy()
+        midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
+        plot_probe_separation(
+            f"{tag}_c{c_lo:g}-{c_hi:g}",
+            [layer],
+            w_dom,
+            midpoint,
+            logreg,
+            X_te,
+            y_te,
+            out_dir,
+        )
+
     return {
         "dom": dom_acc,
         "delta_norm": delta_norm,
@@ -259,6 +298,9 @@ def main(args):
     hidden_layers = list(range(1, num_blocks))
     all_layers = list(range(0, num_blocks + 1))  # 0=embed .. num_blocks=output
 
+    out_dir = "plot"
+    os.makedirs(out_dir, exist_ok=True)
+
     base_model = None
     if args.baseline_path:
         bck = torch.load(args.baseline_path, map_location=device)
@@ -316,6 +358,8 @@ def main(args):
             g(10 + lyr),
             g(100 + lyr),
             device,
+            tag=args.tag,
+            out_dir="plot",
         )
         gap[lyr] = m
         pen = "yes" if lyr in penalty_layers else "no"
@@ -428,8 +472,6 @@ def main(args):
         f.write("\n".join(lines) + "\n")
     print(f"[report] wrote {report_path}")
 
-    out_dir = "plot"
-    os.makedirs(out_dir, exist_ok=True)
     hist_path = os.path.join(out_log, "history.json")
     if os.path.exists(hist_path):
         with open(hist_path) as f:
@@ -437,6 +479,9 @@ def main(args):
         plot_training_traces(args.tag, history, hidden_layers, out_dir)
     plot_probe_gap(args.tag, hidden_layers, gap, out_dir)
     plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, out_dir)
+    plot_learned_curves(model, args.tag, out_dir)
+    if base_model is not None:
+        plot_learned_curves(base_model, f"{args.tag}_baseline", out_dir)
 
     if args.show:
         plt.show()

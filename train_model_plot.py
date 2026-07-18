@@ -57,23 +57,20 @@ def plot_dynamics(tag, out_dir):
 
 
 @torch.no_grad()
-def plot_curves(tag, ckpt, out_dir):
-    path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
-    ck = torch.load(path, map_location="cpu")
-    cfg = ck["config"]
-    num_x = cfg["num_x"]
-    model = ResidualMLP(
-        num_x,
-        cfg["d_model"],
-        cfg["d_mlp"],
-        leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
-        num_blocks=cfg.get("num_blocks", 4),  # 4 = pre-num_blocks-config default
-    )
-    model.load_state_dict(ck["model"])
-    model.eval()
+def plot_learned_curves(
+    model,
+    tag,
+    out_dir,
+    c_values=(1.0, 1.333, 1.667, 2.0),
+):
+    """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
 
-    c_values = [1.0, 1.333, 1.667, 2.0]
-    xs = torch.linspace(-3, 3, 400)
+    Split out of plot_curves so callers who already have a model in memory
+    (e.g. adversarial_report.py) can reuse it without a checkpoint round-trip.
+    """
+    num_x = model.num_x
+    device = next(model.parameters()).device
+    xs = torch.linspace(-3, 3, 400, device=device)
     fig, axes = plt.subplots(
         1, len(c_values), figsize=(4 * len(c_values), 4), sharey=True
     )
@@ -83,14 +80,14 @@ def plot_curves(tag, ckpt, out_dir):
         # Build inputs: sweep x on every coordinate simultaneously is not valid
         # (coords are independent), so sweep coordinate 0 and hold others at 0.
         for j in range(num_x):
-            x = torch.zeros(len(xs), num_x)
+            x = torch.zeros(len(xs), num_x, device=device)
             x[:, j] = xs
-            x_full = torch.cat([x, torch.full((len(xs), 1), c)], dim=1)
+            x_full = torch.cat([x, torch.full((len(xs), 1), c, device=device)], dim=1)
             y = model.task_output(x_full)[:, j]
-            ax.plot(xs.numpy(), y.numpy(), alpha=0.5, zorder=5)
+            ax.plot(xs.cpu().numpy(), y.cpu().numpy(), alpha=0.5, zorder=5)
         ax.plot(
-            xs.numpy(),
-            torch.clamp(xs, -c, c).numpy(),
+            xs.cpu().numpy(),
+            torch.clamp(xs, -c, c).cpu().numpy(),
             "k--",
             lw=1,
             label="target sat",
@@ -105,7 +102,25 @@ def plot_curves(tag, ckpt, out_dir):
     fig.tight_layout()
     p = os.path.join(out_dir, f"{tag}_curves.png")
     fig.savefig(p, dpi=120)
+    plt.close(fig)
     print(f"[plot] wrote {p}")
+    return p
+
+
+def plot_curves(tag, ckpt, out_dir):
+    path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
+    ck = torch.load(path, map_location="cpu")
+    cfg = ck["config"]
+    model = ResidualMLP(
+        cfg["num_x"],
+        cfg["d_model"],
+        cfg["d_mlp"],
+        leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
+        num_blocks=cfg.get("num_blocks", 4),  # 4 = pre-num_blocks-config default
+    )
+    model.load_state_dict(ck["model"])
+    model.eval()
+    plot_learned_curves(model, tag, out_dir)
 
 
 def main():
