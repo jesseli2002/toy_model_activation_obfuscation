@@ -42,7 +42,10 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     p.add_argument("--lr", type=float, default=config.LR)
     p.add_argument(
-        "--lr-final", type=float, default=1e-6, help="cosine-decay target LR"
+        "--lr-final",
+        type=float,
+        default=config.LR,
+        help="cosine-decay target LR (default: same as --lr, i.e. no decay)",
     )
     p.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
     p.add_argument("--seed", type=int, default=config.SEED)
