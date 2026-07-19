@@ -128,7 +128,7 @@ def parse_args():
         help="per-class size of the pinned sub-batch used for L_probe.",
     )
     p.add_argument("--lr", type=float, default=1e-3)
-    p.add_argument("--lr-final", type=float, default=1e-6)
+    p.add_argument("--lr-final", type=float, default=1e-3)
     p.add_argument("--max-iters", type=int, default=6000)
     p.add_argument("--seed", type=int, default=913768)
     # Bookkeeping
