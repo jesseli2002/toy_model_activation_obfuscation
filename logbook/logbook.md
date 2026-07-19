@@ -15,6 +15,8 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 - The general concept (prereqs to bad feature are present but benign at earlier layers; bad feature gets represented non-linearly in later layers) is a good model of how bad behaviours (and their prerequisites) get represented in larger models
 - Model architecture/training method is capable of implementing obfuscation
 - Toy model is cheap to train and will continue to be cheap to train - runs taking <30 min on local laptop.
+- The approach we're taking is representative of what could happen if you "train against a probe" (?)
+    - Maybe it doesn't need to be: Being able to show a concrete example of nonlinear feature representation under optimization pressure, would be interesting in and of itself.
 
 
 ## Open questions
@@ -65,7 +67,7 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 - Faced issues with training with len(x) = 32. Picture is worth a thousand words - here's the function that gets learned (plot y(x) for fixed c, for each x):
 ![Curves that get learned - some features learn the proper saturation functions, other just seem to fit a straight line](img/2026-06-16_nx32_curves.png)
 Training dynamics show that loss isn't decreasing further:
-![Training dynamics: Loss plateaus](2026-06-16_img/nx32_dynamics.png)
+![Training dynamics: Loss plateaus](img/2026-06-16/nx32_dynamics.png)
 - Notably - training seems to work when feature count is smaller (1,2, 4), although even then, higher number of features => longer training time.
 - Found bug in d_mlp config
 - Things to try:
