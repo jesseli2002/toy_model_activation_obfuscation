@@ -31,6 +31,7 @@ import argparse
 import os
 
 import matplotlib.pyplot as plt
+import numpy as np
 import torch
 
 from data import sample_fixed_c
@@ -195,10 +196,23 @@ def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
     proj_logreg = logreg.decision_function(X_test)
     pca_xy = PCA(n_components=2).fit_transform(X_test)
 
+    # logreg's decision boundary direction in raw (unstandardized) feature
+    # space, so we can project it out and PCA the residual: this extends the
+    # logreg histogram into a second axis showing whether any of the
+    # remaining (logreg-orthogonal) variance still separates the classes.
+    scaler = logreg.named_steps["standardscaler"]
+    clf = logreg.named_steps["logisticregression"]
+    w_logreg = clf.coef_[0] / scaler.scale_
+    w_hat = w_logreg / np.linalg.norm(w_logreg)
+    X_resid = X_test - np.outer(X_test @ w_hat, w_hat)
+    pc1_resid = PCA(n_components=1).fit_transform(X_resid)[:, 0]
+
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
 
-    fig, (ax_dom, ax_logreg, ax_pca) = plt.subplots(1, 3, figsize=(15, 4))
+    fig, (ax_dom, ax_logreg, ax_pca, ax_logreg_resid) = plt.subplots(
+        1, 4, figsize=(20, 4)
+    )
 
     for ax, proj, title in (
         (ax_dom, proj_dom, "DoM projection"),
@@ -219,6 +233,19 @@ def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
     ax_pca.set_ylabel("PC2")
     ax_pca.legend(fontsize=8)
     ax_pca.grid(True, alpha=0.3)
+
+    ax_logreg_resid.scatter(
+        proj_logreg[lo_mask], pc1_resid[lo_mask], s=4, alpha=0.4, label="c=1"
+    )
+    ax_logreg_resid.scatter(
+        proj_logreg[hi_mask], pc1_resid[hi_mask], s=4, alpha=0.4, label="c=2"
+    )
+    ax_logreg_resid.axvline(0.0, color="k", ls="--", lw=1, label="threshold")
+    ax_logreg_resid.set_title("logreg vs residual PCA")
+    ax_logreg_resid.set_xlabel("logreg decision function")
+    ax_logreg_resid.set_ylabel("PC1 of logreg-orthogonal residual")
+    ax_logreg_resid.legend(fontsize=8)
+    ax_logreg_resid.grid(True, alpha=0.3)
 
     layer_str = "-".join(str(i) for i in layers)
     fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
