@@ -219,11 +219,19 @@ def plot_probe(
     X_resid: Float[np.ndarray, "n d"] = X_test - np.outer(X_test @ w_hat, w_hat)
     pc1_resid: Float[np.ndarray, "n"] = PCA(n_components=1).fit_transform(X_resid)[:, 0]
 
+    # raw (unstandardized) projection onto the logreg direction, for the
+    # scatter plot's x-axis: decision_function() reports values in the
+    # StandardScaler's space, whereas w_hat @ X_test is in data coordinates.
+    proj_logreg_raw: Float[np.ndarray, "n"] = X_test @ w_hat
+    logreg_raw_threshold = float(
+        (np.dot(scaler.mean_, w_logreg) - clf.intercept_[0]) / np.linalg.norm(w_logreg)
+    )
+
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
 
     fig, (ax_dom, ax_logreg, ax_pca, ax_logreg_resid) = plt.subplots(
-        1, 4, figsize=(20, 4)
+        1, 4, figsize=(20, 6)
     )
 
     for ax, proj, title in (
@@ -245,19 +253,23 @@ def plot_probe(
     ax_pca.set_ylabel("PC2")
     ax_pca.legend(fontsize=8)
     ax_pca.grid(True, alpha=0.3)
+    ax_pca.set_aspect("equal", adjustable="datalim")
 
     ax_logreg_resid.scatter(
-        proj_logreg[lo_mask], pc1_resid[lo_mask], s=4, alpha=0.4, label="c=1"
+        proj_logreg_raw[lo_mask], pc1_resid[lo_mask], s=4, alpha=0.4, label="c=1"
     )
     ax_logreg_resid.scatter(
-        proj_logreg[hi_mask], pc1_resid[hi_mask], s=4, alpha=0.4, label="c=2"
+        proj_logreg_raw[hi_mask], pc1_resid[hi_mask], s=4, alpha=0.4, label="c=2"
     )
-    ax_logreg_resid.axvline(0.0, color="k", ls="--", lw=1, label="threshold")
+    ax_logreg_resid.axvline(
+        logreg_raw_threshold, color="k", ls="--", lw=1, label="threshold"
+    )
     ax_logreg_resid.set_title("logreg vs residual PCA")
-    ax_logreg_resid.set_xlabel("logreg decision function")
+    ax_logreg_resid.set_xlabel("logreg projection (data coords)")
     ax_logreg_resid.set_ylabel("PC1 of logreg-orthogonal residual")
     ax_logreg_resid.legend(fontsize=8)
     ax_logreg_resid.grid(True, alpha=0.3)
+    ax_logreg_resid.set_aspect("equal", adjustable="datalim")
 
     layer_str = "-".join(str(i) for i in layers)
     fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
