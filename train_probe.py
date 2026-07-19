@@ -33,6 +33,7 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
+from jaxtyping import Bool, Float
 
 from data import sample_fixed_c
 from model import ResidualMLP
@@ -189,7 +190,18 @@ def plot_steering(model, num_x, steer_layer, steer_vec, tag, out_dir):
     print(f"[plot] wrote {path}")
 
 
-def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
+def plot_probe(
+    tag,
+    layers,
+    w_dom: Float[np.ndarray, "d"],
+    midpoint,
+    logreg,
+    X_test: Float[np.ndarray, "n d"],
+    y_test: Bool[np.ndarray, "n"],
+    out_dir,
+):
+    """n = test-set size (both classes concatenated), d = probed feature dim
+    (sum of d_model over --layers)."""
     from sklearn.decomposition import PCA
 
     proj_dom = X_test @ w_dom - midpoint
@@ -202,10 +214,10 @@ def plot_probe(tag, layers, w_dom, midpoint, logreg, X_test, y_test, out_dir):
     # remaining (logreg-orthogonal) variance still separates the classes.
     scaler = logreg.named_steps["standardscaler"]
     clf = logreg.named_steps["logisticregression"]
-    w_logreg = clf.coef_[0] / scaler.scale_
-    w_hat = w_logreg / np.linalg.norm(w_logreg)
-    X_resid = X_test - np.outer(X_test @ w_hat, w_hat)
-    pc1_resid = PCA(n_components=1).fit_transform(X_resid)[:, 0]
+    w_logreg: Float[np.ndarray, "d"] = clf.coef_[0] / scaler.scale_
+    w_hat: Float[np.ndarray, "d"] = w_logreg / np.linalg.norm(w_logreg)
+    X_resid: Float[np.ndarray, "n d"] = X_test - np.outer(X_test @ w_hat, w_hat)
+    pc1_resid: Float[np.ndarray, "n"] = PCA(n_components=1).fit_transform(X_resid)[:, 0]
 
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
