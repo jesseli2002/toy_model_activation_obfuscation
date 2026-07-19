@@ -223,8 +223,12 @@ def plot_probe(
     # scatter plot's x-axis: decision_function() reports values in the
     # StandardScaler's space, whereas w_hat @ X_test is in data coordinates.
     proj_logreg_raw: Float[np.ndarray, "n"] = X_test @ w_hat
+    # scaler.mean_ @ w_logreg is a vector-vector dot product (both shape (d,)),
+    # giving the scalar w_logreg-projection of the scaler's mean; this
+    # re-derives decision_function()'s zero-crossing in raw data coordinates.
+    mean_proj_logreg: Float[np.ndarray, ""] = scaler.mean_ @ w_logreg
     logreg_raw_threshold = float(
-        (scaler.mean_ @ w_logreg - clf.intercept_[0]) / np.linalg.norm(w_logreg)
+        (mean_proj_logreg - clf.intercept_[0]) / np.linalg.norm(w_logreg)
     )
 
     lo_mask = y_test == 0.0
