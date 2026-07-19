@@ -2,13 +2,19 @@
 Logbook of research progress - what I tried, what I expected vs what happened, plans for next steps.
 
 ## Project summary
-A common hypothesis: Training against a probe just makes the model learn to obfuscate its activations. What are the simplest toy models we can build to demonstrate this behaviour, and maybe gain mechanistic insight into the geometry of obfuscated activations? If we do find something - can we justify why or why not this representation will appear naturally, even without optimization pressure?
+A common hypothesis: Training against a probe just makes the model learn to obfuscate its activations. What are the simplest toy models we can build to demonstrate this behaviour, and maybe gain mechanistic insight into the geometry of obfuscated activations? If we do find something - can we justify why or why not this representation will appear naturally, even without optimization pressure? Can we justify whether the model will suffer some capabilities tax as a result?
 
 ### Target deliverable
 - Blog post of some sort, detailing results
     - Main writeup on personal website
     - Cross-post to LessWrong
 
+### Project assumptions
+- The learned function (or functions?) is representative of a computation a larger model would need to do
+- The model architecture is representative of larger model's capabilities.
+- The general concept (prereqs to bad feature are present but benign at earlier layers; bad feature gets represented non-linearly in later layers) is a good model of how bad behaviours (and their prerequisites) get represented in larger models
+- Model architecture/training method is capable of implementing obfuscation
+- Toy model is cheap to train and will continue to be cheap to train - runs taking <30 min on local laptop.
 
 
 ## Open questions
@@ -21,6 +27,7 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 ### Back-burner
 - Does it matter if $x$ is sparsely activating instead of densely activating?
 - Can we try some other functions to learn?
+- When training without obfuscation pressure - can we fully understand what the probed values are doing (and how to fully causaly change the results)?
 
 ### Answered questions
 - Can we detect `c` with a probe? What types of probes?
@@ -45,7 +52,7 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 ![but at layer 2](img/2026-06-17/nx32_L2_probe.png)
 ![and layer 3, PCA is fine](img/2026-06-17/nx32_L3_probe.png)
 
-- Casaul steering sort of works, but is imperfect. Steering with difference-of-means works better on earlier layers than later ones, but there are some features which aren't getting steered. Probably, the model usess multiple directions for $c$, and they'd all need to be steered.
+- Casaul steering sort of works, but is imperfect. Steering with difference-of-means works better on earlier layers than later ones, but there are some features which aren't getting steered. Probably, the model uses multiple directions for $c$, and they'd all need to be steered.
 ![](img/2026-06-17/nx32_L1_steer.png)
 ![](img/2026-06-17/nx32_L2_steer.png)
 ![](img/2026-06-17/nx32_L3_steer.png)
