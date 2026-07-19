@@ -123,14 +123,12 @@ def dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
 
 def binary_probe_metrics(
     model,
-    num_x,
     c_lo,
     c_hi,
     layer,
     n_train,
     n_test,
     g,
-    device,
     tag=None,
     out_dir=None,
 ):
@@ -139,6 +137,8 @@ def binary_probe_metrics(
     If tag and out_dir are given, also writes the histogram + PCA separation
     plot for this layer/pair (see train_probe.plot_probe).
     """
+    num_x = model.num_x
+    device = next(model.parameters()).device
     r_lo_tr, r_hi_tr = binary_dataset(
         model, num_x, n_train, c_lo, c_hi, [layer], g, device
     )
@@ -182,8 +182,10 @@ def binary_probe_metrics(
     }
 
 
-def ridge_r2(model, num_x, layer, n_train, n_test, alpha, g, device):
+def ridge_r2(model, layer, n_train, n_test, alpha, g):
     """R^2 of a ridge probe recovering continuous c ~ U[1,2] from layer l."""
+    num_x = model.num_x
+    device = next(model.parameters()).device
 
     def ds(n):
         x_full, _ = sample_batch(n, num_x, generator=g, device=device)
@@ -348,14 +350,12 @@ def main(args):
     for lyr in hidden_layers:
         m = binary_probe_metrics(
             model,
-            num_x,
             1.0,
             2.0,
             lyr,
             args.n_train,
             args.n_test,
             g,
-            device,
             tag=args.tag,
             out_dir="plot",
         )
@@ -375,26 +375,22 @@ def main(args):
     for lyr in all_layers:
         r2a = ridge_r2(
             model,
-            num_x,
             lyr,
             args.n_ridge,
             args.n_ridge,
             args.ridge_alpha,
             g,
-            device,
         )
         r2_adv[lyr] = r2a
         role = "embed" if lyr == 0 else "output" if lyr == num_blocks else "hidden"
         if base_model is not None:
             r2b = ridge_r2(
                 base_model,
-                num_x,
                 lyr,
                 args.n_ridge,
                 args.n_ridge,
                 args.ridge_alpha,
                 g,
-                device,
             )
             r2_base[lyr] = r2b
             emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} | {r2b:+.4f}")
@@ -411,14 +407,12 @@ def main(args):
         for lyr in hidden_layers:
             m = binary_probe_metrics(
                 model,
-                num_x,
                 c_lo,
                 c_hi,
                 lyr,
                 args.n_train,
                 args.n_test,
                 g,
-                device,
             )
             heldout[(c_lo, c_hi, lyr)] = m
             emit(
