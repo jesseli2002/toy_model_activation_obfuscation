@@ -5,3 +5,6 @@ This directory contains plans - both for agents and for humans. The ones specifi
 - step3_plan.md
     - Focused plan for Step 3 (adversarial training). Supersedes the stale Step 3
       sections of detailed_plan.md.
+- plot_dir_consolidation.md
+    - Focused plan to de-duplicate the `out_dir = "plot"` plumbing repeated
+      across train_probe.py, train_model_plot.py, and adversarial_report.py.
