@@ -18,6 +18,9 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 - The approach we're taking is representative of what could happen if you "train against a probe" (?)
     - Maybe it doesn't need to be: Being able to show a concrete example of nonlinear feature representation under optimization pressure, would be interesting in and of itself.
 
+### Stretch goals
+- See if obfuscation behaviour occurs when training to minimize activation on probe, rather than directly on probe's ability to measure things
+- Reproduce results by fine-tuning LLM, a la Neural Chameleons
 
 ## Open questions
 ### Important
@@ -37,8 +40,29 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 
 
 ## Daily log
+### 2026-07-19
+- Running with 4 MLP blocks, model doesn't consistently fully learn the saturation function, even with $\lambda = 0.05$, although I suppose I haven't checked that the loss terms are scaled such that $\lambda \approx 0.5$ is reasonable
+- In any case, it's easier to just stick more MLP blocks on to see if something works, then dial # of blocks back later.
+- Result: Logistic regression (and Linear Discriminant Analysis) probes can still detect $c$, but training process hides it from difference-of-means probe. First figure shows that model still learns the saturation function, although it's noisy:
+![](img/2026-06-19/adv_NB8_lam0.1_scratch_curves.png)
+
+Second figure shows how probe results are (for layer 6, but all the intermediate layers show similar behaviour)
+![](img/2026-06-19/adv_NB8_lam0.1_scratch_c1-2_L6_probe.png)
+
+Basically, the model is heavily shrinking the scaling factor for magnitude for $c$ (as seen in the difference between $c=1$ and $c=2$ in logistic regression), but it's still using a clean direction for it (as seen in logistic regression results).
+
+In theory, the model could basically do this and achieve arbitrarily low loss on mean score: Just map $c \to \epsilon c$. I don't think scaling the loss value by standard deviation in the DoM probe direction would help, since the model can basically add arbitrarily high amounts of interference (see Figure 4 from https://arxiv.org/pdf/2310.06824 but imagine it in the extreme)
+![](img/2026-06-19/figure4.png)
+
+This is an interesting result, but the model is still storing the value of $c$ linearly. Ideas for harder pressure:
+- Use LDA (closed-form) expression against model
+- Simultaneously adversarially train a logistic regression model
+
+
 ### 2026-07-18
 - Spent some time implementing adversarial training of probe & model, but haven't investigated the results fully.
+    - Adversary loss (`l_probe`, for now, and up to scaling) is take distance between means for $c=1$ and $c=2$, then square it
+    - Define $\lambda$ to be fraction of total loss for probe, rather than task score
 
 ### 2026-07-17
 - Leaky ReLU is implemented, but upon further thought, might not be best choice (can't use exact expression as easily)
