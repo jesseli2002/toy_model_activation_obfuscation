@@ -370,7 +370,7 @@ def main(args):
             save(best_path, it)
 
         if it % args.log_interval == 0:
-            me = eval_max_err(model, num_x, device=device)
+            me = eval_max_err(model, num_x, gen, device=device)
             dn = eval_delta_norms()
             history.append(
                 {
@@ -398,7 +398,7 @@ def main(args):
 
     # final logging + save
     save(last_path, it)
-    me = eval_max_err(model, num_x, device=device)
+    me = eval_max_err(model, num_x, gen, device=device)
     dn = eval_delta_norms()
     history.append(
         {

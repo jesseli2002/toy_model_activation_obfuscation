@@ -129,8 +129,7 @@ def binary_probe_metrics(
     layer,
     n_train,
     n_test,
-    g_train,
-    g_test,
+    g,
     device,
     tag=None,
     out_dir=None,
@@ -141,10 +140,10 @@ def binary_probe_metrics(
     plot for this layer/pair (see train_probe.plot_probe).
     """
     r_lo_tr, r_hi_tr = binary_dataset(
-        model, num_x, n_train, c_lo, c_hi, [layer], g_train, device
+        model, num_x, n_train, c_lo, c_hi, [layer], g, device
     )
     r_lo_te, r_hi_te = binary_dataset(
-        model, num_x, n_test, c_lo, c_hi, [layer], g_test, device
+        model, num_x, n_test, c_lo, c_hi, [layer], g, device
     )
     dom_acc, delta_norm = dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
 
@@ -183,17 +182,17 @@ def binary_probe_metrics(
     }
 
 
-def ridge_r2(model, num_x, layer, n_train, n_test, alpha, g_train, g_test, device):
+def ridge_r2(model, num_x, layer, n_train, n_test, alpha, g, device):
     """R^2 of a ridge probe recovering continuous c ~ U[1,2] from layer l."""
 
-    def ds(n, g):
+    def ds(n):
         x_full, _ = sample_batch(n, num_x, generator=g, device=device)
         r = capture_layers(model, x_full, [layer])
         c = x_full[:, num_x]
         return r.cpu().numpy(), c.cpu().numpy()
 
-    X_tr, c_tr = ds(n_train, g_train)
-    X_te, c_te = ds(n_test, g_test)
+    X_tr, c_tr = ds(n_train)
+    X_te, c_te = ds(n_test)
     reg = Ridge(alpha=alpha).fit(X_tr, c_tr)
     return float(r2_score(c_te, reg.predict(X_te)))
 
@@ -330,16 +329,16 @@ def main(args):
     )
     emit()
 
+    g = torch.Generator(device=device).manual_seed(args.seed)
+
     # --- 1. task fidelity ---
-    me = eval_max_err(model, num_x, device=device)
+    me = eval_max_err(model, num_x, g, device=device)
     emit(f"## 1. Task fidelity")
     emit(f"max abs elementwise error (c~U[1,2]): {me:.3e}")
     if base_model is not None:
-        me_b = eval_max_err(base_model, num_x, device=device)
+        me_b = eval_max_err(base_model, num_x, g, device=device)
         emit(f"  baseline max abs error: {me_b:.3e}")
     emit()
-
-    g = lambda off: torch.Generator(device=device).manual_seed(args.seed + off)
 
     # --- 2. probe-strength gap at c in {1,2} ---
     emit("## 2. Probe-strength gap at c in {1,2} (per hidden layer)")
@@ -355,8 +354,7 @@ def main(args):
             lyr,
             args.n_train,
             args.n_test,
-            g(10 + lyr),
-            g(100 + lyr),
+            g,
             device,
             tag=args.tag,
             out_dir="plot",
@@ -382,8 +380,7 @@ def main(args):
             args.n_ridge,
             args.n_ridge,
             args.ridge_alpha,
-            g(200 + lyr),
-            g(300 + lyr),
+            g,
             device,
         )
         r2_adv[lyr] = r2a
@@ -396,8 +393,7 @@ def main(args):
                 args.n_ridge,
                 args.n_ridge,
                 args.ridge_alpha,
-                g(200 + lyr),
-                g(300 + lyr),
+                g,
                 device,
             )
             r2_base[lyr] = r2b
@@ -421,8 +417,7 @@ def main(args):
                 lyr,
                 args.n_train,
                 args.n_test,
-                g(400 + lyr),
-                g(500 + lyr),
+                g,
                 device,
             )
             heldout[(c_lo, c_hi, lyr)] = m
