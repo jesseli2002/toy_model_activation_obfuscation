@@ -224,7 +224,7 @@ def plot_probe(
     # StandardScaler's space, whereas w_hat @ X_test is in data coordinates.
     proj_logreg_raw: Float[np.ndarray, "n"] = X_test @ w_hat
     logreg_raw_threshold = float(
-        (scaler.mean_ @ w_logreg - clf.intercept_[0]) / np.linalg.norm(w_logreg)
+        (np.dot(scaler.mean_, w_logreg) - clf.intercept_[0]) / np.linalg.norm(w_logreg)
     )
 
     lo_mask = y_test == 0.0
