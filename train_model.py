@@ -42,10 +42,7 @@ def parse_args():
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     p.add_argument("--lr", type=float, default=config.LR)
     p.add_argument(
-        "--lr-final",
-        type=float,
-        default=config.LR,
-        help="cosine-decay target LR (default: same as --lr, i.e. no decay)",
+        "--lr-final", type=float, default=1e-6, help="cosine-decay target LR"
     )
     p.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
     p.add_argument("--seed", type=int, default=config.SEED)
@@ -98,17 +95,16 @@ def cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
 def eval_max_err(
     model: ResidualMLP,
     num_x: int,
+    generator: torch.Generator,
     n: int = 100_000,
     batch: int = 20_000,
-    seed: int = 12345,
     device: str = "cpu",
 ) -> float:
-    g = torch.Generator(device=device).manual_seed(seed)
     worst = 0.0
     done = 0
     while done < n:
         b = min(batch, n - done)
-        x_full, y = sample_batch(b, num_x, generator=g, device=device)
+        x_full, y = sample_batch(b, num_x, generator=generator, device=device)
         pred: Float[Tensor, "b num_x"] = model.task_output(x_full)
         worst = max(worst, (pred - y).abs().max().item())
         done += b
@@ -223,7 +219,7 @@ def main():
             save(best_path, it)
 
         if it % args.log_interval == 0 or lv < args.early_stop_loss:
-            me = eval_max_err(model, num_x, device=device)
+            me = eval_max_err(model, num_x, gen, device=device)
             history.append((it, lv, me))
             with open(hist_path, "w") as f:
                 json.dump(history, f)
@@ -251,7 +247,7 @@ def main():
             break
 
     save(last_path, it)
-    me = eval_max_err(model, num_x, device=device)
+    me = eval_max_err(model, num_x, gen, device=device)
     history.append((it, best_loss, me))
     with open(hist_path, "w") as f:
         json.dump(history, f)

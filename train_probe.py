@@ -243,14 +243,13 @@ def main():
             f"(0=embedding, i=after block i-1)"
         )
 
-    g_train = torch.Generator(device=device).manual_seed(args.seed)
-    g_test = torch.Generator(device=device).manual_seed(args.seed + 1)
+    g = torch.Generator(device=device).manual_seed(args.seed)
 
     r_lo_tr, r_hi_tr = binary_dataset(  # training sets
-        model, num_x, args.n_train, 1.0, 2.0, args.layers, g_train, device
+        model, num_x, args.n_train, 1.0, 2.0, args.layers, g, device
     )
     r_lo_te, r_hi_te = binary_dataset(  # test sets
-        model, num_x, args.n_test, 1.0, 2.0, args.layers, g_test, device
+        model, num_x, args.n_test, 1.0, 2.0, args.layers, g, device
     )
 
     X_train = torch.cat([r_lo_tr, r_hi_tr], dim=0).cpu().numpy()

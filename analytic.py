@@ -71,7 +71,7 @@ def build_exact_model(
     return m
 
 
-def verify(
+def _verify(
     num_x: int = 32,
     d_model: int = 512,
     d_mlp: int | None = None,
@@ -97,4 +97,4 @@ def verify(
 
 
 if __name__ == "__main__":
-    verify()
+    _verify()
