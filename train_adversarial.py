@@ -119,6 +119,11 @@ def parse_args():
     p.add_argument("--num-blocks", type=int, default=config.NUM_BLOCKS)
     p.add_argument("--leaky-relu-slope", type=float, default=config.LEAKY_RELU_SLOPE)
     p.add_argument("--out-init-scale", type=float, default=0.1)
+    p.add_argument(
+        "--layer-norm",
+        action="store_true",
+        help="apply LayerNorm to each block's input before W_in (--init scratch only)",
+    )
     # Optimization
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     p.add_argument(
@@ -150,7 +155,7 @@ if __name__ == "__main__":
 import torch
 
 from data import sample_batch, sample_fixed_c
-from model import ResidualMLP
+from model import ResidualMLP, ResidualMLPConfig
 from paths import ckpt_dir, log_dir, run_dir
 from train_model import eval_max_err
 
@@ -234,32 +239,31 @@ def main(args):
                 f"[error] --init warmstart but checkpoint not found: "
                 f"{args.warmstart_path}"
             )
-        ck = torch.load(args.warmstart_path, map_location=device)
-        cfg = ck["config"]
-        num_x = cfg["num_x"]
-        d_model = cfg["d_model"]
-        d_mlp = cfg["d_mlp"]
-        num_blocks = cfg.get("num_blocks", 4)
-        leaky = cfg.get("leaky_relu_slope", 0.0)
-        model = ResidualMLP(
-            num_x, d_model, d_mlp, leaky_relu_slope=leaky, num_blocks=num_blocks
-        ).to(device)
-        model.load_state_dict(ck["model"])
-        print(f"[init] warm-started from {args.warmstart_path} (cfg={cfg})")
+        model, _ = ResidualMLP.load(args.warmstart_path, map_location=device)
+        model = model.to(device)
+        model_config = model.config
+        num_x, d_model, d_mlp, num_blocks = (
+            model_config.num_x,
+            model_config.d_model,
+            model_config.d_mlp,
+            model_config.num_blocks,
+        )
+        print(f"[init] warm-started from {args.warmstart_path} (cfg={model_config})")
     else:
         num_x = args.num_x
         d_model = args.d_model
         d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
         num_blocks = args.num_blocks
-        leaky = args.leaky_relu_slope
-        model = ResidualMLP(
-            num_x,
-            d_model,
-            d_mlp,
-            out_init_scale=args.out_init_scale,
-            leaky_relu_slope=leaky,
+        model_config = ResidualMLPConfig(
+            num_x=num_x,
+            d_model=d_model,
+            d_mlp=d_mlp,
             num_blocks=num_blocks,
-        ).to(device)
+            out_init_scale=args.out_init_scale,
+            leaky_relu_slope=args.leaky_relu_slope,
+            layer_norm=args.layer_norm,
+        )
+        model = ResidualMLP(model_config).to(device)
         print(f"[init] scratch model num_x={num_x} d_model={d_model} d_mlp={d_mlp}")
 
     hidden_layers = resolve_hidden_layers(args.penalty_layers, num_blocks)
@@ -290,32 +294,19 @@ def main(args):
                 history = json.load(f)
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
 
-    def config_dict():
-        return {
-            "num_x": num_x,
-            "d_model": d_model,
-            "d_mlp": d_mlp,
-            "num_blocks": num_blocks,
-            "leaky_relu_slope": leaky,
-            "seed": args.seed,
-            # adversarial metadata
-            "lam": args.lam,
-            "lam_warmup_iters": args.lam_warmup_iters,
-            "penalty_layers": hidden_layers,
-            "init": args.init,
-            "warmstart_path": args.warmstart_path if args.init == "warmstart" else None,
-        }
-
     def save(path, it):
-        torch.save(
-            {
-                "iter": it,
-                "model": model.state_dict(),
-                "opt": opt.state_dict(),
-                "best_loss": best_loss,
-                "config": config_dict(),
-            },
+        model.save(
             path,
+            iter=it,
+            opt=opt.state_dict(),
+            best_loss=best_loss,
+            seed=args.seed,
+            # adversarial metadata (not architecture, so kept out of "config")
+            lam=args.lam,
+            lam_warmup_iters=args.lam_warmup_iters,
+            penalty_layers=hidden_layers,
+            init=args.init,
+            warmstart_path=args.warmstart_path if args.init == "warmstart" else None,
         )
 
     # Fixed eval batch, drawn once from gen so the delta-mean trace reflects the

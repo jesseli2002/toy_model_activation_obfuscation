@@ -86,19 +86,14 @@ def parse_args():
 
 
 def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
+    """Returns (model, full checkpoint dict) -- the dict carries any non-
+    architecture fields (opt state, iter, adversarial-run metadata, ...) that
+    rode along in the checkpoint; architecture lives on model.config."""
     path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
-    ck = torch.load(path, map_location=device)
-    cfg = ck["config"]
-    model = ResidualMLP(
-        cfg["num_x"],
-        cfg["d_model"],
-        cfg["d_mlp"],
-        leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
-        num_blocks=cfg.get("num_blocks", 4),
-    ).to(device)
-    model.load_state_dict(ck["model"])
+    model, ck = ResidualMLP.load(path, map_location=device)
+    model = model.to(device)
     model.eval()
-    return model, cfg
+    return model, ck
 
 
 @torch.no_grad()
@@ -286,9 +281,9 @@ def main():
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
-    model, cfg = load_model(args.tag, args.ckpt, device)
-    num_x = cfg["num_x"]
-    num_blocks = cfg.get("num_blocks", 4)
+    model, ck = load_model(args.tag, args.ckpt, device)
+    num_x = model.num_x
+    num_blocks = model.num_blocks
     for layer in args.layers:
         assert 0 <= layer <= num_blocks, (
             f"--layers index {layer} out of range [0, {num_blocks}] "

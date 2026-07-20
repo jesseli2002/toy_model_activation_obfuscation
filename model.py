@@ -14,18 +14,88 @@ The nonlinearity is LeakyReLU(negative_slope=leaky_relu_slope); leaky_relu_slope
 (the default) reproduces plain ReLU exactly.
 """
 
+import dataclasses
+import warnings
+from dataclasses import dataclass
+
 import torch
 import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
 
+@dataclass
+class ResidualMLPConfig:
+    """Architecture + init hyperparameters for ResidualMLP.
+
+    Stored verbatim (as a dict) under checkpoint["config"]. Two distinct
+    notions of "default" apply to each optional field below, and they are
+    deliberately kept separate:
+      - the field default (e.g. `num_blocks: int = 4`) is what a fresh
+        ResidualMLPConfig(...) call gets if the field is omitted -- i.e. the
+        default for code written going forward.
+      - _LEGACY_DEFAULTS is what an *old* checkpoint -- one saved before the
+        field existed, so its config dict is missing the key -- is backfilled
+        to by from_dict(). This is what that field's value effectively WAS,
+        historically, before it became configurable.
+    These currently coincide for every field, but must not be assumed to:
+    if a future change bumps a field's forward default, _LEGACY_DEFAULTS
+    keeps old checkpoints reconstructing with the architecture they were
+    actually trained with.
+    """
+
+    num_x: int
+    d_model: int
+    d_mlp: int
+    num_blocks: int = 8
+    out_init_scale: float = 0.1
+    leaky_relu_slope: float = 0.0
+    layer_norm: bool = False
+
+    # Historical values for fields absent from an old checkpoint's config
+    # dict. Every optional field above must have an entry here.
+    _LEGACY_DEFAULTS = {
+        "num_blocks": 4,
+        "out_init_scale": 0.1,
+        "leaky_relu_slope": 0.0,
+        "layer_norm": False,
+    }
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "ResidualMLPConfig":
+        """Build a config from a checkpoint's config dict: fields the dict
+        predates are backfilled from _LEGACY_DEFAULTS (not the field default
+        above)."""
+        known = {f.name for f in dataclasses.fields(cls)}
+        unknown = d.keys() - known
+        if unknown:
+            warnings.warn(
+                f"ResidualMLPConfig.from_dict: dropping unrecognized key(s) "
+                f"{sorted(unknown)} -- checkpoint saved by a newer version?"
+            )
+        present = {k: v for k, v in d.items() if k in known}
+        filled = (
+            cls._LEGACY_DEFAULTS | present
+        )  # union over dicts, preferring `present`
+        return cls(**filled)
+
+
 class ResidualMLPBlock(nn.Module):
-    def __init__(self, d_model: int, d_mlp: int, leaky_relu_slope: float = 0.0):
+    def __init__(
+        self,
+        d_model: int,
+        d_mlp: int,
+        leaky_relu_slope: float = 0.0,
+        layer_norm: bool = False,
+    ):
         super().__init__()
         self.d_model = d_model
         self.d_mlp = d_mlp
         self.leaky_relu_slope = leaky_relu_slope
+        self.layer_norm = nn.LayerNorm(d_model) if layer_norm else None
         self.W_in = nn.Parameter(torch.empty(d_model, d_mlp))
         self.b_in = nn.Parameter(torch.zeros(d_mlp))
         self.W_out = nn.Parameter(torch.empty(d_mlp, d_model))
@@ -48,49 +118,68 @@ class ResidualMLPBlock(nn.Module):
     def forward(
         self, r: Float[Tensor, "batch d_model"]
     ) -> Float[Tensor, "batch d_model"]:
+        r_in: Float[Tensor, "batch d_model"] = (
+            self.layer_norm(r) if self.layer_norm is not None else r
+        )
         h: Float[Tensor, "batch d_mlp"] = torch.nn.functional.leaky_relu(
-            r @ self.W_in + self.b_in, negative_slope=self.leaky_relu_slope
+            r_in @ self.W_in + self.b_in, negative_slope=self.leaky_relu_slope
         )
         o: Float[Tensor, "batch d_model"] = h @ self.W_out + self.b_out
         return o
 
 
 class ResidualMLP(nn.Module):
-    def __init__(
-        self,
-        num_x: int,
-        d_model: int,
-        d_mlp: int,
-        out_init_scale: float = 0.1,
-        leaky_relu_slope: float = 0.0,
-        num_blocks: int = 4,
-    ):
+    def __init__(self, config: ResidualMLPConfig):
         super().__init__()
-        self.num_x = num_x
-        self.d_in = num_x + 1  # x plus the scalar c
-        self.d_model = d_model
-        self.d_mlp = d_mlp
-        self.leaky_relu_slope = leaky_relu_slope
-        self.num_blocks = num_blocks
-        assert d_model >= self.d_in, "d_model must fit the input coordinates"
+        self.config = config
+        self.num_x = config.num_x
+        self.d_in = config.num_x + 1  # x plus the scalar c
+        self.d_model = config.d_model
+        self.d_mlp = config.d_mlp
+        self.leaky_relu_slope = config.leaky_relu_slope
+        self.num_blocks = config.num_blocks
+        assert config.d_model >= self.d_in, "d_model must fit the input coordinates"
 
         # Fixed embedding W_E = [I; 0], shape (d_in, d_model); unembed = W_E^T.
-        W_E: Float[Tensor, "d_in d_model"] = torch.zeros(self.d_in, d_model)
+        W_E: Float[Tensor, "d_in d_model"] = torch.zeros(self.d_in, config.d_model)
         W_E[:, : self.d_in] = torch.eye(self.d_in)
         self.register_buffer("W_E", W_E)
         self.register_buffer("W_U", W_E.t().contiguous())  # (d_model, d_in)
 
         self.blocks = nn.ModuleList(
             [
-                ResidualMLPBlock(d_model, d_mlp, leaky_relu_slope)
-                for _ in range(num_blocks)
+                ResidualMLPBlock(
+                    config.d_model,
+                    config.d_mlp,
+                    config.leaky_relu_slope,
+                    config.layer_norm,
+                )
+                for _ in range(config.num_blocks)
             ]
         )
-        self.reset_parameters(out_init_scale)
+        self.reset_parameters(config.out_init_scale)
 
     def reset_parameters(self, out_init_scale: float = 0.1):
         for block in self.blocks:
             block.reset_parameters(out_init_scale)
+
+    def save(self, path: str, **extra):
+        """Save weights + config (and any extra top-level checkpoint fields,
+        e.g. optimizer state, training metadata) to `path`."""
+        torch.save(
+            {"model": self.state_dict(), "config": self.config.to_dict(), **extra},
+            path,
+        )
+
+    @classmethod
+    def load(cls, path: str, map_location=None) -> tuple["ResidualMLP", dict]:
+        """Load a checkpoint saved by `save()`. Returns (model, full checkpoint
+        dict) so callers can still reach any extra fields (opt state, iter,
+        training metadata) that rode along in the checkpoint."""
+        ck = torch.load(path, map_location=map_location)
+        model = cls(ResidualMLPConfig.from_dict(ck["config"]))
+        model.load_state_dict(ck["model"])
+        return model, ck
 
     def forward(
         self, x_full: Float[Tensor, "batch d_in"], return_cache: bool = False

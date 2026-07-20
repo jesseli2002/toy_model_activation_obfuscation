@@ -292,10 +292,10 @@ def plot_probe_gap(tag, hidden_layers, gap, plot_dir):
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model, cfg = load_model(args.tag, args.ckpt, device)
-    num_x = cfg["num_x"]
-    num_blocks = cfg.get("num_blocks", 4)
-    penalty_layers = cfg.get("penalty_layers") or list(range(1, num_blocks))
+    model, ck = load_model(args.tag, args.ckpt, device)
+    num_x = model.num_x
+    num_blocks = model.num_blocks
+    penalty_layers = ck.get("penalty_layers") or list(range(1, num_blocks))
     hidden_layers = list(range(1, num_blocks))
     all_layers = list(range(0, num_blocks + 1))  # 0=embed .. num_blocks=output
 
@@ -304,16 +304,8 @@ def main(args):
 
     base_model = None
     if args.baseline_path:
-        bck = torch.load(args.baseline_path, map_location=device)
-        bcfg = bck["config"]
-        base_model = ResidualMLP(
-            bcfg["num_x"],
-            bcfg["d_model"],
-            bcfg["d_mlp"],
-            leaky_relu_slope=bcfg.get("leaky_relu_slope", 0.0),
-            num_blocks=bcfg.get("num_blocks", 4),
-        ).to(device)
-        base_model.load_state_dict(bck["model"])
+        base_model, _ = ResidualMLP.load(args.baseline_path, map_location=device)
+        base_model = base_model.to(device)
         base_model.eval()
 
     lines = []
@@ -325,8 +317,8 @@ def main(args):
     emit(f"# Step 3 adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
     emit()
     emit(
-        f"config: num_x={num_x} d_model={cfg['d_model']} d_mlp={cfg['d_mlp']} "
-        f"num_blocks={num_blocks} lam={cfg.get('lam')} init={cfg.get('init')} "
+        f"config: num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
+        f"num_blocks={num_blocks} lam={ck.get('lam')} init={ck.get('init')} "
         f"penalty_layers={penalty_layers}"
     )
     emit()

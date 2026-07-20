@@ -44,7 +44,7 @@ import torch
 from jaxtyping import Float
 from torch import Tensor
 
-from model import ResidualMLP
+from model import ResidualMLP, ResidualMLPConfig
 
 
 def build_exact_model(
@@ -53,7 +53,7 @@ def build_exact_model(
     assert d_mlp >= num_x, "need at least num_x hidden neurons per block"
     # The exact construction wires blocks 0 and 1; extra blocks stay ~identity.
     assert num_blocks >= 2, "exact construction requires num_blocks >= 2"
-    m = ResidualMLP(num_x, d_model, d_mlp, num_blocks=num_blocks)
+    m = ResidualMLP(ResidualMLPConfig(num_x, d_model, d_mlp, num_blocks=num_blocks))
     with torch.no_grad():
         for p in m.parameters():
             p.zero_()

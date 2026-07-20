@@ -10,13 +10,20 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
     - Cross-post to LessWrong
 
 ### Project assumptions
+#### Theoretical assumptions
+I think these can only be experimentally validated by scaling up the model to an LLM, but there's theoretical reasons to make these assumptions
 - The learned function (or functions?) is representative of a computation a larger model would need to do
 - The model architecture is representative of larger model's capabilities.
+    - It should be: model architecture is subset of transformer architecture
 - The general concept (prereqs to bad feature are present but benign at earlier layers; bad feature gets represented non-linearly in later layers) is a good model of how bad behaviours (and their prerequisites) get represented in larger models
-- Model architecture/training method is capable of implementing obfuscation
-- Toy model is cheap to train and will continue to be cheap to train - runs taking <30 min on local laptop.
 - The approach we're taking is representative of what could happen if you "train against a probe" (?)
-    - Maybe it doesn't need to be: Being able to show a concrete example of nonlinear feature representation under optimization pressure, would be interesting in and of itself.
+    - Maybe it doesn't need to be: Being able to show a concrete example of nonlinear feature representation under optimization pressure, would be interesting in and of itself (?)
+
+#### Empirical assumptions
+- Toy model is cheap to train and will continue to be cheap to train - runs taking <30 min on local laptop.
+    - Can be tackled
+- Model architecture/training method is capable of implementing obfuscation
+- Training against probe results leads to obfuscation
 
 ### Stretch goals
 - See if obfuscation behaviour occurs when training to minimize activation on probe, rather than directly on probe's ability to measure things
@@ -40,8 +47,15 @@ A common hypothesis: Training against a probe just makes the model learn to obfu
 
 
 ## Daily log
+### 2026-07-20
+- Claude has pointed out that I have no LayerNorm blocks
+
 ### 2026-07-19
-- Running with 4 MLP blocks, model doesn't consistently fully learn the saturation function, even with $\lambda = 0.05$, although I suppose I haven't checked that the loss terms are scaled such that $\lambda \approx 0.5$ is reasonable
+- Running with 4 MLP blocks, model doesn't consistently fully learn the saturation function, even with $\lambda = 0.05$, although I suppose I haven't checked that the loss terms are scaled such that $\lambda \approx 0.5$ is reasonable. See this figure for $\lambda=0.1$:
+![One of the functions isn't saturating](img/2026-06-19/adv_lam0.1_scratch_curves.png)
+    - Note: `d_mlp = num_x`, so if model learns at least half the functions, then `c` must be represented somehow at layer 1.
+
+
 - In any case, it's easier to just stick more MLP blocks on to see if something works, then dial # of blocks back later.
 - Result: Logistic regression (and Linear Discriminant Analysis) probes can still detect $c$, but training process hides it from difference-of-means probe. First figure shows that model still learns the saturation function, although it's noisy:
 ![](img/2026-06-19/adv_NB8_lam0.1_scratch_curves.png)
@@ -55,6 +69,7 @@ In theory, the model could basically do this and achieve arbitrarily low loss on
 ![](img/2026-06-19/figure4.png)
 
 This is an interesting result, but the model is still storing the value of $c$ linearly. Ideas for harder pressure:
+- Divide by standard deviation in direction of $c$ (or variance if using distance squared)
 - Use LDA (closed-form) expression against model
 - Simultaneously adversarially train a logistic regression model
 
