@@ -99,6 +99,7 @@ from sklearn.preprocessing import StandardScaler
 from data import sample_batch
 from model import ResidualMLP
 from paths import log_dir
+from paths import plot_dir as get_plot_dir
 from train_model import eval_max_err
 from train_model_plot import plot_learned_curves
 from train_probe import binary_dataset, capture_layers, load_model
@@ -129,13 +130,12 @@ def binary_probe_metrics(
     n_train,
     n_test,
     g,
-    tag=None,
-    out_dir=None,
+    plot_dir=None,
 ):
     """DoM / logreg / LDA accuracy for one layer, one (c_lo, c_hi) pair.
 
-    If tag and out_dir are given, also writes the histogram + PCA separation
-    plot for this layer/pair (see train_probe.plot_probe).
+    If plot_dir is given, also writes the histogram + PCA separation plot for
+    this layer/pair (see train_probe.plot_probe).
     """
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -158,20 +158,20 @@ def binary_probe_metrics(
     logreg.fit(X_tr, y_tr)
     lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
 
-    if tag is not None and out_dir is not None:
+    if plot_dir is not None:
         mu_lo = r_lo_tr.mean(dim=0)
         mu_hi = r_hi_tr.mean(dim=0)
         w_dom = (mu_hi - mu_lo).cpu().numpy()
         midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
         plot_probe_separation(
-            f"{tag}_c{c_lo:g}-{c_hi:g}",
+            f"c{c_lo:g}-{c_hi:g}",
             [layer],
             w_dom,
             midpoint,
             logreg,
             X_te,
             y_te,
-            out_dir,
+            plot_dir,
         )
 
     return {
@@ -202,7 +202,7 @@ def ridge_r2(model, layer, n_train, n_test, alpha, g):
 # ----------------------------------------------------------------------------
 # Plots
 # ----------------------------------------------------------------------------
-def plot_training_traces(tag, history, hidden_layers, out_dir):
+def plot_training_traces(tag, history, hidden_layers, plot_dir):
     pts = [h for h in history if h.get("l_task") is not None]
     if not pts:
         return
@@ -234,13 +234,13 @@ def plot_training_traces(tag, history, hidden_layers, out_dir):
 
     fig.suptitle(f"adversarial training traces ({tag})")
     fig.tight_layout()
-    path = os.path.join(out_dir, f"{tag}_training.png")
+    path = os.path.join(plot_dir, f"{tag}_training.png")
     fig.savefig(path, dpi=120)
     plt.close(fig)
     print(f"[plot] wrote {path}")
 
 
-def plot_heldout_r2(tag, layers, r2_adv, r2_base, out_dir):
+def plot_heldout_r2(tag, layers, r2_adv, r2_base, plot_dir):
     x = np.arange(len(layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
     if r2_base is not None:
@@ -258,13 +258,13 @@ def plot_heldout_r2(tag, layers, r2_adv, r2_base, out_dir):
     ax.set_title(f"held-out c recovery across [1,2] ({tag})")
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    path = os.path.join(out_dir, f"{tag}_heldout_r2.png")
+    path = os.path.join(plot_dir, f"{tag}_heldout_r2.png")
     fig.savefig(path, dpi=120)
     plt.close(fig)
     print(f"[plot] wrote {path}")
 
 
-def plot_probe_gap(tag, hidden_layers, gap, out_dir):
+def plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     x = np.arange(len(hidden_layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
     for off, key, lbl in [
@@ -282,7 +282,7 @@ def plot_probe_gap(tag, hidden_layers, gap, out_dir):
     ax.legend(fontsize=8)
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    path = os.path.join(out_dir, f"{tag}_probe_gap.png")
+    path = os.path.join(plot_dir, f"{tag}_probe_gap.png")
     fig.savefig(path, dpi=120)
     plt.close(fig)
     print(f"[plot] wrote {path}")
@@ -299,8 +299,8 @@ def main(args):
     hidden_layers = list(range(1, num_blocks))
     all_layers = list(range(0, num_blocks + 1))  # 0=embed .. num_blocks=output
 
-    out_dir = "plot"
-    os.makedirs(out_dir, exist_ok=True)
+    plot_dir = get_plot_dir(args.tag)
+    os.makedirs(plot_dir, exist_ok=True)
 
     base_model = None
     if args.baseline_path:
@@ -356,8 +356,7 @@ def main(args):
             args.n_train,
             args.n_test,
             g,
-            tag=args.tag,
-            out_dir="plot",
+            plot_dir=plot_dir,
         )
         gap[lyr] = m
         pen = "yes" if lyr in penalty_layers else "no"
@@ -465,12 +464,12 @@ def main(args):
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             history = json.load(f)
-        plot_training_traces(args.tag, history, hidden_layers, out_dir)
-    plot_probe_gap(args.tag, hidden_layers, gap, out_dir)
-    plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, out_dir)
-    plot_learned_curves(model, args.tag, out_dir)
+        plot_training_traces(args.tag, history, hidden_layers, plot_dir)
+    plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
+    plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, plot_dir)
+    plot_learned_curves(model, args.tag, plot_dir)
     if base_model is not None:
-        plot_learned_curves(base_model, f"{args.tag}_baseline", out_dir)
+        plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
 
     if args.show:
         plt.show()
