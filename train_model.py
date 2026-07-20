@@ -29,7 +29,7 @@ from torch import Tensor
 
 import config
 from data import sample_batch
-from model import ResidualMLP
+from model import ResidualMLP, ResidualMLPConfig
 from paths import ckpt_dir, log_dir, run_dir
 
 
@@ -56,6 +56,11 @@ def parse_args():
         type=float,
         default=config.LEAKY_RELU_SLOPE,
         help="negative slope for LeakyReLU; 0.0 = plain ReLU",
+    )
+    p.add_argument(
+        "--layer-norm",
+        action="store_true",
+        help="apply LayerNorm to each block's input before W_in",
     )
     p.add_argument(
         "--warm-start",
@@ -137,14 +142,16 @@ def main():
     os.makedirs(run_log_dir, exist_ok=True)
 
     torch.manual_seed(args.seed)
-    model = ResidualMLP(
-        num_x,
-        args.d_model,
-        d_mlp,
+    model_config = ResidualMLPConfig(
+        num_x=num_x,
+        d_model=args.d_model,
+        d_mlp=d_mlp,
+        num_blocks=args.num_blocks,
         out_init_scale=args.out_init_scale,
         leaky_relu_slope=args.leaky_relu_slope,
-        num_blocks=args.num_blocks,
-    ).to(device)
+        layer_norm=args.layer_norm,
+    )
+    model = ResidualMLP(model_config).to(device)
     if args.warm_start:
         from analytic import build_exact_model
 
@@ -175,22 +182,12 @@ def main():
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
 
     def save(path, it):
-        torch.save(
-            {
-                "iter": it,
-                "model": model.state_dict(),
-                "opt": opt.state_dict(),
-                "best_loss": best_loss,
-                "config": {
-                    "num_x": num_x,
-                    "d_model": args.d_model,
-                    "d_mlp": d_mlp,
-                    "num_blocks": args.num_blocks,
-                    "seed": args.seed,
-                    "leaky_relu_slope": args.leaky_relu_slope,
-                },
-            },
+        model.save(
             path,
+            iter=it,
+            opt=opt.state_dict(),
+            best_loss=best_loss,
+            seed=args.seed,
         )
 
     print(

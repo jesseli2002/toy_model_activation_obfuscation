@@ -37,17 +37,10 @@ def main():
     args = parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     path = os.path.join(ckpt_dir(args.tag), f"{args.ckpt}.pt")
-    ck = torch.load(path, map_location=device)
-    cfg = ck["config"]
-    model = ResidualMLP(
-        cfg["num_x"],
-        cfg["d_model"],
-        cfg["d_mlp"],
-        leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
-        num_blocks=cfg.get("num_blocks", 4),  # 4 = pre-num_blocks-config default
-    ).to(device)
-    model.load_state_dict(ck["model"])
+    model, ck = ResidualMLP.load(path, map_location=device)
+    model = model.to(device)
     model.eval()
+    num_x = model.num_x
 
     g = torch.Generator(device=device).manual_seed(args.seed)
     worst = 0.0
@@ -55,18 +48,18 @@ def main():
     done = 0
     while done < args.n:
         b = min(args.batch, args.n - done)
-        x_full, y = sample_batch(b, cfg["num_x"], generator=g, device=device)
+        x_full, y = sample_batch(b, num_x, generator=g, device=device)
         pred = model.task_output(x_full)
         err = (pred - y).abs()
         worst = max(worst, err.max().item())
         sse += (err**2).sum().item()
         done += b
-    mse = sse / (done * cfg["num_x"])
+    mse = sse / (done * num_x)
 
     status = "PASS" if worst < args.gate else "FAIL"
     print(
         f"[Gate 1] tag={args.tag} ckpt={args.ckpt} iter={ck['iter']} "
-        f"num_x={cfg['num_x']} d_model={cfg['d_model']} d_mlp={cfg['d_mlp']}"
+        f"num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp}"
     )
     print(
         f"[Gate 1] n={done}  MSE={mse:.3e}  max_abs_err={worst:.3e}  "

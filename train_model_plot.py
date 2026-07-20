@@ -110,16 +110,7 @@ def plot_learned_curves(
 
 def plot_curves(tag, ckpt, plot_dir):
     path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
-    ck = torch.load(path, map_location="cpu")
-    cfg = ck["config"]
-    model = ResidualMLP(
-        cfg["num_x"],
-        cfg["d_model"],
-        cfg["d_mlp"],
-        leaky_relu_slope=cfg.get("leaky_relu_slope", 0.0),
-        num_blocks=cfg.get("num_blocks", 4),  # 4 = pre-num_blocks-config default
-    )
-    model.load_state_dict(ck["model"])
+    model, _ = ResidualMLP.load(path, map_location="cpu")
     model.eval()
     plot_learned_curves(model, tag, plot_dir)
 
