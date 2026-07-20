@@ -14,6 +14,8 @@
 I'd like to implement LayerNorm as an optional (but on-by-default for new constructions) feature in model.py.
 - Implement LayerNorm
 
+###
+Another direction I'd like to explore: What would it look like to simultaneously train a model and an adversarial logistic regression probe? Would you need two simultaneous optimizers? What are the pitfalls?
 
 ### Adversary ideas
 I have some ideas on variations to the probe loss (`l_probe`) in train_adversarial.py:
@@ -44,21 +46,14 @@ Based on your feedback, I think we should do the following:
 
 Is this reasonable?
 
-Sounds good. I'd like you to make an implementation plan for a Sonnet subagent. Note that you should base off of `config` branch, which will be merged to master soon (pending at most minor changes). In particular, there's now an option for legacy defaults to help with backward compatibility; probably that needs to be set so that the legacy loss variant is squared unnormalized.
-
-#### (next response)
-
-
-- Scale loss term by standard deviation of data in direction of difference-of-means, so that (normalized) standard deviation is 1
-    - Example of thing model could learn: Putting activations for c=1 in the middle, and c=2 on either end.
-- Train on LDA discrimination ability
-- Train on absolute distance between means, rather than distance squared
+Let's change the new default to LDA-based; it seems to have the best chance of finding something new. I'd like you to make an implementation plan for a Sonnet subagent. Note that in the code, there's now an option for legacy defaults to help with backward compatibility; probably that needs to be set so that the legacy loss variant is squared unnormalized.
 
 
 - Adversarial simultaneous training of logistic regression probe and model
 - Claude mentioned in previous discussion that train_model and train_adversarial were different enough to make unifying train_model and train_adversarial challenging, without introducing some sort of loss function hook.
 
-- Penalize lopsided variances (where some axes have much smaller variances than others)
+- Penalize lopsided variances (where some axes have much smaller variances than others) (??)
+
 ## Miscellaneous code quality
 I'm trying to avoid scattering default behaviour/options across the codebase, to make it easier to isolate exactly which line is responsible for a given default. To that extent, I need you to help with moving defaults away from the CLI and into the model config object (ResidualMLPConfig).
 - Off the top of my head, whether layer_norm is enabled, in train_adversarial.py, is de-facto defaulted by CLI rather than by ResidualMLPConfig.
@@ -66,7 +61,11 @@ I'm trying to avoid scattering default behaviour/options across the codebase, to
 
 Audit train_adversarial.py for other default CLI options.
 
+### train_adversarial.py
+There's gotta be a cleaner, less redundant interface than what's going on with delta_means_from_x, probe_delta_means, and probe_caches. Can you think through some alternatives that make logical sense?
+
 ### Tests?
 What unit tests could be implemented?
 
 ## Environment
+- Github MCP seems to keep making the worktree de-sync from the remote origin.

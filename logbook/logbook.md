@@ -21,7 +21,6 @@ I think these can only be experimentally validated by scaling up the model to an
 
 #### Empirical assumptions
 - Toy model is cheap to train and will continue to be cheap to train - runs taking <30 min on local laptop.
-    - Can be tackled
 - Model architecture/training method is capable of implementing obfuscation
 - Training against probe results leads to obfuscation
 
@@ -47,8 +46,6 @@ I think these can only be experimentally validated by scaling up the model to an
 
 
 ## Daily log
-### 2026-07-20
-- Claude has pointed out that I have no LayerNorm blocks
 
 ### 2026-07-19
 - Running with 4 MLP blocks, model doesn't consistently fully learn the saturation function, even with $\lambda = 0.05$, although I suppose I haven't checked that the loss terms are scaled such that $\lambda \approx 0.5$ is reasonable. See this figure for $\lambda=0.1$:

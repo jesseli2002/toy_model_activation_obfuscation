@@ -16,11 +16,11 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
-    - Make sure to exit worktrees once done, so that the branches get cleared out. If you're unsure if you're done (e.g. waiting on approval review), remind the user to let you know when approval is ready so that you can exit the worktree.
 - By default, do not set GitHub PRs as draft.
 
 ## Autonomous engineering
-Due to machine resource limitations, realistically at most one agent should be running training code at a time. If tasking subagents to complete work, this should be considered for task allocation.
+- Due to machine resource limitations, realistically at most one agent should be running training code at a time. If tasking subagents to complete work, this should be considered for task allocation.
+- For pure code-location tasks (Explore agent, "quick"/"medium" breadth), use model: "haiku". Reserve Sonnet/Opus for exploration that requires judging ambiguous matches or synthesizing findings.
 
 ## Background processes
 Each Bash call runs in its own PID namespace, so a sandboxed `ps` sees only its own invocation, and plain `&`/`nohup`/`setsid` processes are killed when the invocation ends.
