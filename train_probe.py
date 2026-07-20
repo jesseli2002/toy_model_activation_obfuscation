@@ -192,6 +192,7 @@ def plot_probe(
     w_dom: Float[np.ndarray, "d"],
     midpoint,
     logreg,
+    lda,
     X_test: Float[np.ndarray, "n d"],
     y_test: Bool[np.ndarray, "n"],
     plot_dir,
@@ -202,6 +203,7 @@ def plot_probe(
 
     proj_dom = X_test @ w_dom - midpoint
     proj_logreg = logreg.decision_function(X_test)
+    proj_lda = lda.decision_function(X_test)
     pca_xy = PCA(n_components=2).fit_transform(X_test)
 
     # logreg's decision boundary direction in raw (unstandardized) feature
@@ -226,13 +228,16 @@ def plot_probe(
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
 
-    fig, (ax_dom, ax_logreg, ax_pca, ax_logreg_resid) = plt.subplots(
-        1, 4, figsize=(20, 6)
-    )
+    fig, (
+        (ax_dom, ax_logreg, ax_lda),
+        (ax_pca, ax_logreg_resid, ax_unused),
+    ) = plt.subplots(2, 3, figsize=(15, 12))
+    ax_unused.axis("off")
 
     for ax, proj, title in (
         (ax_dom, proj_dom, "DoM projection"),
         (ax_logreg, proj_logreg, "logreg decision function"),
+        (ax_lda, proj_lda, "LDA decision function"),
     ):
         ax.hist(proj[lo_mask], bins=60, alpha=0.6, label="c=1")
         ax.hist(proj[hi_mask], bins=60, alpha=0.6, label="c=2")
@@ -277,6 +282,7 @@ def plot_probe(
 
 def main():
     args = parse_args()
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from sklearn.linear_model import LogisticRegression
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
@@ -323,6 +329,17 @@ def main():
     logreg.fit(X_train, y_train)
     logreg_acc = float(logreg.score(X_test, y_test))
 
+    # --- LDA (plotted alongside DoM/logreg as a diagnostic only -- see the
+    # module docstring for why it's not a Gate 2 metric). The residual-stream
+    # within-class covariance is near-singular (activations occupy far fewer
+    # than d_model effective dimensions), so the unregularized 'svd' solver's
+    # decision function blows up to ~1e7; shrinkage keeps it numerically sane.
+    lda = make_pipeline(
+        StandardScaler(),
+        LinearDiscriminantAnalysis(solver="lsqr", shrinkage=0.5),
+    )
+    lda.fit(X_train, y_train)
+
     print(
         f"[Gate 2] tag={args.tag} ckpt={args.ckpt} num_x={num_x} layers={args.layers} "
         f"n_train={args.n_train}/class n_test={args.n_test}/class"
@@ -343,7 +360,9 @@ def main():
 
     plot_dir = get_plot_dir(args.tag)
     os.makedirs(plot_dir, exist_ok=True)
-    plot_probe(args.tag, args.layers, w_dom, midpoint, logreg, X_test, y_test, plot_dir)
+    plot_probe(
+        args.tag, args.layers, w_dom, midpoint, logreg, lda, X_test, y_test, plot_dir
+    )
 
     if args.steer:
         assert len(args.layers) == 1, "--steer needs a single --layers entry"
