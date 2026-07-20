@@ -1,4 +1,4 @@
-"""Step 3 diagnostics — did the adversarially-trained model HIDE c or ERASE it?
+"""Step 3 diagnostics — did the adversarially-trained model HIDE c or ERASED it?
 
 Loads an adversarial checkpoint (from train_adversarial.py) and produces the
 report that IS the Step-3 deliverable. It distinguishes the outcomes the plan
@@ -169,6 +169,7 @@ def binary_probe_metrics(
             w_dom,
             midpoint,
             logreg,
+            lda,
             X_te,
             y_te,
             plot_dir,
