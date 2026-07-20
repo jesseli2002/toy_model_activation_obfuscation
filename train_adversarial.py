@@ -15,13 +15,16 @@ probe) while still computing sat(x,-c,c) correctly across the full c-range.
             the task trained across ALL c is the single most important design
             choice: it stops "c not recoverable at held-out c" from being
             confounded with "the model was never trained there".
-  L_probe — sum over the *hidden* residual layers of the squared L2 norm of the
-            difference of class means, on a SEPARATE pinned sub-batch (half c=1,
-            half c=2, x resampled):
-                sum_{l in hidden} || mean(r_l | c=2) - mean(r_l | c=1) ||^2
-            This *is* the DoM probe's separability; driving it to 0 makes the two
-            class means coincide at every hidden layer -> DoM accuracy -> chance.
-            Closed form, no inner probe-training loop.
+  L_probe — sum over the *hidden* residual layers of a penalty on the difference
+            of class means, on a SEPARATE pinned sub-batch (half c=1, half c=2, x
+            resampled). The exact penalty is selectable via --probe-loss (see
+            config.PROBE_LOSS_CHOICES / plans/new_probe_losses.md); default is
+            'lda' (full-covariance-whitened Fisher ratio), with 'squared'
+            (sum_{l in hidden} || mean(r_l|c=2) - mean(r_l|c=1) ||^2) preserved as
+            the legacy variant for reproducing pre-change runs. Driving any
+            variant to 0 makes the two class means coincide (in the appropriate
+            metric) at every hidden layer -> DoM accuracy -> chance. Closed form,
+            no inner probe-training loop.
 
 "Hidden" layers are the residual-stream caches strictly between the embedding
 (cache 0 = input; c sits verbatim in a fixed coordinate, nothing to hide/train)
@@ -38,6 +41,8 @@ erase linear c-information across the range ("erased")?
 
 Usage:
     # primary run: warm-start a capable model, then apply probe pressure
+    # (default --probe-loss lda; pass --probe-loss squared to reproduce the
+    # pre-change canonical run exactly)
     python train_adversarial.py --tag adv1 --lam 0.5 \
         --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
     # from scratch (conflates learning + hiding; kept for contrast)
@@ -111,6 +116,39 @@ def parse_args():
         default="all",
         help="'all' = every hidden layer (1..num_blocks-1), or a comma-separated "
         "subset e.g. '1,2,3'.",
+    )
+    p.add_argument(
+        "--probe-loss",
+        choices=config.PROBE_LOSS_CHOICES,
+        default=config.AdversarialConfig.probe_loss,
+        help="per-layer penalty on the class-mean gap. 'lda' (default) is a "
+        "full-covariance-whitened Fisher-ratio objective, immune to both uniform "
+        "shrink and single-direction variance-inflation cheats. 'squared' "
+        "reproduces the original hardcoded penalty exactly (use this to "
+        "reproduce legacy runs). See module docstring / plans/new_probe_losses.md.",
+    )
+    p.add_argument(
+        "--probe-loss-eps",
+        type=float,
+        default=config.AdversarialConfig.probe_loss_eps,
+        help="machine-eps-scale floor for variance denominators / abs smoothing "
+        "(squared-var, absolute-std, absolute).",
+    )
+    p.add_argument(
+        "--lda-shrinkage",
+        type=float,
+        default=config.AdversarialConfig.lda_shrinkage,
+        help="relative ridge for the LDA within-class covariance inverse: "
+        "reg = shrinkage * mean(diag(S_W)). Spectrum-relative, not machine-eps, "
+        "since S_W is a d_model x d_model matrix over rank-deficient post-ReLU "
+        "activations (lda variant only).",
+    )
+    p.add_argument(
+        "--probe-loss-detach-denom",
+        action="store_true",
+        help="detach the variance/covariance denominator so no gradient flows "
+        "through it (squared-var, absolute-std, lda). Default off: the live "
+        "denominator gives the true Fisher-ratio / LDA gradient.",
     )
     # Architecture (only used for --init scratch; warmstart reads the checkpoint).
     p.add_argument("--num-x", type=int, default=config.NUM_X)
@@ -213,6 +251,62 @@ def probe_delta_means(model, num_x, n_per_class, layers, generator, device):
     return delta_means_from_x(model, xf_lo, xf_hi, layers)
 
 
+def probe_caches(model, num_x, n_per_class, layers, generator, device):
+    """Differentiable per-layer raw activation caches for pinned c=1 / c=2
+    sub-batches (x resampled from `generator` each call), sliced to `layers`.
+    Sibling to probe_delta_means: probe_penalty needs the full per-class
+    activations (not just the mean difference) to compute within-class
+    spread/covariance."""
+    xf_lo, _ = sample_fixed_c(n_per_class, num_x, 1.0, generator, device)
+    xf_hi, _ = sample_fixed_c(n_per_class, num_x, 2.0, generator, device)
+    _, caches_lo = model.forward(xf_lo, return_cache=True)
+    _, caches_hi = model.forward(xf_hi, return_cache=True)
+    return (
+        {lyr: caches_lo[lyr] for lyr in layers},
+        {lyr: caches_hi[lyr] for lyr in layers},
+    )
+
+
+def probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach):
+    """Sum over `layers` of the probe-loss penalty on the class-mean gap.
+
+    For 'squared'/'absolute' this is a variant-independent function of Δμ
+    alone; the more expensive within-class-spread variants need the raw
+    per-class activations `a`/`b` (caches_lo[l] / caches_hi[l]).
+    """
+    total = 0.0
+    for lyr in layers:
+        a, b = caches_lo[lyr], caches_hi[lyr]  # (N, d) each, differentiable
+        mu = b.mean(0) - a.mean(0)  # Δμ, (d,)
+        if variant == "squared":
+            total = total + (mu**2).sum()
+        elif variant == "absolute":
+            total = total + torch.sqrt((mu**2).sum() + eps**2)
+        elif variant in ("squared-var", "absolute-std"):
+            u = mu / (mu.norm() + eps)
+            if detach:
+                u = u.detach()
+            var = 0.5 * (a @ u).var(unbiased=False) + 0.5 * (b @ u).var(unbiased=False)
+            if detach:
+                var = var.detach()
+            if variant == "squared-var":
+                total = total + (mu**2).sum() / (var + eps)
+            else:
+                total = total + mu.norm() / torch.sqrt(var + eps)
+        elif variant == "lda":
+            ac, bc = a - a.mean(0), b - b.mean(0)
+            n = a.shape[0] + b.shape[0]
+            S_W = (ac.T @ ac + bc.T @ bc) / n  # (d, d) pooled within-class cov
+            reg = shrinkage * torch.diagonal(S_W).mean()
+            S = S_W + reg * torch.eye(S_W.shape[0], device=S_W.device, dtype=S_W.dtype)
+            if detach:
+                S = S.detach()
+            total = total + mu @ torch.linalg.solve(S, mu)
+        else:
+            raise ValueError(f"unknown probe_loss variant: {variant!r}")
+    return total
+
+
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -273,6 +367,19 @@ def main(args):
             f"layers). Nothing to hide against."
         )
 
+    adv_config = config.AdversarialConfig(
+        lam=args.lam,
+        lam_warmup_iters=args.lam_warmup_iters,
+        penalty_layers=hidden_layers,
+        init=args.init,
+        warmstart_path=args.warmstart_path if args.init == "warmstart" else None,
+        seed=args.seed,
+        probe_loss=args.probe_loss,
+        probe_loss_eps=args.probe_loss_eps,
+        lda_shrinkage=args.lda_shrinkage,
+        probe_loss_detach_denom=args.probe_loss_detach_denom,
+    )
+
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     gen = torch.Generator(device=device).manual_seed(args.seed + 1)
 
@@ -300,13 +407,9 @@ def main(args):
             iter=it,
             opt=opt.state_dict(),
             best_loss=best_loss,
-            seed=args.seed,
-            # adversarial metadata (not architecture, so kept out of "config")
-            lam=args.lam,
-            lam_warmup_iters=args.lam_warmup_iters,
-            penalty_layers=hidden_layers,
-            init=args.init,
-            warmstart_path=args.warmstart_path if args.init == "warmstart" else None,
+            # adversarial metadata (not architecture, so kept out of "config");
+            # includes seed, so it is not passed separately here.
+            **adv_config.to_dict(),
         )
 
     # Fixed eval batch, drawn once from gen so the delta-mean trace reflects the
@@ -324,6 +427,7 @@ def main(args):
         f"[adv] tag={args.tag} init={args.init} lam={args.lam} "
         f"penalty_layers={hidden_layers} num_blocks={num_blocks} "
         f"bs={args.batch_size} probe_bs={args.probe_batch_size}/class "
+        f"probe_loss={args.probe_loss} "
         f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
 
@@ -340,10 +444,18 @@ def main(args):
         l_task = torch.mean((pred - y) ** 2)
 
         # probe penalty on a separate pinned sub-batch (x resampled)
-        deltas = probe_delta_means(
+        caches_lo, caches_hi = probe_caches(
             model, num_x, args.probe_batch_size, hidden_layers, gen, device
         )
-        l_probe = sum((d**2).sum() for d in deltas.values())
+        l_probe = probe_penalty(
+            caches_lo,
+            caches_hi,
+            hidden_layers,
+            args.probe_loss,
+            args.probe_loss_eps,
+            args.lda_shrinkage,
+            args.probe_loss_detach_denom,
+        )
 
         if args.lam_warmup_iters > 0:
             lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
