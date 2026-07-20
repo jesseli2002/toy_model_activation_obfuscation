@@ -85,15 +85,15 @@ def parse_args():
     return p.parse_args()
 
 
-def load_model(tag: str, ckpt: str, device: str) -> ResidualMLP:
-    """Callers that also need the raw checkpoint dict (opt state, iter,
-    adversarial-run metadata, ...) should call ResidualMLP.load() directly
-    instead -- this wrapper is for the common case of just wanting the model."""
+def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
+    """Returns (model, full checkpoint dict) -- the dict carries any non-
+    architecture fields (opt state, iter, adversarial-run metadata, ...) that
+    rode along in the checkpoint; architecture lives on model.config."""
     path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
-    model, _ = ResidualMLP.load(path, map_location=device)
+    model, ck = ResidualMLP.load(path, map_location=device)
     model = model.to(device)
     model.eval()
-    return model
+    return model, ck
 
 
 @torch.no_grad()
@@ -281,7 +281,7 @@ def main():
     from sklearn.pipeline import make_pipeline
     from sklearn.preprocessing import StandardScaler
 
-    model = load_model(args.tag, args.ckpt, device)
+    model, ck = load_model(args.tag, args.ckpt, device)
     num_x = model.num_x
     num_blocks = model.num_blocks
     for layer in args.layers:

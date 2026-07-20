@@ -15,6 +15,7 @@ The nonlinearity is LeakyReLU(negative_slope=leaky_relu_slope); leaky_relu_slope
 """
 
 import dataclasses
+import warnings
 from dataclasses import dataclass
 
 import torch
@@ -67,11 +68,19 @@ class ResidualMLPConfig:
     def from_dict(cls, d: dict) -> "ResidualMLPConfig":
         """Build a config from a checkpoint's config dict: fields the dict
         predates are backfilled from _LEGACY_DEFAULTS (not the field default
-        above), and keys this version of the dataclass doesn't recognize are
-        dropped."""
-        known_fields = {f.name for f in dataclasses.fields(cls)}
-        present = {k: v for k, v in d.items() if k in known_fields}
-        return cls(**{**cls._LEGACY_DEFAULTS, **present})
+        above)."""
+        known = {f.name for f in dataclasses.fields(cls)}
+        unknown = d.keys() - known
+        if unknown:
+            warnings.warn(
+                f"ResidualMLPConfig.from_dict: dropping unrecognized key(s) "
+                f"{sorted(unknown)} -- checkpoint saved by a newer version?"
+            )
+        present = {k: v for k, v in d.items() if k in known}
+        filled = (
+            cls._LEGACY_DEFAULTS | present
+        )  # union over dicts, preferring `present`
+        return cls(**filled)
 
 
 class ResidualMLPBlock(nn.Module):
