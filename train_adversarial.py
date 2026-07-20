@@ -78,8 +78,8 @@ def parse_args():
     p.add_argument(
         "--init",
         choices=["warmstart", "scratch"],
-        default="warmstart",
-        help="warmstart (default) loads a capable model then applies probe "
+        default="scratch",
+        help="warmstart loads a capable model then applies probe "
         "pressure; scratch conflates learning the task with hiding c.",
     )
     p.add_argument(
