@@ -1,4 +1,4 @@
-"""Per-run output directory layout: runs/<tag>/{checkpoints,logs}/."""
+"""Per-run output directory layout: runs/<tag>/{checkpoints,logs}/, plot/<tag>/."""
 
 import os
 
@@ -13,3 +13,7 @@ def ckpt_dir(tag: str) -> str:
 
 def log_dir(tag: str) -> str:
     return os.path.join(run_dir(tag), "logs")
+
+
+def plot_dir(tag: str) -> str:
+    return os.path.join("plot", tag)

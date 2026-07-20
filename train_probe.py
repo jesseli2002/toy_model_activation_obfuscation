@@ -38,6 +38,7 @@ from jaxtyping import Bool, Float
 from data import sample_fixed_c
 from model import ResidualMLP
 from paths import ckpt_dir
+from paths import plot_dir as get_plot_dir
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 torch.set_default_device(device)
@@ -138,7 +139,7 @@ def forward_steered(
 
 
 @torch.no_grad()
-def plot_steering(model, num_x, steer_layer, steer_vec, tag, out_dir):
+def plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
     xs = torch.linspace(-3, 3, 400, device=device)
     panels = [
         ("c=1, unsteered", 1.0, None, [1.0]),
@@ -185,7 +186,7 @@ def plot_steering(model, num_x, steer_layer, steer_vec, tag, out_dir):
         f"steer @ layer {steer_layer}"
     )
     fig.tight_layout()
-    path = os.path.join(out_dir, f"{tag}_L{steer_layer}_steer.png")
+    path = os.path.join(plot_dir, f"{tag}_L{steer_layer}_steer.png")
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
@@ -198,7 +199,7 @@ def plot_probe(
     logreg,
     X_test: Float[np.ndarray, "n d"],
     y_test: Bool[np.ndarray, "n"],
-    out_dir,
+    plot_dir,
 ):
     """n = test-set size (both classes concatenated), d = probed feature dim
     (sum of d_model over --layers)."""
@@ -274,7 +275,7 @@ def plot_probe(
     layer_str = "-".join(str(i) for i in layers)
     fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
     fig.tight_layout()
-    path = os.path.join(out_dir, f"{tag}_L{layer_str}_probe.png")
+    path = os.path.join(plot_dir, f"{tag}_L{layer_str}_probe.png")
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
@@ -345,16 +346,16 @@ def main():
         f"{'PASS' if all_pass_key else 'FAIL'}"
     )
 
-    out_dir = "plot"
-    os.makedirs(out_dir, exist_ok=True)
-    plot_probe(args.tag, args.layers, w_dom, midpoint, logreg, X_test, y_test, out_dir)
+    plot_dir = get_plot_dir(args.tag)
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_probe(args.tag, args.layers, w_dom, midpoint, logreg, X_test, y_test, plot_dir)
 
     if args.steer:
         assert len(args.layers) == 1, "--steer needs a single --layers entry"
         steer_vec = args.steer_scale * torch.tensor(
             w_dom, dtype=r_lo_tr.dtype, device=device
         )
-        plot_steering(model, num_x, args.layers[0], steer_vec, args.tag, out_dir)
+        plot_steering(model, num_x, args.layers[0], steer_vec, args.tag, plot_dir)
 
     if args.show:
         plt.show()

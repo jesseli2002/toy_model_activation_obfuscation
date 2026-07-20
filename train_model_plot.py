@@ -1,6 +1,6 @@
 """Step 1 plots: training dynamics and learned y(x) curves.
 
-Writes to plot/:
+Writes to plot/<tag>/:
   - <tag>_dynamics.png : iteration vs loss, iteration vs max-abs-error
   - <tag>_curves.png   : y vs x for fixed c in [1, 1.333, 1.667, 2], num_x lines each
 
@@ -20,6 +20,7 @@ import torch
 
 from model import ResidualMLP
 from paths import ckpt_dir, log_dir
+from paths import plot_dir as get_plot_dir
 
 
 def parse_args():
@@ -30,7 +31,7 @@ def parse_args():
     return p.parse_args()
 
 
-def plot_dynamics(tag, out_dir):
+def plot_dynamics(tag, plot_dir):
     hist_path = os.path.join(log_dir(tag), "history.json")
     with open(hist_path) as f:
         hist = json.load(f)
@@ -51,7 +52,7 @@ def plot_dynamics(tag, out_dir):
     ax2.grid(True, which="both", alpha=0.3)
     fig.suptitle(f"training dynamics ({tag})")
     fig.tight_layout()
-    path = os.path.join(out_dir, f"{tag}_dynamics.png")
+    path = os.path.join(plot_dir, f"{tag}_dynamics.png")
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
@@ -60,7 +61,7 @@ def plot_dynamics(tag, out_dir):
 def plot_learned_curves(
     model,
     tag,
-    out_dir,
+    plot_dir,
     c_values=(1.0, 1.333, 1.667, 2.0),
 ):
     """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
@@ -100,14 +101,14 @@ def plot_learned_curves(
     axes[0].set_ylabel("y")
     fig.suptitle(f"learned y(x) per coordinate, fixed c ({tag}); {num_x} lines/panel")
     fig.tight_layout()
-    p = os.path.join(out_dir, f"{tag}_curves.png")
+    p = os.path.join(plot_dir, f"{tag}_curves.png")
     fig.savefig(p, dpi=120)
     plt.close(fig)
     print(f"[plot] wrote {p}")
     return p
 
 
-def plot_curves(tag, ckpt, out_dir):
+def plot_curves(tag, ckpt, plot_dir):
     path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
     ck = torch.load(path, map_location="cpu")
     cfg = ck["config"]
@@ -120,15 +121,15 @@ def plot_curves(tag, ckpt, out_dir):
     )
     model.load_state_dict(ck["model"])
     model.eval()
-    plot_learned_curves(model, tag, out_dir)
+    plot_learned_curves(model, tag, plot_dir)
 
 
 def main():
     args = parse_args()
-    out_dir = "plot"
-    os.makedirs(out_dir, exist_ok=True)
-    plot_dynamics(args.tag, out_dir)
-    plot_curves(args.tag, args.ckpt, out_dir)
+    plot_dir = get_plot_dir(args.tag)
+    os.makedirs(plot_dir, exist_ok=True)
+    plot_dynamics(args.tag, plot_dir)
+    plot_curves(args.tag, args.ckpt, plot_dir)
 
     if args.show:
         plt.show()
