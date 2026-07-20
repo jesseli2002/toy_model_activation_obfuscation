@@ -239,7 +239,7 @@ def main(args):
                 f"[error] --init warmstart but checkpoint not found: "
                 f"{args.warmstart_path}"
             )
-        model, ck = ResidualMLP.load(args.warmstart_path, map_location=device)
+        model, _ = ResidualMLP.load(args.warmstart_path, map_location=device)
         model = model.to(device)
         model_config = model.config
         num_x, d_model, d_mlp, num_blocks = (

@@ -46,7 +46,7 @@ class ResidualMLPConfig:
     num_x: int
     d_model: int
     d_mlp: int
-    num_blocks: int = 4
+    num_blocks: int = 8
     out_init_scale: float = 0.1
     leaky_relu_slope: float = 0.0
     layer_norm: bool = False
@@ -65,9 +65,13 @@ class ResidualMLPConfig:
 
     @classmethod
     def from_dict(cls, d: dict) -> "ResidualMLPConfig":
-        known = {f.name for f in dataclasses.fields(cls)}
-        filled = {**cls._LEGACY_DEFAULTS, **{k: v for k, v in d.items() if k in known}}
-        return cls(**filled)
+        """Build a config from a checkpoint's config dict: fields the dict
+        predates are backfilled from _LEGACY_DEFAULTS (not the field default
+        above), and keys this version of the dataclass doesn't recognize are
+        dropped."""
+        known_fields = {f.name for f in dataclasses.fields(cls)}
+        present = {k: v for k, v in d.items() if k in known_fields}
+        return cls(**{**cls._LEGACY_DEFAULTS, **present})
 
 
 class ResidualMLPBlock(nn.Module):
@@ -82,7 +86,7 @@ class ResidualMLPBlock(nn.Module):
         self.d_model = d_model
         self.d_mlp = d_mlp
         self.leaky_relu_slope = leaky_relu_slope
-        self.ln = nn.LayerNorm(d_model) if layer_norm else None
+        self.layer_norm = nn.LayerNorm(d_model) if layer_norm else None
         self.W_in = nn.Parameter(torch.empty(d_model, d_mlp))
         self.b_in = nn.Parameter(torch.zeros(d_mlp))
         self.W_out = nn.Parameter(torch.empty(d_mlp, d_model))
@@ -105,7 +109,9 @@ class ResidualMLPBlock(nn.Module):
     def forward(
         self, r: Float[Tensor, "batch d_model"]
     ) -> Float[Tensor, "batch d_model"]:
-        r_in: Float[Tensor, "batch d_model"] = self.ln(r) if self.ln is not None else r
+        r_in: Float[Tensor, "batch d_model"] = (
+            self.layer_norm(r) if self.layer_norm is not None else r
+        )
         h: Float[Tensor, "batch d_mlp"] = torch.nn.functional.leaky_relu(
             r_in @ self.W_in + self.b_in, negative_slope=self.leaky_relu_slope
         )

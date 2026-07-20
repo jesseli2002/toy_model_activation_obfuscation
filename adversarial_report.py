@@ -98,11 +98,11 @@ from sklearn.preprocessing import StandardScaler
 
 from data import sample_batch
 from model import ResidualMLP
-from paths import log_dir
+from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
 from train_model import eval_max_err
 from train_model_plot import plot_learned_curves
-from train_probe import binary_dataset, capture_layers, load_model
+from train_probe import binary_dataset, capture_layers
 from train_probe import plot_probe as plot_probe_separation
 
 
@@ -292,7 +292,10 @@ def plot_probe_gap(tag, hidden_layers, gap, plot_dir):
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model, ck = load_model(args.tag, args.ckpt, device)
+    ckpt_path = os.path.join(ckpt_dir(args.tag), f"{args.ckpt}.pt")
+    model, ck = ResidualMLP.load(ckpt_path, map_location=device)
+    model = model.to(device)
+    model.eval()
     num_x = model.num_x
     num_blocks = model.num_blocks
     penalty_layers = ck.get("penalty_layers") or list(range(1, num_blocks))
