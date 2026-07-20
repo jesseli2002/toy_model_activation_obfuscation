@@ -27,19 +27,32 @@ In total, there should be 5 options for the loss term to be used (2x2 from the f
 
 What pitfalls could you see coming from implementing these ideas? Any trivial solutions that the model could learn?
 
+Response from Claude:
+- Biggest problem is there's a class of tricks where the model learns to just shrink the representation of $c$ while keeping it linear.
+    - Normalization by std/variance should help, as does LDA, but regularizer fights back.
+- LayerNorm isn't going to solve problem of shrinking. Recall LayerNorm just makes norm ~= 1.
+    - LayerNorm doesn't touch residual stream, where a shrinked c could live
+    - LayerNorm only closes the hack for uniform scaling.
+
+
+####
+Based on your feedback, I think we should do the following:
+- Implement the variance/stddev-based scaling, leaving it optional but on by-default. For regularization, pick a regularization constant that's on the order of machine epsilon - so that the model can't use that exit path without facing numerical noise
+- Implement the distance rather than distance squared loss function as an alternative
+- Implement LDA-based scoring, with your note on using solve() instead for numerical stability.
+- This would probably be a new CLI option, with 5 options, and the default one being distance^2 scaled by variance.
+
+Is this reasonable?
+
+Sounds good. I'd like you to make an implementation plan for a Sonnet subagent. Note that you should base off of `config` branch, which will be merged to master soon (pending at most minor changes). In particular, there's now an option for legacy defaults to help with backward compatibility; probably that needs to be set so that the legacy loss variant is squared unnormalized.
 
 #### (next response)
-I'm tasking an agent with implementing LayerNorm. In the meantime, some more questions:
-- If combined with some scaling/normalizing behaviour, would the training on absolute distance present a meaningful difference (compared to squared distance)? My intuition says that this prevents the model from finding a solution that's "good enough" (since a small distance, squared, gets even smaller loss).
-- TBH my background is pretty shaky w.r.t how LDA works, although I'm generally fine with linear algebra - can you give me a primer on how it's used in this context?
-- On cross-layer smearing - is that possible, even from a theory standpoint? (For a feature to be not linearly separable at two different layers, but separable when concatenated)? Is there a small numerical example you could give for intuition?
 
 
-<!--
 - Scale loss term by standard deviation of data in direction of difference-of-means, so that (normalized) standard deviation is 1
     - Example of thing model could learn: Putting activations for c=1 in the middle, and c=2 on either end.
 - Train on LDA discrimination ability
-- Train on absolute distance between means, rather than distance squared -->
+- Train on absolute distance between means, rather than distance squared
 
 
 - Adversarial simultaneous training of logistic regression probe and model
@@ -47,6 +60,13 @@ I'm tasking an agent with implementing LayerNorm. In the meantime, some more que
 
 - Penalize lopsided variances (where some axes have much smaller variances than others)
 ## Miscellaneous code quality
+I'm trying to avoid scattering default behaviour/options across the codebase, to make it easier to isolate exactly which line is responsible for a given default. To that extent, I need you to help with moving defaults away from the CLI and into the model config object (ResidualMLPConfig).
+- Off the top of my head, whether layer_norm is enabled, in train_adversarial.py, is de-facto defaulted by CLI rather than by ResidualMLPConfig.
+- There could be other cases.
 
+Audit train_adversarial.py for other default CLI options.
+
+### Tests?
+What unit tests could be implemented?
 
 ## Environment

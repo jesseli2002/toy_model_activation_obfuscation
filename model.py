@@ -77,10 +77,8 @@ class ResidualMLPConfig:
                 f"{sorted(unknown)} -- checkpoint saved by a newer version?"
             )
         present = {k: v for k, v in d.items() if k in known}
-        filled = (
-            cls._LEGACY_DEFAULTS | present
-        )  # union over dicts, preferring `present`
-        return cls(**filled)
+        # union over dicts, preferring `present`
+        return cls(**(cls._LEGACY_DEFAULTS | present))
 
 
 class ResidualMLPBlock(nn.Module):
