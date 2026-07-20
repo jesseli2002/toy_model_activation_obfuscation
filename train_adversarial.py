@@ -270,18 +270,35 @@ def probe_caches(model, num_x, n_per_class, layers, generator, device):
 def probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach):
     """Sum over `layers` of the probe-loss penalty on the class-mean gap.
 
-    For 'squared'/'absolute' this is a variant-independent function of Δμ
-    alone; the more expensive within-class-spread variants need the raw
-    per-class activations `a`/`b` (caches_lo[l] / caches_hi[l]).
+    `variant` is one of config.PROBE_LOSS_CHOICES ("squared", "absolute",
+    "squared-var", "absolute-std", "lda"); see the module docstring / CLI help
+    for what each computes. For 'squared'/'absolute' this is a
+    variant-independent function of Δμ alone; the more expensive
+    within-class-spread variants need the raw per-class activations `a`/`b`
+    (caches_lo[l] / caches_hi[l]).
+
+    `detach` (squared-var/absolute-std/lda only): detaches the spread
+    denominator (variance direction `u`+`var`, or the LDA covariance `S`)
+    before dividing/solving, so no gradient flows back through it -- the
+    model then only sees gradient through Δμ in the numerator, as if the
+    spread were a fixed constant each step. Default False (live denominator,
+    true Fisher-ratio/LDA gradient); True is provided to A/B-test the effect
+    of that extra gradient path.
+
+    `shrinkage` (lda only): relative ridge added to the pooled within-class
+    covariance before inverting it, as `shrinkage * mean(diag(S_W))`. Needed
+    because S_W (d_model x d_model) is often rank-deficient (post-ReLU
+    activations, small per-class batches), which would make the exact inverse
+    singular/unstable.
     """
-    total = 0.0
+    per_layer = []
     for lyr in layers:
         a, b = caches_lo[lyr], caches_hi[lyr]  # (N, d) each, differentiable
         mu = b.mean(0) - a.mean(0)  # Δμ, (d,)
         if variant == "squared":
-            total = total + (mu**2).sum()
+            per_layer.append((mu**2).sum())
         elif variant == "absolute":
-            total = total + torch.sqrt((mu**2).sum() + eps**2)
+            per_layer.append(torch.sqrt(mu.norm() ** 2 + eps**2))
         elif variant in ("squared-var", "absolute-std"):
             u = mu / (mu.norm() + eps)
             if detach:
@@ -290,9 +307,9 @@ def probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach)
             if detach:
                 var = var.detach()
             if variant == "squared-var":
-                total = total + (mu**2).sum() / (var + eps)
+                per_layer.append((mu**2).sum() / (var + eps))
             else:
-                total = total + mu.norm() / torch.sqrt(var + eps)
+                per_layer.append(mu.norm() / torch.sqrt(var + eps))
         elif variant == "lda":
             ac, bc = a - a.mean(0), b - b.mean(0)
             n = a.shape[0] + b.shape[0]
@@ -301,10 +318,10 @@ def probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach)
             S = S_W + reg * torch.eye(S_W.shape[0], device=S_W.device, dtype=S_W.dtype)
             if detach:
                 S = S.detach()
-            total = total + mu @ torch.linalg.solve(S, mu)
+            per_layer.append(mu @ torch.linalg.solve(S, mu))
         else:
             raise ValueError(f"unknown probe_loss variant: {variant!r}")
-    return total
+    return torch.stack(per_layer).sum()
 
 
 def main(args):
