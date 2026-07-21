@@ -1,16 +1,14 @@
 """Train the residual MLP on the saturation task (Step 1).
 
 Fresh synthetic data every step (infinite data). MSE over the first num_x outputs
-only. Early-stop when loss < EARLY_STOP_LOSS. Checkpoints best + last to
-runs/<tag>/checkpoints/, resumable with --resume.
+only. Checkpoints best + last to runs/<tag>/checkpoints/, resumable with --resume.
 
 Convergence note: an exact zero-loss solution exists (see analytic.py), so any
 plateau is an OPTIMIZATION problem, not a capacity one. Escalation ladder if a
 given num_x plateaus above the gate:
     1. widen LR sweep (try up to ~3e-2) with cosine decay to ~1e-6
     2. longer schedule (more --max-iters)
-    3. warm-start from analytic.py (--warm-start) to confirm it's optimization
-    4. STOP and report — do not inflate d_mlp past num_x+1 (that breaks Steps 2-3)
+    3. STOP and report — do not inflate d_mlp past num_x+1 (that breaks Steps 2-3)
 
 Usage examples:
     python train.py --num-x 1 --tag nx1 --lr 3e-3 --max-iters 20000
@@ -23,14 +21,8 @@ import os
 import shutil
 import time
 
-import torch
-from jaxtyping import Float
-from torch import Tensor
-
 import config
-from data import sample_batch
-from model import ResidualMLP, ResidualMLPConfig
-from paths import ckpt_dir, log_dir, run_dir
+from config import ResidualMLPConfig
 
 
 def parse_args():
@@ -49,7 +41,6 @@ def parse_args():
     )
     p.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
     p.add_argument("--seed", type=int, default=config.SEED)
-    p.add_argument("--early-stop-loss", type=float, default=config.EARLY_STOP_LOSS)
     p.add_argument(
         "--out-init-scale", type=float, default=ResidualMLPConfig.out_init_scale
     )
@@ -64,11 +55,6 @@ def parse_args():
         action=argparse.BooleanOptionalAction,
         default=ResidualMLPConfig.layer_norm,
         help="apply LayerNorm to each block's input before W_in",
-    )
-    p.add_argument(
-        "--warm-start",
-        action="store_true",
-        help="initialize from analytic.py exact weights (diagnostic)",
     )
     p.add_argument("--tag", type=str, default="default")
     p.add_argument("--resume", action="store_true")
@@ -93,6 +79,17 @@ def parse_args():
     return p.parse_args()
 
 
+# parse_args early-exits on --help before the heavy imports below are reached.
+if __name__ == "__main__":
+    args = parse_args()
+
+import torch
+
+from data import eval_max_err, sample_batch
+from model import ResidualMLP, ResidualMLPConfig
+from paths import ckpt_dir, log_dir, run_dir
+
+
 def _cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
     import math
 
@@ -102,28 +99,7 @@ def _cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
     return lr1 + 0.5 * (lr0 - lr1) * (1 + math.cos(math.pi * t))
 
 
-@torch.no_grad()
-def eval_max_err(
-    model: ResidualMLP,
-    num_x: int,
-    generator: torch.Generator,
-    n: int = 100_000,
-    batch: int = 20_000,
-    device: str = "cpu",
-) -> float:
-    worst = 0.0
-    done = 0
-    while done < n:
-        b = min(batch, n - done)
-        x_full, y = sample_batch(b, num_x, generator=generator, device=device)
-        pred: Float[Tensor, "b num_x"] = model.task_output(x_full)
-        worst = max(worst, (pred - y).abs().max().item())
-        done += b
-    return worst
-
-
-def main():
-    args = parse_args()
+def main(args):
     if args.save_every_n == -1:
         args.save_every_n = args.ckpt_interval
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -154,13 +130,6 @@ def main():
         layer_norm=args.layer_norm,
     )
     model = ResidualMLP(model_config).to(device)
-    if args.warm_start:
-        from analytic import build_exact_model
-
-        exact = build_exact_model(
-            num_x, args.d_model, model_config.d_mlp, num_blocks=args.num_blocks
-        )
-        model.load_state_dict(exact.state_dict())
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
     gen = torch.Generator(device=device).manual_seed(args.seed + 1)
@@ -201,7 +170,6 @@ def main():
 
     t0 = time.time()
     it = start_iter
-    stopped_early = False
     for it in range(start_iter, args.max_iters):
         lr = _cosine_lr(it, args.max_iters, args.lr, args.lr_final)
         for pg in opt.param_groups:
@@ -220,7 +188,7 @@ def main():
             best_loss = lv
             save(best_path, it)
 
-        if it % args.log_interval == 0 or lv < args.early_stop_loss:
+        if it % args.log_interval == 0:
             me = eval_max_err(model, num_x, gen, device=device)
             history.append((it, lv, me))
             with open(hist_path, "w") as f:
@@ -241,13 +209,6 @@ def main():
         ):
             save(os.path.join(run_ckpt_dir, f"iter_{it}.pt"), it)
 
-        if lv < args.early_stop_loss:
-            print(
-                f"[early stop] loss {lv:.3e} < {args.early_stop_loss:.1e} at iter {it}"
-            )
-            stopped_early = True
-            break
-
     save(last_path, it)
     me = eval_max_err(model, num_x, gen, device=device)
     history.append((it, best_loss, me))
@@ -255,9 +216,9 @@ def main():
         json.dump(history, f)
     print(
         f"[done] iter {it}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
-        f"early_stop={stopped_early}  elapsed {time.time()-t0:.1f}s"
+        f"elapsed {time.time()-t0:.1f}s"
     )
 
 
 if __name__ == "__main__":
-    main()
+    main(args)

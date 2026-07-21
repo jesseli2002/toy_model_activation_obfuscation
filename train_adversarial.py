@@ -192,6 +192,17 @@ def parse_args():
     )
     p.add_argument("--log-interval", type=int, default=100)
     p.add_argument("--ckpt-interval", type=int, default=1000)
+    p.add_argument(
+        "--save-every-n",
+        type=int,
+        nargs="?",
+        const=-1,
+        default=None,
+        help=(
+            "also save a numbered snapshot checkpoint every N iters "
+            "(omitted = off; given with no value = use --ckpt-interval)"
+        ),
+    )
     return p.parse_args()
 
 
@@ -201,10 +212,9 @@ if __name__ == "__main__":
 
 import torch
 
-from data import sample_batch, sample_fixed_c
+from data import eval_max_err, sample_batch, sample_fixed_c
 from model import ResidualMLP, ResidualMLPConfig
 from paths import ckpt_dir, log_dir, run_dir
-from train_model import eval_max_err
 
 
 def _cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
@@ -325,6 +335,8 @@ def _probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach
 
 
 def main(args):
+    if args.save_every_n == -1:
+        args.save_every_n = args.ckpt_interval
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if os.path.exists(run_dir(args.tag)) and not args.resume:
@@ -460,24 +472,29 @@ def main(args):
         pred = model.task_output(x_full)
         l_task = torch.mean((pred - y) ** 2)
 
-        # probe penalty on a separate pinned sub-batch (x resampled)
-        caches_lo, caches_hi = _probe_caches(
-            model, num_x, args.probe_batch_size, hidden_layers, gen, device
-        )
-        l_probe = _probe_penalty(
-            caches_lo,
-            caches_hi,
-            hidden_layers,
-            args.probe_loss,
-            args.probe_loss_eps,
-            args.lda_shrinkage,
-            args.probe_loss_detach_denom,
-        )
-
         if args.lam_warmup_iters > 0:
             lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
         else:
             lam_eff = args.lam
+
+        # probe penalty on a separate pinned sub-batch (x resampled); skipped
+        # entirely when lam=0 so plain task training pays no probe overhead
+        if args.lam == 0:
+            l_probe = torch.zeros((), device=device)
+        else:
+            caches_lo, caches_hi = _probe_caches(
+                model, num_x, args.probe_batch_size, hidden_layers, gen, device
+            )
+            l_probe = _probe_penalty(
+                caches_lo,
+                caches_hi,
+                hidden_layers,
+                args.probe_loss,
+                args.probe_loss_eps,
+                args.lda_shrinkage,
+                args.probe_loss_detach_denom,
+            )
+
         loss = lam_eff * l_probe + (1 - lam_eff) * l_task
 
         opt.zero_grad(set_to_none=True)
@@ -515,6 +532,13 @@ def main(args):
 
         if it % args.ckpt_interval == 0 and it > start_iter:
             save(last_path, it)
+
+        if (
+            args.save_every_n is not None
+            and it % args.save_every_n == 0
+            and it > start_iter
+        ):
+            save(os.path.join(run_ckpt_dir, f"iter_{it}.pt"), it)
 
     # final logging + save
     save(last_path, it)
