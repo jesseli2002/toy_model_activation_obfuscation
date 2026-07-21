@@ -78,11 +78,12 @@ def _verify(
     n: int = 200_000,
     seed: int = 0,
 ) -> float:
-    from config import d_mlp_for
     from data import sample_batch
 
     if d_mlp is None:
-        d_mlp = d_mlp_for(num_x)
+        # Exact construction requires d_mlp == num_x (build_exact_model asserts
+        # d_mlp >= num_x, and num_x is the tight minimum).
+        d_mlp = num_x
     m = build_exact_model(num_x, d_model, d_mlp)
     g = torch.Generator().manual_seed(seed)
     x_full, y = sample_batch(n, num_x, generator=g)

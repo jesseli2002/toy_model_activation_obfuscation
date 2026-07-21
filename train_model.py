@@ -35,10 +35,10 @@ from paths import ckpt_dir, log_dir, run_dir
 
 def parse_args():
     p = argparse.ArgumentParser()
-    p.add_argument("--num-x", type=int, default=config.NUM_X)
-    p.add_argument("--d-model", type=int, default=config.D_MODEL)
-    p.add_argument("--d-mlp", type=int, default=None, help="default: num_x+1")
-    p.add_argument("--num-blocks", type=int, default=config.NUM_BLOCKS)
+    p.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
+    p.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
+    p.add_argument("--d-mlp", type=int, default=None, help="default: num_x")
+    p.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     p.add_argument("--lr", type=float, default=config.LR)
     p.add_argument(
@@ -50,16 +50,19 @@ def parse_args():
     p.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
     p.add_argument("--seed", type=int, default=config.SEED)
     p.add_argument("--early-stop-loss", type=float, default=config.EARLY_STOP_LOSS)
-    p.add_argument("--out-init-scale", type=float, default=0.1)
+    p.add_argument(
+        "--out-init-scale", type=float, default=ResidualMLPConfig.out_init_scale
+    )
     p.add_argument(
         "--leaky-relu-slope",
         type=float,
-        default=config.LEAKY_RELU_SLOPE,
+        default=ResidualMLPConfig.leaky_relu_slope,
         help="negative slope for LeakyReLU; 0.0 = plain ReLU",
     )
     p.add_argument(
         "--layer-norm",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=ResidualMLPConfig.layer_norm,
         help="apply LayerNorm to each block's input before W_in",
     )
     p.add_argument(
@@ -125,7 +128,6 @@ def main():
         args.save_every_n = args.ckpt_interval
     device = "cuda" if torch.cuda.is_available() else "cpu"
     num_x = args.num_x
-    d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
 
     if os.path.exists(run_dir(args.tag)) and not args.resume:
         if args.tag_force:
@@ -145,7 +147,7 @@ def main():
     model_config = ResidualMLPConfig(
         num_x=num_x,
         d_model=args.d_model,
-        d_mlp=d_mlp,
+        d_mlp=args.d_mlp,
         num_blocks=args.num_blocks,
         out_init_scale=args.out_init_scale,
         leaky_relu_slope=args.leaky_relu_slope,
@@ -156,7 +158,7 @@ def main():
         from analytic import build_exact_model
 
         exact = build_exact_model(
-            num_x, args.d_model, d_mlp, num_blocks=args.num_blocks
+            num_x, args.d_model, model_config.d_mlp, num_blocks=args.num_blocks
         )
         model.load_state_dict(exact.state_dict())
 
@@ -192,8 +194,8 @@ def main():
 
     print(
         f"[train] tag={args.tag} num_x={num_x} d_model={args.d_model} "
-        f"d_mlp={d_mlp} num_blocks={args.num_blocks} bs={args.batch_size} lr={args.lr} "
-        f"leaky_relu_slope={args.leaky_relu_slope} device={device} "
+        f"d_mlp={model_config.d_mlp} num_blocks={args.num_blocks} bs={args.batch_size} "
+        f"lr={args.lr} leaky_relu_slope={args.leaky_relu_slope} device={device} "
         f"iters {start_iter}->{args.max_iters}"
     )
 
