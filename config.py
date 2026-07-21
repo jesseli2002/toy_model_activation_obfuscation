@@ -24,6 +24,7 @@ EARLY_STOP_LOSS = 1e-12  # float32 eps^2 ~ 1.4e-14; 1e-12 is a sane "exact" bar
 
 
 PROBE_LOSS_CHOICES = ["squared", "absolute", "squared-var", "absolute-std", "lda"]
+PROBE_LOGREG_LOSS_CHOICES = ["meandiff-relu", "meandiff"]
 
 
 @dataclass
@@ -141,6 +142,56 @@ class AdversarialConfig:
             warnings.warn(
                 f"AdversarialConfig.from_dict: dropping unrecognized key(s) "
                 f"{sorted(unknown)} -- checkpoint saved by a newer version?"
+            )
+        present = {k: v for k, v in d.items() if k in known}
+        return cls(**(cls._LEGACY_DEFAULTS | present))
+
+
+@dataclass
+class LogregAdversarialConfig:
+    """Training-hyperparameter metadata for train_adversarial_logreg.py,
+    stored verbatim (as a dict) alongside the model's own ResidualMLPConfig.
+    Sibling to AdversarialConfig: that one drives the closed-form DoM/LDA
+    penalty; this one drives the simultaneous stateful-probe design (see
+    train_adversarial_logreg.py's module docstring). warmstart_path has no
+    default -- this script has no from-scratch path, so a value is always
+    required at the CLI.
+    """
+
+    lam: float = 0.5
+    lam_warmup_iters: int = 0
+    penalty_layers: list | None = None
+    warmstart_path: str | None = None
+    seed: int = SEED
+    probe_C: float = 1.0
+    probe_init_iters: int = 1000
+    class_threshold: float = 1.5
+    probe_loss_kind: str = "meandiff-relu"
+
+    _LEGACY_DEFAULTS: ClassVar[dict] = {
+        "lam": 0.5,
+        "lam_warmup_iters": 0,
+        "penalty_layers": None,
+        "warmstart_path": None,
+        "seed": 913768,
+        "probe_C": 1.0,
+        "probe_init_iters": 1000,
+        "class_threshold": 1.5,
+        "probe_loss_kind": "meandiff-relu",
+    }
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LogregAdversarialConfig":
+        known = {f.name for f in dataclasses.fields(cls)}
+        unknown = d.keys() - known
+        if unknown:
+            warnings.warn(
+                f"LogregAdversarialConfig.from_dict: dropping unrecognized "
+                f"key(s) {sorted(unknown)} -- checkpoint saved by a newer "
+                f"version?"
             )
         present = {k: v for k, v in d.items() if k in known}
         return cls(**(cls._LEGACY_DEFAULTS | present))
