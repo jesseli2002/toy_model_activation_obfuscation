@@ -105,6 +105,16 @@ def capture_layers(
 
 
 @torch.no_grad()
+def capture_layers_dict(
+    model: ResidualMLP, x_full: torch.Tensor, layers: list[int]
+) -> dict[int, torch.Tensor]:
+    """Like capture_layers, but returns each layer separately from a single
+    shared forward pass instead of concatenating them into one tensor."""
+    _, caches = model.forward(x_full, return_cache=True)
+    return {i: caches[i] for i in layers}
+
+
+@torch.no_grad()
 def binary_dataset(model, num_x, n, c_lo, c_hi, layers, generator, device):
     xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
     xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)

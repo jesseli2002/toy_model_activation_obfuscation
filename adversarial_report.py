@@ -106,13 +106,13 @@ from sklearn.metrics import r2_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from data import sample_batch
+from data import sample_batch, sample_fixed_c
 from model import ResidualMLP
 from paths import log_dir
 from paths import plot_dir as get_plot_dir
 from train_model import eval_max_err
 from train_model_plot import plot_learned_curves
-from train_probe import binary_dataset, capture_layers, load_model
+from train_probe import capture_layers_dict, load_model
 from train_probe import plot_probe as plot_probe_separation
 
 
@@ -132,81 +132,105 @@ def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     return float((pred == y_te).mean()), delta_norm
 
 
-def _binary_probe_metrics(
+@torch.no_grad()
+def _binary_dataset_all_layers(model, num_x, n, c_lo, c_hi, layers, generator, device):
+    """One forward pass over c_lo and one over c_hi, shared across all
+    `layers` -- returns {layer: (r_lo, r_hi)}."""
+    xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
+    xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)
+    r_lo = capture_layers_dict(model, xf_lo, layers)
+    r_hi = capture_layers_dict(model, xf_hi, layers)
+    return {layer: (r_lo[layer], r_hi[layer]) for layer in layers}
+
+
+def _binary_probe_metrics_all_layers(
     model,
     c_lo,
     c_hi,
-    layer,
+    layers,
     n_train,
     n_test,
     g,
     plot_dir=None,
 ):
-    """DoM / logreg / LDA accuracy for one layer, one (c_lo, c_hi) pair.
+    """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
+    c_hi) pair, from a single shared forward pass per train/test set.
 
     If plot_dir is given, also writes the histogram + PCA separation plot for
-    this layer/pair (see train_probe.plot_probe).
+    each layer (see train_probe.plot_probe). Returns {layer: metrics}.
     """
     num_x = model.num_x
     device = next(model.parameters()).device
-    r_lo_tr, r_hi_tr = binary_dataset(
-        model, num_x, n_train, c_lo, c_hi, [layer], g, device
+    train_ds = _binary_dataset_all_layers(
+        model, num_x, n_train, c_lo, c_hi, layers, g, device
     )
-    r_lo_te, r_hi_te = binary_dataset(
-        model, num_x, n_test, c_lo, c_hi, [layer], g, device
+    test_ds = _binary_dataset_all_layers(
+        model, num_x, n_test, c_lo, c_hi, layers, g, device
     )
-    dom_acc, delta_norm = _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
 
-    X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
-    y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
-    X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
-    y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
+    out = {}
+    for layer in layers:
+        r_lo_tr, r_hi_tr = train_ds[layer]
+        r_lo_te, r_hi_te = test_ds[layer]
+        dom_acc, delta_norm = _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
 
-    # DoM above needs no normalization: it's just a difference of means,
-    # invariant to a shared affine rescaling of features.
-    logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
-    logreg.fit(X_tr, y_tr)
-    lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
+        X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
+        y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
+        X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
+        y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
 
-    if plot_dir is not None:
-        mu_lo = r_lo_tr.mean(dim=0)
-        mu_hi = r_hi_tr.mean(dim=0)
-        w_dom = (mu_hi - mu_lo).cpu().numpy()
-        midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
-        plot_probe_separation(
-            f"c{c_lo:g}-{c_hi:g}",
-            [layer],
-            w_dom,
-            midpoint,
-            logreg,
-            X_te,
-            y_te,
-            plot_dir,
-        )
+        # DoM above needs no normalization: it's just a difference of means,
+        # invariant to a shared affine rescaling of features.
+        logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
+        logreg.fit(X_tr, y_tr)
+        lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
 
-    return {
-        "dom": dom_acc,
-        "delta_norm": delta_norm,
-        "logreg": float(logreg.score(X_te, y_te)),
-        "lda": float(lda.score(X_te, y_te)),
-    }
+        if plot_dir is not None:
+            mu_lo = r_lo_tr.mean(dim=0)
+            mu_hi = r_hi_tr.mean(dim=0)
+            w_dom = (mu_hi - mu_lo).cpu().numpy()
+            midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
+            plot_probe_separation(
+                f"c{c_lo:g}-{c_hi:g}",
+                [layer],
+                w_dom,
+                midpoint,
+                logreg,
+                X_te,
+                y_te,
+                plot_dir,
+            )
+
+        out[layer] = {
+            "dom": dom_acc,
+            "delta_norm": delta_norm,
+            "logreg": float(logreg.score(X_te, y_te)),
+            "lda": float(lda.score(X_te, y_te)),
+        }
+    return out
 
 
-def _ridge_r2(model, layer, n_train, n_test, alpha, g):
-    """R^2 of a ridge probe recovering continuous c ~ U[1,2] from layer l."""
+def _ridge_r2_all_layers(model, layers, n_train, n_test, alpha, g):
+    """R^2 of a ridge probe recovering continuous c ~ U[1,2], for every layer
+    in `layers`, from a single shared forward pass per train/test set.
+    Returns {layer: r2}."""
     num_x = model.num_x
     device = next(model.parameters()).device
 
     def ds(n):
         x_full, _ = sample_batch(n, num_x, generator=g, device=device)
-        r = capture_layers(model, x_full, [layer])
-        c = x_full[:, num_x]
-        return r.cpu().numpy(), c.cpu().numpy()
+        r = capture_layers_dict(model, x_full, layers)
+        c = x_full[:, num_x].cpu().numpy()
+        return {layer: r[layer].cpu().numpy() for layer in layers}, c
 
     X_tr, c_tr = ds(n_train)
     X_te, c_te = ds(n_test)
-    reg = Ridge(alpha=alpha).fit(X_tr, c_tr)
-    return float(r2_score(c_te, reg.predict(X_te)))
+
+    out = {}
+    for layer in layers:
+        reg = Ridge(alpha=alpha).fit(X_tr[layer], c_tr)
+        out[layer] = float(r2_score(c_te, reg.predict(X_te[layer])))
+    return out
 
 
 # ----------------------------------------------------------------------------
@@ -348,19 +372,18 @@ def main(args):
     emit("## 2. Probe-strength gap at c in {1,2} (per hidden layer)")
     emit("layer | penalized | DoM ||Δμ|| |  DoM acc | logreg acc |  LDA acc")
     emit("------|-----------|-----------|----------|------------|---------")
-    gap = {}
+    gap = _binary_probe_metrics_all_layers(
+        model,
+        1.0,
+        2.0,
+        hidden_layers,
+        args.n_train,
+        args.n_test,
+        g,
+        plot_dir=plot_dir,
+    )
     for lyr in hidden_layers:
-        m = _binary_probe_metrics(
-            model,
-            1.0,
-            2.0,
-            lyr,
-            args.n_train,
-            args.n_test,
-            g,
-            plot_dir=plot_dir,
-        )
-        gap[lyr] = m
+        m = gap[lyr]
         pen = "yes" if lyr in penalty_layers else "no"
         emit(
             f"  L{lyr}  |   {pen:>3s}     | {m['delta_norm']:.3e} | "
@@ -372,28 +395,19 @@ def main(args):
     emit("## 3a. Continuous ridge probe R^2 for c ~ U[1,2] (per layer)")
     emit("layer | role      | adv R^2  | baseline R^2")
     emit("------|-----------|----------|-------------")
-    r2_adv, r2_base = {}, ({} if base_model is not None else None)
-    for lyr in all_layers:
-        r2a = _ridge_r2(
-            model,
-            lyr,
-            args.n_ridge,
-            args.n_ridge,
-            args.ridge_alpha,
-            g,
+    r2_adv = _ridge_r2_all_layers(
+        model, all_layers, args.n_ridge, args.n_ridge, args.ridge_alpha, g
+    )
+    r2_base = None
+    if base_model is not None:
+        r2_base = _ridge_r2_all_layers(
+            base_model, all_layers, args.n_ridge, args.n_ridge, args.ridge_alpha, g
         )
-        r2_adv[lyr] = r2a
+    for lyr in all_layers:
+        r2a = r2_adv[lyr]
         role = "embed" if lyr == 0 else "output" if lyr == num_blocks else "hidden"
         if base_model is not None:
-            r2b = _ridge_r2(
-                base_model,
-                lyr,
-                args.n_ridge,
-                args.n_ridge,
-                args.ridge_alpha,
-                g,
-            )
-            r2_base[lyr] = r2b
+            r2b = r2_base[lyr]
             emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} | {r2b:+.4f}")
         else:
             emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} |     -")
@@ -406,16 +420,11 @@ def main(args):
         emit("-----------|-------|---------|------------|--------")
         heldout = {}
         for c_lo, c_hi in args.held_out_pairs:
+            pair_metrics = _binary_probe_metrics_all_layers(
+                model, c_lo, c_hi, hidden_layers, args.n_train, args.n_test, g
+            )
             for lyr in hidden_layers:
-                m = _binary_probe_metrics(
-                    model,
-                    c_lo,
-                    c_hi,
-                    lyr,
-                    args.n_train,
-                    args.n_test,
-                    g,
-                )
+                m = pair_metrics[lyr]
                 heldout[(c_lo, c_hi, lyr)] = m
                 emit(
                     f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
