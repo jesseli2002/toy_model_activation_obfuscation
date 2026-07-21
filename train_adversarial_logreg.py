@@ -2,11 +2,12 @@
 LogisticRegression probe, trained *simultaneously* with the model.
 
 Unlike train_adversarial.py's closed-form DoM/LDA penalty (recomputed from
-scratch each step, no inner probe optimizer), this script keeps one
-`sklearn.linear_model.LogisticRegression` probe *per penalized hidden layer*,
-warm-started once against the initial model and then advanced by a handful of
-solver iterations per training step -- an actual adversary that tracks the
-model as it moves, rather than a static closed-form proxy for one.
+scratch each step, no inner probe optimizer), this script keeps a single
+`sklearn.linear_model.LogisticRegression` probe over the *concatenation of
+all penalized hidden layers*, warm-started once against the initial model
+and then advanced by a handful of solver iterations per training step -- an
+actual adversary that tracks the model as it moves, rather than a static
+closed-form proxy for one.
 
     L = lam * L_probe(live activations vs. probe's current boundary)
       + (1 - lam) * L_task(full-range c ~ U[1,2])
@@ -18,26 +19,35 @@ Per iteration:
   2. Probe labels come from the same batch: label = (c >= --class-threshold),
      splitting the c in [1,2] range into two classes (~50/50 at the default
      threshold 1.5).
-  3. Each layer's probe is updated in place: `pipeline.fit(X, label)` on the
-     *detached* activations, with `LogisticRegression(warm_start=True)` and
-     `max_iter` fixed to a small constant (PROBE_STEP_MAX_ITER) so the lbfgs
-     solver resumes from last step's coefficients and only takes a few more
-     steps -- cheap relative to the model's forward+backward. The
-     StandardScaler is refit every step too, so the model can't dodge the
-     probe by uniformly shrinking its own representation.
+  3. The probe is updated in place: `pipeline.fit(X, label)` on the
+     *detached*, concatenated (across penalized layers) activations, with
+     `LogisticRegression(warm_start=True)` and `max_iter` fixed to a small
+     constant (PROBE_STEP_MAX_ITER) so the lbfgs solver resumes from last
+     step's coefficients and only takes a few more steps -- cheap relative to
+     the model's forward+backward. The StandardScaler is refit every step
+     too, so the model can't dodge the probe by uniformly shrinking its own
+     representation.
   4. The probe's current affine decision function (scaler mean_/scale_ +
      logreg coef_/intercept_) is extracted as detached torch constants
      `w_eff, b_eff` such that `s(r) = r @ w_eff + b_eff` reproduces the
-     probe's score on raw (unscaled) activations. `s` is then recomputed on
-     the *live* (grad-carrying) caches, giving a differentiable adversarial
-     penalty without backprop through sklearn's solver:
+     probe's score on the raw (unscaled), concatenated activation vector `r`.
+     `s` is then recomputed on the *live* (grad-carrying) concatenated
+     caches, giving a differentiable adversarial penalty without backprop
+     through sklearn's solver:
          gap   = mean(s[label==1]) - mean(s[label==0])
-         l_probe = mean over penalized layers of relu(gap)
+         l_probe = relu(gap)
      relu caps the reward once the classes overlap at the boundary, so the
      model isn't pushed to over-invert (the probe would just relearn the
      flipped direction). True labels (from c), not the probe's *predicted*
      labels, are used for the split -- conditioning on predicted labels would
      make the loss discontinuous around the boundary.
+
+     Note: a single probe over the concatenation is a strictly weaker
+     adversary than one probe per layer (it can only learn one global linear
+     combination across all penalized layers, not the best direction within
+     each layer independently) -- but it costs one sklearn fit per step
+     instead of len(penalty_layers), which is what makes simultaneous
+     training tractable at all.
 
 "Hidden" layers are the residual-stream caches strictly between the embedding
 (cache 0 = input; c sits verbatim in a fixed coordinate, nothing to hide/train)
@@ -249,28 +259,32 @@ def extract_affine(
     return w_eff.detach(), b_eff.detach()
 
 
+def concat_caches_np(caches: list[np.ndarray], layers: list[int]) -> np.ndarray:
+    return np.concatenate([caches[lyr] for lyr in layers], axis=1)
+
+
+def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.Tensor:
+    return torch.cat([caches[lyr] for lyr in layers], dim=1)
+
+
 def score_penalty(
-    caches: list[torch.Tensor],
-    affines: dict[int, tuple[torch.Tensor, torch.Tensor]],
-    layers: list[int],
+    cat_live: torch.Tensor,
+    affine: tuple[torch.Tensor, torch.Tensor],
     label: torch.Tensor,
     kind: str,
 ) -> torch.Tensor:
-    """Differentiable adversarial penalty: for each penalized layer, project
-    the live (grad-carrying) activations onto the probe's current learned
+    """Differentiable adversarial penalty: project the live (grad-carrying),
+    concatenated-across-layers activations onto the probe's current learned
     direction and push the two classes' mean scores together."""
-    per_layer = []
-    for lyr in layers:
-        w_eff, b_eff = affines[lyr]
-        s = caches[lyr] @ w_eff + b_eff
-        gap = s[label].mean() - s[~label].mean()
-        if kind == "meandiff-relu":
-            per_layer.append(torch.relu(gap))
-        elif kind == "meandiff":
-            per_layer.append(gap)
-        else:
-            raise ValueError(f"unknown probe_loss_kind: {kind!r}")
-    return torch.stack(per_layer).mean()
+    w_eff, b_eff = affine
+    s = cat_live @ w_eff + b_eff
+    gap = s[label].mean() - s[~label].mean()
+    if kind == "meandiff-relu":
+        return torch.relu(gap)
+    elif kind == "meandiff":
+        return gap
+    else:
+        raise ValueError(f"unknown probe_loss_kind: {kind!r}")
 
 
 def main(args):
@@ -355,7 +369,7 @@ def main(args):
             **adv_config.to_dict(),
         )
 
-    # --- init-fit one probe per penalized hidden layer ---
+    # --- init-fit a single probe over the concatenation of penalized layers ---
     x_full, _ = sample_batch(args.batch_size, num_x, generator=gen, device=device)
     with torch.no_grad():
         _, init_caches = model.forward(x_full, return_cache=True)
@@ -364,13 +378,11 @@ def main(args):
         "init batch has only one probe class present -- check --class-threshold "
         "against c's range."
     )
-    probes: dict[int, Pipeline] = {}
-    for lyr in hidden_layers:
-        pipe = build_probe_pipeline(args.probe_C, args.probe_init_iters)
-        pipe.fit(init_caches[lyr].cpu().numpy(), init_label_np)
-        probes[lyr] = pipe
+    init_caches_np = [c.cpu().numpy() for c in init_caches]
+    probe: Pipeline = build_probe_pipeline(args.probe_C, args.probe_init_iters)
+    probe.fit(concat_caches_np(init_caches_np, hidden_layers), init_label_np)
     print(
-        f"[init] fit probes on layers {hidden_layers}, "
+        f"[init] fit concatenated probe over layers {hidden_layers}, "
         f"init_iters={args.probe_init_iters}, C={args.probe_C}"
     )
 
@@ -401,16 +413,14 @@ def main(args):
         )
 
         t_probe0 = time.time()
-        affines = {}
-        for lyr in hidden_layers:
-            X = caches[lyr].detach().cpu().numpy()
-            fit_probe(probes[lyr], X, label_np, PROBE_STEP_MAX_ITER)
-            affines[lyr] = extract_affine(probes[lyr], device)
+        caches_np = [c.detach().cpu().numpy() for c in caches]
+        X = concat_caches_np(caches_np, hidden_layers)
+        fit_probe(probe, X, label_np, PROBE_STEP_MAX_ITER)
+        affine = extract_affine(probe, device)
         probe_dt = time.time() - t_probe0
 
-        l_probe = score_penalty(
-            caches, affines, hidden_layers, label, args.probe_loss_kind
-        )
+        cat_live = concat_caches_torch(caches, hidden_layers)
+        l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
 
         if args.lam_warmup_iters > 0:
             lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
