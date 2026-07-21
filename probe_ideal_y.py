@@ -38,7 +38,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
 
-def sample_y(n, num_x, c, x_low, x_high, rng):
+def _sample_y(n, num_x, c, x_low, x_high, rng):
     x = rng.uniform(x_low, x_high, size=(n, num_x))
     return np.clip(x, -c, c)
 
@@ -46,14 +46,18 @@ def sample_y(n, num_x, c, x_low, x_high, rng):
 def main(args):
     rng = np.random.default_rng(args.seed)
 
-    y_lo_tr = sample_y(
+    y_lo_tr = _sample_y(
         args.n_train, args.num_x, args.c_lo, args.x_low, args.x_high, rng
     )
-    y_hi_tr = sample_y(
+    y_hi_tr = _sample_y(
         args.n_train, args.num_x, args.c_hi, args.x_low, args.x_high, rng
     )
-    y_lo_te = sample_y(args.n_test, args.num_x, args.c_lo, args.x_low, args.x_high, rng)
-    y_hi_te = sample_y(args.n_test, args.num_x, args.c_hi, args.x_low, args.x_high, rng)
+    y_lo_te = _sample_y(
+        args.n_test, args.num_x, args.c_lo, args.x_low, args.x_high, rng
+    )
+    y_hi_te = _sample_y(
+        args.n_test, args.num_x, args.c_hi, args.x_low, args.x_high, rng
+    )
 
     X_train = np.concatenate([y_lo_tr, y_hi_tr], axis=0)
     y_train = np.concatenate([np.zeros(args.n_train), np.ones(args.n_train)])

@@ -43,7 +43,7 @@ import json
 import os
 
 
-def parse_pairs(s: str) -> list[tuple[float, float]]:
+def _parse_pairs(s: str) -> list[tuple[float, float]]:
     pairs = []
     for tok in s.split(","):
         tok = tok.strip()
@@ -70,7 +70,7 @@ def parse_args():
     )
     p.add_argument(
         "--held-out-pairs",
-        type=parse_pairs,
+        type=_parse_pairs,
         default="1.0-1.5,1.0-1.75,1.25-2.0",
         help="binary held-out c pairs, comma-separated 'lo-hi'. Kept ASYMMETRIC "
         "about 1.5 on purpose (see module docstring).",
@@ -119,7 +119,7 @@ from train_probe import plot_probe as plot_probe_separation
 # ----------------------------------------------------------------------------
 # Probe primitives (reuse train_probe's harness where possible)
 # ----------------------------------------------------------------------------
-def dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
+def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     """Raw difference-of-means classifier (train direction, test accuracy)."""
     mu_lo = r_lo_tr.mean(dim=0)
     mu_hi = r_hi_tr.mean(dim=0)
@@ -132,7 +132,7 @@ def dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     return float((pred == y_te).mean()), delta_norm
 
 
-def binary_probe_metrics(
+def _binary_probe_metrics(
     model,
     c_lo,
     c_hi,
@@ -155,7 +155,7 @@ def binary_probe_metrics(
     r_lo_te, r_hi_te = binary_dataset(
         model, num_x, n_test, c_lo, c_hi, [layer], g, device
     )
-    dom_acc, delta_norm = dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
+    dom_acc, delta_norm = _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
 
     X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
     y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
@@ -192,7 +192,7 @@ def binary_probe_metrics(
     }
 
 
-def ridge_r2(model, layer, n_train, n_test, alpha, g):
+def _ridge_r2(model, layer, n_train, n_test, alpha, g):
     """R^2 of a ridge probe recovering continuous c ~ U[1,2] from layer l."""
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -212,7 +212,7 @@ def ridge_r2(model, layer, n_train, n_test, alpha, g):
 # ----------------------------------------------------------------------------
 # Plots
 # ----------------------------------------------------------------------------
-def plot_training_traces(tag, history, hidden_layers, plot_dir):
+def _plot_training_traces(tag, history, hidden_layers, plot_dir):
     pts = [h for h in history if h.get("l_task") is not None]
     if not pts:
         return
@@ -250,7 +250,7 @@ def plot_training_traces(tag, history, hidden_layers, plot_dir):
     print(f"[plot] wrote {path}")
 
 
-def plot_heldout_r2(tag, layers, r2_adv, r2_base, plot_dir):
+def _plot_heldout_r2(tag, layers, r2_adv, r2_base, plot_dir):
     x = np.arange(len(layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
     if r2_base is not None:
@@ -274,7 +274,7 @@ def plot_heldout_r2(tag, layers, r2_adv, r2_base, plot_dir):
     print(f"[plot] wrote {path}")
 
 
-def plot_probe_gap(tag, hidden_layers, gap, plot_dir):
+def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     x = np.arange(len(hidden_layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
     for off, key, lbl in [
@@ -350,7 +350,7 @@ def main(args):
     emit("------|-----------|-----------|----------|------------|---------")
     gap = {}
     for lyr in hidden_layers:
-        m = binary_probe_metrics(
+        m = _binary_probe_metrics(
             model,
             1.0,
             2.0,
@@ -374,7 +374,7 @@ def main(args):
     emit("------|-----------|----------|-------------")
     r2_adv, r2_base = {}, ({} if base_model is not None else None)
     for lyr in all_layers:
-        r2a = ridge_r2(
+        r2a = _ridge_r2(
             model,
             lyr,
             args.n_ridge,
@@ -385,7 +385,7 @@ def main(args):
         r2_adv[lyr] = r2a
         role = "embed" if lyr == 0 else "output" if lyr == num_blocks else "hidden"
         if base_model is not None:
-            r2b = ridge_r2(
+            r2b = _ridge_r2(
                 base_model,
                 lyr,
                 args.n_ridge,
@@ -407,7 +407,7 @@ def main(args):
         heldout = {}
         for c_lo, c_hi in args.held_out_pairs:
             for lyr in hidden_layers:
-                m = binary_probe_metrics(
+                m = _binary_probe_metrics(
                     model,
                     c_lo,
                     c_hi,
@@ -469,9 +469,9 @@ def main(args):
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             history = json.load(f)
-        plot_training_traces(args.tag, history, hidden_layers, plot_dir)
-    plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
-    plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, plot_dir)
+        _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
+    _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
+    _plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, plot_dir)
     plot_learned_curves(model, args.tag, plot_dir)
     if base_model is not None:
         plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
