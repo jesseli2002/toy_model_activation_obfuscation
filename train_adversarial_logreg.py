@@ -176,6 +176,15 @@ def parse_args():
         "fit cost roughly linearly; the model's own forward/backward still "
         "uses the full batch. 1 = no subsampling.",
     )
+    p.add_argument(
+        "--probe-retrain-interval",
+        type=int,
+        default=LogregAdversarialConfig.probe_retrain_interval,
+        help="refit the probe (and re-extract its affine) only once every N "
+        "training iterations; other iterations reuse the last extracted "
+        "affine for the penalty. 1 = refit every iteration (default "
+        "behavior before this option existed).",
+    )
     # Optimization
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     p.add_argument("--lr", type=float, default=config.LR)
@@ -344,6 +353,7 @@ def main(args):
         class_threshold=args.class_threshold,
         probe_loss_kind=args.probe_loss_kind,
         probe_subsample=args.probe_subsample,
+        probe_retrain_interval=args.probe_retrain_interval,
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -391,6 +401,7 @@ def main(args):
     init_caches_np = [c.cpu().numpy() for c in init_caches]
     probe: Pipeline = build_probe_pipeline(args.probe_C, args.probe_init_iters)
     probe.fit(concat_caches_np(init_caches_np, hidden_layers), init_label_np)
+    affine = extract_affine(probe, device)
     print(
         f"[init] fit concatenated probe over layers {hidden_layers}, "
         f"init_iters={args.probe_init_iters}, C={args.probe_C}"
@@ -401,6 +412,7 @@ def main(args):
         f"num_blocks={num_blocks} bs={args.batch_size} "
         f"class_threshold={args.class_threshold} probe_loss_kind={args.probe_loss_kind} "
         f"probe_subsample={args.probe_subsample} "
+        f"probe_retrain_interval={args.probe_retrain_interval} "
         f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
 
@@ -424,19 +436,20 @@ def main(args):
         )
 
         t_probe0 = time.time()
-        caches_np = [c.detach().cpu().numpy() for c in caches]
-        X = concat_caches_np(caches_np, hidden_layers)
-        if args.probe_subsample > 1:
-            X_fit = X[:: args.probe_subsample]
-            label_fit = label_np[:: args.probe_subsample]
-            assert label_fit.any() and (~label_fit).any(), (
-                "subsampled probe batch has only one class present -- lower "
-                "--probe-subsample or raise --batch-size."
-            )
-        else:
-            X_fit, label_fit = X, label_np
-        fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
-        affine = extract_affine(probe, device)
+        if it % args.probe_retrain_interval == 0:
+            caches_np = [c.detach().cpu().numpy() for c in caches]
+            X = concat_caches_np(caches_np, hidden_layers)
+            if args.probe_subsample > 1:
+                X_fit = X[:: args.probe_subsample]
+                label_fit = label_np[:: args.probe_subsample]
+                assert label_fit.any() and (~label_fit).any(), (
+                    "subsampled probe batch has only one class present -- lower "
+                    "--probe-subsample or raise --batch-size."
+                )
+            else:
+                X_fit, label_fit = X, label_np
+            fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
+            affine = extract_affine(probe, device)
         probe_dt = time.time() - t_probe0
 
         cat_live = concat_caches_torch(caches, hidden_layers)
