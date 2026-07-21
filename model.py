@@ -19,7 +19,6 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-# Re-exported so `from model import ResidualMLPConfig` keeps working.
 from config import ResidualMLPConfig
 
 

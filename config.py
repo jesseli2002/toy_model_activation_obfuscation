@@ -7,7 +7,7 @@ run the num_x=1 base case and scale up incrementally without editing this file.
 import dataclasses
 import warnings
 from dataclasses import dataclass
-from typing import ClassVar, Optional
+from typing import ClassVar
 
 SEED = 913768
 
@@ -19,7 +19,7 @@ C_LOW, C_HIGH = 1.0, 2.0  # c ~ U[X_LOW, X_HIGH]
 # BATCH_SIZE = 4096
 BATCH_SIZE = 4096 * 4
 LR = 3e-3
-MAX_ITERS = 100_000_000
+MAX_ITERS = 100_000
 EARLY_STOP_LOSS = 1e-12  # float32 eps^2 ~ 1.4e-14; 1e-12 is a sane "exact" bar
 
 
@@ -50,7 +50,7 @@ class ResidualMLPConfig:
 
     num_x: int = 32
     d_model: int = 256
-    d_mlp: Optional[int] = None
+    d_mlp: int | None = None
     num_blocks: int = 8
     out_init_scale: float = 0.1
     leaky_relu_slope: float = 0.0
@@ -100,22 +100,17 @@ class AdversarialConfig:
     the field default below is what a fresh AdversarialConfig(...) gets when
     the field is omitted; _LEGACY_DEFAULTS is what an old checkpoint (saved
     before the field existed) is backfilled to. Several fields deliberately
-    diverge between the two: probe_loss forward-defaults to the new "lda"
+    diverge between the two, e.g. probe_loss forward-defaults to the new "lda"
     objective, but old checkpoints trained under the hardcoded squared
     penalty are backfilled to "squared" so they reconstruct with the
-    objective they were actually trained under. Similarly init/warmstart_path
-    now forward-default to a scratch run pointed at the canonical nx32
-    checkpoint, while old checkpoints (all warmstart runs with no
-    warmstart_path recorded) still backfill to init="warmstart",
-    warmstart_path=None; and seed keeps its legacy literal even though the
-    forward default now references the module-level SEED constant.
+    objective they were actually trained under.
     """
 
     lam: float = 0.5
     lam_warmup_iters: int = 0
-    penalty_layers: Optional[list] = None
+    penalty_layers: list | None = None
     init: str = "scratch"
-    warmstart_path: Optional[str] = "runs/nx32/checkpoints/best.pt"
+    warmstart_path: str | None = "runs/nx32/checkpoints/best.pt"
     seed: int = SEED
     probe_loss: str = "lda"
     probe_loss_eps: float = 1e-7

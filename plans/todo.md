@@ -11,58 +11,38 @@
     - lambda (proportion of loss for obfuscation) -> get a Pareto frontier
 
 
-I'd like to implement LayerNorm as an optional (but on-by-default for new constructions) feature in model.py.
-- Implement LayerNorm
-
 ###
 Another direction I'd like to explore: What would it look like to simultaneously train a model and an adversarial logistic regression probe? Would you need two simultaneous optimizers? What are the pitfalls?
 
-### Adversary ideas
-I have some ideas on variations to the probe loss (`l_probe`) in train_adversarial.py:
-- Scale loss term by standard deviation of data in direction of difference-of-means, so that (normalized) standard deviation is 1. (If using distance squared, this should use variance instead)
-    - Example of something the model could learn: Putting activations for c=1 in the middle, and c=2 on either end.
-- Train on absolute distance between means, rather than distance squared
-    - This can be done with/without the previous bullet
-- Train on LDA discrimination ability. Requires implementing the formula for LDA in PyTorch.
 
-In total, there should be 5 options for the loss term to be used (2x2 from the first two bullets, 1 from using LDA discrimination). My hope is that with at least one of these options, the model learns to represent `c` nonlinearly, so that it can no longer be detected by linear probes.
-
-What pitfalls could you see coming from implementing these ideas? Any trivial solutions that the model could learn?
-
-Response from Claude:
-- Biggest problem is there's a class of tricks where the model learns to just shrink the representation of $c$ while keeping it linear.
-    - Normalization by std/variance should help, as does LDA, but regularizer fights back.
-- LayerNorm isn't going to solve problem of shrinking. Recall LayerNorm just makes norm ~= 1.
-    - LayerNorm doesn't touch residual stream, where a shrinked c could live
-    - LayerNorm only closes the hack for uniform scaling.
-
-
-####
-Based on your feedback, I think we should do the following:
-- Implement the variance/stddev-based scaling, leaving it optional but on by-default. For regularization, pick a regularization constant that's on the order of machine epsilon - so that the model can't use that exit path without facing numerical noise
-- Implement the distance rather than distance squared loss function as an alternative
-- Implement LDA-based scoring, with your note on using solve() instead for numerical stability.
-- This would probably be a new CLI option, with 5 options, and the default one being distance^2 scaled by variance.
-
-Is this reasonable?
-
-Let's change the new default to LDA-based; it seems to have the best chance of finding something new. I'd like you to make an implementation plan for a Sonnet subagent. Note that in the code, there's now an option for legacy defaults to help with backward compatibility; probably that needs to be set so that the legacy loss variant is squared unnormalized.
-
-
+###
 - Adversarial simultaneous training of logistic regression probe and model
 - Claude mentioned in previous discussion that train_model and train_adversarial were different enough to make unifying train_model and train_adversarial challenging, without introducing some sort of loss function hook.
 
-- Penalize lopsided variances (where some axes have much smaller variances than others) (??)
+
+###
+I think train_model.py is no longer useful, since its behaviour can be replicated using train_adversarial.py with --lam=0. Can you review train_model.py and see if there's any functionality there that's not present in train_adversarial.py?
+
 
 ## Miscellaneous code quality
-I'm trying to avoid scattering default behaviour/options across the codebase, to make it easier to isolate exactly which line is responsible for a given default. To that extent, I need you to help with moving defaults away from the CLI and into the model config object (ResidualMLPConfig).
+I have some miscellaneous code quality improvement tasks. I need you to review them and orchestrate some subagents to handle them. I'm not time constrained, and some of these changes will affect each other, so it's probably best to handle them one at a time; that being said, they should still each be in different branches for different PRs - so later tasks branch off of earlier branches. I don't think these tasks are particularly difficult, so subagents can use Sonnet models. Review all tasks and let me know any questions you have, before starting any code changes.
+
+### adversarial_report.py default computations
+I'm finding that in adversarial_report.py, I'm not really reading most of the console output, only looking at the generated graphs. Can you look over the code and add an optional --detailed flag, which if enabled, computes more statistics & reporting, but by default, only computes what's necessary to get the plot results?
+
+### Public vs private functions in modules
+I'm looking to improve code quality. At this point, there's a number of scripts with functions that may or may not get imported by other scripts. If I'm not mistaken, the Python convention is to prefix functions with an underscore if they're only used locally; this hasn't been followed. Can you audit the codebase and see if this change can be made?
+
+### Defaults
+I'm trying to avoid scattering default behaviour/options across the codebase, to make it easier to isolate exactly which line is responsible for a given default. To that extent, I think the best approach is to move defaults away from the CLI definition and constants in config.py, and into configuration classes - ResidualMLPConfig and AdversarialConfig. That being said, I'm not certain this is the best approach, so if you have other ideas I'd like to hear them.
 - Off the top of my head, whether layer_norm is enabled, in train_adversarial.py, is de-facto defaulted by CLI rather than by ResidualMLPConfig.
 - There could be other cases.
+Audit train_adversarial.py and train_model.py for other default CLI options.
 
-Audit train_adversarial.py for other default CLI options.
 
-### train_adversarial.py
-There's gotta be a cleaner, less redundant interface than what's going on with delta_means_from_x, probe_delta_means, and probe_caches. Can you think through some alternatives that make logical sense?
+### -------------
+Help me speed up adversarial_report.py. There's one spot I think could use improvement but I'm not sure, and there could be other easy wins.
+- When training probes, it seems like it runs a forward pass for every layer, and ends up recomping the same data each time. It'd be more efficient to run the forward pass once, cache all the results, then train & test probes accordingly for each layer.
 
 ### Tests?
 What unit tests could be implemented?
