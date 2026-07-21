@@ -1,5 +1,7 @@
-"""Hand-built exact weights for the saturation task.
+"""
+Hand-built exact weights for saturation and obfuscation tasks.
 
+### Saturation
 Identity used:  sat(x, c) = x - ReLU(x - c) + ReLU(-x - c)   (for c > 0).
 
   Block 0 (per x-coordinate i, using one hidden neuron each):
@@ -38,6 +40,9 @@ of num_x+1). Sketch, using L_a(z) = LeakyReLU(z, negative_slope=a):
       Block 1, coordinate i (was: input -e_i-e_c, output +1):
         neuron C: input -e_i-e_c, output +1/(1-a**2)
         neuron D: input  e_i+e_c, output +a/(1-a**2)
+
+### Obfuscation
+First MLP block erases c by construction.
 """
 
 import torch
@@ -45,6 +50,10 @@ from jaxtyping import Float
 from torch import Tensor
 
 from model import ResidualMLP, ResidualMLPConfig
+from train_probe import capture_layers
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+generator = torch.Generator(device=device).manual_seed(64865313)
 
 
 def build_exact_model(
@@ -71,21 +80,44 @@ def build_exact_model(
     return m
 
 
-def _verify(
+def build_exact_obfuscator(
+    num_x: int, d_model: int, d_mlp: int, num_blocks: int = 4
+) -> ResidualMLP:
+    """
+    Analytic full obfuscation/erasure of c (that does not try to solve the task).
+    """
+    assert d_mlp >= 1, "need at least one MLP neuron"
+    assert num_blocks >= 1, "exact construction requires num_blocks >= 1"
+    m = ResidualMLP(ResidualMLPConfig(num_x, d_model, d_mlp, num_blocks=num_blocks))
+
+    with torch.no_grad():
+        for p in m.parameters():
+            p.zero_()
+        c_dir = num_x  # residual/index of the c coordinate
+
+        # Neuron computes -ReLU(c + 10) + 10. For c > -10 (always), this becomes -c.
+        m.blocks[0].W_in[c_dir, 0] = 1
+        m.blocks[0].b_in[0] = 10
+        m.blocks[0].W_out[0, c_dir] = -1
+        m.blocks[0].b_out[c_dir] = 10
+
+    return m
+
+
+def _verify_model(
     num_x: int = 32,
     d_model: int = 512,
     d_mlp: int | None = None,
-    n: int = 200_000,
-    seed: int = 0,
+    n: int = 20_000,
 ) -> float:
-    from config import d_mlp_for
     from data import sample_batch
 
     if d_mlp is None:
-        d_mlp = d_mlp_for(num_x)
+        # Exact construction requires d_mlp == num_x (build_exact_model asserts
+        # d_mlp >= num_x, and num_x is the tight minimum).
+        d_mlp = num_x
     m = build_exact_model(num_x, d_model, d_mlp)
-    g = torch.Generator().manual_seed(seed)
-    x_full, y = sample_batch(n, num_x, generator=g)
+    x_full, y = sample_batch(n, num_x, generator=generator, device=device)
     with torch.no_grad():
         pred: Float[Tensor, "n num_x"] = m.task_output(x_full)
     max_err = (pred - y).abs().max().item()
@@ -96,5 +128,43 @@ def _verify(
     return max_err
 
 
+def _verify_obfuscator(
+    num_x: int = 32,
+    d_model: int = 512,
+    d_mlp: int | None = None,
+    n: int = 20_000,
+) -> float:
+    from data import sample_batch
+
+    if d_mlp is None:
+        # Exact construction requires d_mlp == num_x (build_exact_model asserts
+        # d_mlp >= num_x, and num_x is the tight minimum).
+        d_mlp = num_x
+
+    num_blocks = 4
+    m = build_exact_obfuscator(num_x, d_model, d_mlp, num_blocks=num_blocks)
+    x_full, y = sample_batch(n, num_x, generator=generator, device=device)
+    with torch.no_grad():
+        pred: Float[Tensor, "n num_x"] = m.task_output(x_full)
+    max_err = (pred - y).abs().max().item()
+    print(
+        f"[analytic] num_x={num_x} d_model={d_model} d_mlp={d_mlp} "
+        f"n={n}: max abs elementwise error = {max_err:.3e}"
+    )
+
+    acts = capture_layers(m, x_full, layers=torch.arange(1, num_blocks + 1))
+    acts = acts.reshape(n, num_blocks, d_model)
+
+    # Activations in first num_x dimensions is x (no info about c)
+    assert torch.all(x_full[:, None, :num_x] == acts[:, :, :num_x])
+
+    # Activations in num_x index is zero (c has been cancelled)
+    assert torch.max(torch.abs(acts[:, :, num_x])) < 1e-6
+
+    # Activations everywhere else are zero
+    assert torch.all(acts[:, :, num_x + 1 :] == 0)
+
+
 if __name__ == "__main__":
-    _verify()
+    _verify_model()
+    _verify_obfuscator()
