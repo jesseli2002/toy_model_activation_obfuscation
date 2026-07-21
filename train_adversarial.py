@@ -37,7 +37,7 @@ This is NOT gated. The deliverable is the trained checkpoint + diagnostics
 (see adversarial_report.py); run once, then stop and review. The interesting
 science is not "can it hide c" (expected: yes) but HOW: does it hide c only at
 the probed points {1,2} (recoverable elsewhere in [1,2] -> "hidden"), or genuinely
-erase linear c-information across the range ("erased").
+erase linear c-information across the range ("erased")?
 
 Usage:
     # primary run: warm-start a capable model, then apply probe pressure
@@ -312,7 +312,7 @@ def probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach)
             per_layer.append(mu @ torch.linalg.solve(S, mu))
         else:
             raise ValueError(f"unknown probe_loss variant: {variant!r}")
-    return torch.stack(per_layer).sum()
+    return torch.stack(per_layer).mean()
 
 
 def main(args):
