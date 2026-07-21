@@ -207,10 +207,10 @@ def parse_args():
         type=int,
         nargs="?",
         const=-1,
-        default=None,
+        default=-1,
         help=(
             "also save a numbered snapshot checkpoint every N iters "
-            "(omitted = off; given with no value = use --ckpt-interval)"
+            "(-1 = --ckpt-interval, 0 = disable)"
         ),
     )
     return p.parse_args()
@@ -517,7 +517,7 @@ def main(args):
             save(last_path, it)
 
         if (
-            args.save_every_n is not None
+            args.save_every_n != 0  # i.e. not disabled
             and it % args.save_every_n == 0
             and it > start_iter
         ):
