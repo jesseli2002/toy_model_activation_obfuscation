@@ -277,10 +277,6 @@ def extract_affine(
     return w_eff.detach(), b_eff.detach()
 
 
-def concat_caches_np(caches: list[np.ndarray], layers: list[int]) -> np.ndarray:
-    return np.concatenate([caches[lyr] for lyr in layers], axis=1)
-
-
 def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.Tensor:
     return torch.cat([caches[lyr] for lyr in layers], dim=1)
 
@@ -398,9 +394,9 @@ def main(args):
         "init batch has only one probe class present -- check --class-threshold "
         "against c's range."
     )
-    init_caches_np = [c.cpu().numpy() for c in init_caches]
+    cat_init = concat_caches_torch(init_caches, hidden_layers)
     probe: Pipeline = build_probe_pipeline(args.probe_C, args.probe_init_iters)
-    probe.fit(concat_caches_np(init_caches_np, hidden_layers), init_label_np)
+    probe.fit(cat_init.cpu().numpy(), init_label_np)
     affine = extract_affine(probe, device)
     print(
         f"[init] fit concatenated probe over layers {hidden_layers}, "
@@ -435,10 +431,11 @@ def main(args):
             "against c's range."
         )
 
+        cat_live = concat_caches_torch(caches, hidden_layers)
+
         t_probe0 = time.time()
         if it % args.probe_retrain_interval == 0:
-            caches_np = [c.detach().cpu().numpy() for c in caches]
-            X = concat_caches_np(caches_np, hidden_layers)
+            X = cat_live.detach().cpu().numpy()
             if args.probe_subsample > 1:
                 X_fit = X[:: args.probe_subsample]
                 label_fit = label_np[:: args.probe_subsample]
@@ -452,7 +449,6 @@ def main(args):
             affine = extract_affine(probe, device)
         probe_dt = time.time() - t_probe0
 
-        cat_live = concat_caches_torch(caches, hidden_layers)
         l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
 
         if args.lam_warmup_iters > 0:
