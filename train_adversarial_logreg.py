@@ -1,67 +1,86 @@
-"""Step 3 — adversarial training: model vs. difference-of-means (DoM) probe.
+"""Step 3 (variant) — adversarial training: model vs. a stateful sklearn
+LogisticRegression probe, trained *simultaneously* with the model.
 
-We add a penalty that pressures the model to make c=1 and c=2 activations share
-the *same mean* at every hidden residual layer (defeating a difference-of-means
-probe) while still computing sat(x,-c,c) correctly across the full c-range.
+Unlike train_adversarial.py's closed-form DoM/LDA penalty (recomputed from
+scratch each step, no inner probe optimizer), this script keeps one
+`sklearn.linear_model.LogisticRegression` probe *per penalized hidden layer*,
+warm-started once against the initial model and then advanced by a handful of
+solver iterations per training step -- an actual adversary that tracks the
+model as it moves, rather than a static closed-form proxy for one.
 
-    L = lam * L_probe(pinned c in {1,2})  +  (1 - lam) * L_task(full-range c ~ U[1,2])
+    L = lam * L_probe(live activations vs. probe's current boundary)
+      + (1 - lam) * L_task(full-range c ~ U[1,2])
 
-  lam=1 optimizes ENTIRELY for hiding c (task loss has zero weight) — useful for
-  testing whether hiding is achievable *in principle* at a given set of layers
-  before worrying about how much task fidelity it costs. lam=0 recovers plain
-  task training with no probe pressure at all.
-
-  L_task  — MSE over the first num_x outputs on a batch with c ~ U[1,2]. Keeping
-            the task trained across ALL c is the single most important design
-            choice: it stops "c not recoverable at held-out c" from being
-            confounded with "the model was never trained there".
-  L_probe — sum over the *hidden* residual layers of a penalty on the difference
-            of class means, on a SEPARATE pinned sub-batch (half c=1, half c=2, x
-            resampled). The exact penalty is selectable via --probe-loss (see
-            config.PROBE_LOSS_CHOICES / plans/new_probe_losses.md); default is
-            'lda' (full-covariance-whitened Fisher ratio), with 'squared'
-            (sum_{l in hidden} || mean(r_l|c=2) - mean(r_l|c=1) ||^2) preserved as
-            the legacy variant for reproducing pre-change runs. Driving any
-            variant to 0 makes the two class means coincide (in the appropriate
-            metric) at every hidden layer -> DoM accuracy -> chance. Closed form,
-            no inner probe-training loop.
+Per iteration:
+  1. One forward pass on a fresh batch (c ~ U[1,2]) gives both the task
+     prediction and the hidden-layer activation caches -- reused for
+     everything below, no separate probe sub-batch.
+  2. Probe labels come from the same batch: label = (c >= --class-threshold),
+     splitting the c in [1,2] range into two classes (~50/50 at the default
+     threshold 1.5).
+  3. Each layer's probe is updated in place: `pipeline.fit(X, label)` on the
+     *detached* activations, with `LogisticRegression(warm_start=True)` and
+     `max_iter` fixed to a small constant (PROBE_STEP_MAX_ITER) so the lbfgs
+     solver resumes from last step's coefficients and only takes a few more
+     steps -- cheap relative to the model's forward+backward. The
+     StandardScaler is refit every step too, so the model can't dodge the
+     probe by uniformly shrinking its own representation.
+  4. The probe's current affine decision function (scaler mean_/scale_ +
+     logreg coef_/intercept_) is extracted as detached torch constants
+     `w_eff, b_eff` such that `s(r) = r @ w_eff + b_eff` reproduces the
+     probe's score on raw (unscaled) activations. `s` is then recomputed on
+     the *live* (grad-carrying) caches, giving a differentiable adversarial
+     penalty without backprop through sklearn's solver:
+         gap   = mean(s[label==1]) - mean(s[label==0])
+         l_probe = mean over penalized layers of relu(gap)
+     relu caps the reward once the classes overlap at the boundary, so the
+     model isn't pushed to over-invert (the probe would just relearn the
+     flipped direction). True labels (from c), not the probe's *predicted*
+     labels, are used for the split -- conditioning on predicted labels would
+     make the loss discontinuous around the boundary.
 
 "Hidden" layers are the residual-stream caches strictly between the embedding
 (cache 0 = input; c sits verbatim in a fixed coordinate, nothing to hide/train)
 and the final residual (cache num_blocks -> y; the task *requires* it to encode
 c, since sat(x,-1,1) != sat(x,-2,2)). So hidden = caches 1 .. num_blocks-1.
-Penalizing all of them by default closes the "relocate c to an unpenalized
-layer" escape route from the start; per-layer logging still confirms it.
 
-This is NOT gated. The deliverable is the trained checkpoint + diagnostics
-(see adversarial_report.py); run once, then stop and review. The interesting
-science is not "can it hide c" (expected: yes) but HOW: does it hide c only at
-the probed points {1,2} (recoverable elsewhere in [1,2] -> "hidden"), or genuinely
-erase linear c-information across the range ("erased")?
+This is NOT gated. The deliverable is the trained checkpoint + diagnostics; run
+once, then stop and review. The interesting science is the same as
+train_adversarial.py: not "can it hide c" but HOW -- does it hide c only at the
+probed threshold (recoverable elsewhere in [1,2] -> "hidden"), or genuinely
+erase linear c-information across the range ("erased")? A moving, adaptive
+probe is a strictly harder adversary than the closed-form penalty, so this is
+a stress test of whatever hiding the DoM/LDA runs found.
+
+Requires warm-starting from an existing train_adversarial.py-produced
+checkpoint (no from-scratch path -- conflating "learn the task" with "hide c
+from a probe that's learning simultaneously" adds a confound and isn't
+supported here).
 
 Usage:
-    # primary run: warm-start a capable model, then apply probe pressure
-    # (default --probe-loss lda; pass --probe-loss squared to reproduce the
-    # pre-change canonical run exactly)
-    python train_adversarial.py --tag adv1 --lam 0.5 \
+    python train_adversarial_logreg.py --tag adv-logreg1 --lam 0.5 \
         --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
-    # from scratch (conflates learning + hiding; kept for contrast)
-    python train_adversarial.py --tag advscratch --init scratch --lam 0.5
-    python train_adversarial.py --resume --tag adv1 --max-iters 12000
+    python train_adversarial_logreg.py --resume --tag adv-logreg1 --max-iters 12000
     # feasibility check: can c be hidden at layer 1 at all, ignoring task loss
-    python train_adversarial.py --tag adv-feas-l1 --lam 1.0 --penalty-layers 1 \
-        --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
+    python train_adversarial_logreg.py --tag adv-logreg-feas-l1 --lam 1.0 \
+        --penalty-layers 1 --warmstart-path runs/nx32/checkpoints/best.pt \
+        --max-iters 6000
 """
 
 import argparse
 import json
-import math
 import os
 import shutil
 import time
 
 import config
-from config import AdversarialConfig, ResidualMLPConfig
+from config import LogregAdversarialConfig, ResidualMLPConfig
+
+# Per-step warm-started solver iterations for the probe update (small: the
+# solver resumes from last step's coefficients, so a handful of lbfgs steps
+# is enough to track the model). The init fit (before the training loop) uses
+# --probe-init-iters instead, since it starts from scratch.
+PROBE_STEP_MAX_ITER = 10
 
 
 def _parse_penalty_layers(s: str) -> str | list[int]:
@@ -72,44 +91,33 @@ def _parse_penalty_layers(s: str) -> str | list[int]:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Step 3 adversarial training (model vs. DoM probe).",
+        description="Adversarial training: model vs. a simultaneous, "
+        "stateful sklearn LogisticRegression probe.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--tag", type=str, default="adv")
-    p.add_argument(
-        "--init",
-        choices=["warmstart", "scratch"],
-        default=AdversarialConfig.init,
-        help="warmstart loads a capable model then applies probe "
-        "pressure; scratch conflates learning the task with hiding c.",
-    )
+    p.add_argument("--tag", type=str, default="adv-logreg")
     p.add_argument(
         "--warmstart-path",
         type=str,
-        default=AdversarialConfig.warmstart_path,
-        help="checkpoint to warm-start from (only used when --init warmstart). "
-        "Architecture is taken from this checkpoint's config.",
+        required=True,
+        help="checkpoint to warm-start from (train_adversarial.py-produced, "
+        "loaded via ResidualMLP.load). Architecture is taken from this "
+        "checkpoint's config. Required -- this script has no from-scratch path.",
     )
     p.add_argument(
         "--lam",
         type=float,
-        default=AdversarialConfig.lam,
+        default=LogregAdversarialConfig.lam,
         help="convex-combination weight: loss = lam * L_probe + (1-lam) * L_task. "
-        "lam=1 optimizes purely for hiding c (task loss ignored) -- use this to "
-        "test whether hiding is achievable in principle at a given set of "
-        "layers. lam=0 is plain task training. Tune in between so the penalty "
-        "bites without wrecking the task.",
+        "lam=1 optimizes purely for hiding c (task loss ignored). lam=0 is "
+        "plain task training.",
     )
     p.add_argument(
         "--lam-warmup-iters",
         type=int,
-        default=AdversarialConfig.lam_warmup_iters,
+        default=LogregAdversarialConfig.lam_warmup_iters,
         help="linearly ramp the penalty weight 0 -> lam over this many iters "
-        "(task weight ramps 1 -> 1-lam correspondingly). Warm-starting from a "
-        "near-exact solution and hitting it with the full penalty at once knocks "
-        "the model off the task manifold into a bad basin it can't climb back "
-        "from; ramping keeps the task intact while probe pressure grows in. "
-        "0 = no ramp (constant lam).",
+        "(task weight ramps 1 -> 1-lam correspondingly). 0 = no ramp.",
     )
     p.add_argument(
         "--penalty-layers",
@@ -119,70 +127,41 @@ def parse_args():
         "subset e.g. '1,2,3'.",
     )
     p.add_argument(
-        "--probe-loss",
-        choices=config.PROBE_LOSS_CHOICES,
-        default=AdversarialConfig.probe_loss,
-        help="per-layer penalty on the class-mean gap. 'lda' (default) is a "
-        "full-covariance-whitened Fisher-ratio objective, immune to both uniform "
-        "shrink and single-direction variance-inflation cheats. 'squared' "
-        "reproduces the original hardcoded penalty exactly (use this to "
-        "reproduce legacy runs). See module docstring / plans/new_probe_losses.md.",
-    )
-    p.add_argument(
-        "--probe-loss-eps",
+        "--class-threshold",
         type=float,
-        default=AdversarialConfig.probe_loss_eps,
-        help="machine-eps-scale floor for variance denominators / abs smoothing "
-        "(squared-var, absolute-std, absolute).",
+        default=LogregAdversarialConfig.class_threshold,
+        help="probe class split: label = (c >= threshold). c ~ U[1,2], so 1.5 "
+        "gives an ~even split.",
     )
     p.add_argument(
-        "--lda-shrinkage",
+        "--probe-C",
         type=float,
-        default=AdversarialConfig.lda_shrinkage,
-        help="relative ridge for the LDA within-class covariance inverse: "
-        "reg = shrinkage * mean(diag(S_W)). Spectrum-relative, not machine-eps, "
-        "since S_W is a d_model x d_model matrix over rank-deficient post-ReLU "
-        "activations (lda variant only).",
+        default=LogregAdversarialConfig.probe_C,
+        help="inverse L2 regularization strength for each layer's "
+        "LogisticRegression probe (sklearn's C; smaller = more regularization).",
     )
     p.add_argument(
-        "--probe-loss-detach-denom",
-        action=argparse.BooleanOptionalAction,
-        default=AdversarialConfig.probe_loss_detach_denom,
-        help="detach the variance/covariance denominator so no gradient flows "
-        "through it (squared-var, absolute-std, lda). Default off: the live "
-        "denominator gives the true Fisher-ratio / LDA gradient.",
-    )
-    # Architecture (only used for --init scratch; warmstart reads the checkpoint).
-    p.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
-    p.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
-    p.add_argument("--d-mlp", type=int, default=None, help="default: num_x")
-    p.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
-    p.add_argument(
-        "--leaky-relu-slope",
-        type=float,
-        default=ResidualMLPConfig.leaky_relu_slope,
+        "--probe-init-iters",
+        type=int,
+        default=LogregAdversarialConfig.probe_init_iters,
+        help="max_iter for the one-time init fit (before the training loop), "
+        "which starts each probe from scratch. Per-step updates during "
+        f"training instead use a fixed max_iter={PROBE_STEP_MAX_ITER} "
+        "(warm-started, so a few iters is enough).",
     )
     p.add_argument(
-        "--out-init-scale", type=float, default=ResidualMLPConfig.out_init_scale
-    )
-    p.add_argument(
-        "--layer-norm",
-        action=argparse.BooleanOptionalAction,
-        default=ResidualMLPConfig.layer_norm,
-        help="apply LayerNorm to each block's input before W_in (--init scratch only)",
+        "--probe-loss-kind",
+        choices=config.PROBE_LOGREG_LOSS_CHOICES,
+        default=LogregAdversarialConfig.probe_loss_kind,
+        help="'meandiff-relu' (default): relu(mean(s|label=1) - mean(s|label=0)) "
+        "along the probe's current learned direction s. 'meandiff': same but "
+        "without the relu cap.",
     )
     # Optimization
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
-    p.add_argument(
-        "--probe-batch-size",
-        type=int,
-        default=4096,
-        help="per-class size of the pinned sub-batch used for L_probe.",
-    )
     p.add_argument("--lr", type=float, default=config.LR)
-    p.add_argument("--lr-final", type=float, default=config.LR)
     p.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
-    p.add_argument("--seed", type=int, default=AdversarialConfig.seed)
+    p.add_argument("--seed", type=int, default=LogregAdversarialConfig.seed)
     # Bookkeeping
     p.add_argument("--resume", action="store_true")
     p.add_argument(
@@ -199,19 +178,16 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
+import numpy as np
 import torch
+from sklearn.linear_model import LogisticRegression
+from sklearn.pipeline import Pipeline, make_pipeline
+from sklearn.preprocessing import StandardScaler
 
-from data import sample_batch, sample_fixed_c
+from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
 from paths import ckpt_dir, log_dir, run_dir
 from train_model import eval_max_err
-
-
-def _cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
-    if total <= 1:
-        return lr0
-    t = min(step, total) / total
-    return lr1 + 0.5 * (lr0 - lr1) * (1 + math.cos(math.pi * t))
 
 
 def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
@@ -224,8 +200,8 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
         if lyr == 0:
             raise SystemExit(
                 "[error] layer 0 is the embedding: c sits in a fixed coordinate, "
-                "so its class-mean gap is a constant 1.0 with no gradient. "
-                "Penalizing it is a no-op; drop it."
+                "so a probe there is trivially perfect. Penalizing it fights an "
+                "unwinnable battle for no reason; drop it."
             )
         if lyr == num_blocks:
             print(
@@ -240,87 +216,60 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
     return layers
 
 
-def _delta_means_from_x(model, x_lo, x_hi, layers):
-    """Per-layer difference of class means for pre-sampled c=1 / c=2 batches.
-
-    Returns {layer: mean(r_l|c=2) - mean(r_l|c=1)}. Differentiable; the caller
-    controls grad via torch.no_grad(). Used by the eval trace (fixed x, built
-    once).
-    """
-    _, caches_lo = model.forward(x_lo, return_cache=True)
-    _, caches_hi = model.forward(x_hi, return_cache=True)
-    return {lyr: caches_hi[lyr].mean(0) - caches_lo[lyr].mean(0) for lyr in layers}
-
-
-def _probe_caches(model, num_x, n_per_class, layers, generator, device):
-    """Differentiable per-layer raw activation caches for pinned c=1 / c=2
-    sub-batches (x resampled from `generator` each call), sliced to `layers`.
-    _probe_penalty needs the full per-class activations (not just the mean
-    difference) to compute within-class spread/covariance."""
-    xf_lo, _ = sample_fixed_c(n_per_class, num_x, 1.0, generator, device)
-    xf_hi, _ = sample_fixed_c(n_per_class, num_x, 2.0, generator, device)
-    _, caches_lo = model.forward(xf_lo, return_cache=True)
-    _, caches_hi = model.forward(xf_hi, return_cache=True)
-    return (
-        {lyr: caches_lo[lyr] for lyr in layers},
-        {lyr: caches_hi[lyr] for lyr in layers},
+def build_probe_pipeline(C: float, max_iter: int) -> Pipeline:
+    return make_pipeline(
+        StandardScaler(),
+        LogisticRegression(warm_start=True, C=C, max_iter=max_iter),
     )
 
 
-def _probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach):
-    """Sum over `layers` of the probe-loss penalty on the class-mean gap.
+def fit_probe(pipeline: Pipeline, X: np.ndarray, label: np.ndarray, max_iter: int):
+    """Update `pipeline` in place: refit the StandardScaler (so the model
+    can't dodge the probe by uniformly shrinking its own activations) and
+    advance the warm-started LogisticRegression solver by `max_iter` more
+    iterations."""
+    pipeline.named_steps["logisticregression"].max_iter = max_iter
+    pipeline.fit(X, label)
 
-    `variant` is one of config.PROBE_LOSS_CHOICES ("squared", "absolute",
-    "squared-var", "absolute-std", "lda"); see the module docstring / CLI help
-    for what each computes. For 'squared'/'absolute' this is a
-    variant-independent function of Δμ alone; the more expensive
-    within-class-spread variants need the raw per-class activations `a`/`b`
-    (caches_lo[l] / caches_hi[l]).
 
-    `detach` (squared-var/absolute-std/lda only): detaches the spread
-    denominator (variance direction `u`+`var`, or the LDA covariance `S`)
-    before dividing/solving, so no gradient flows back through it -- the
-    model then only sees gradient through Δμ in the numerator, as if the
-    spread were a fixed constant each step. Default False (live denominator,
-    true Fisher-ratio/LDA gradient); True is provided to A/B-test the effect
-    of that extra gradient path.
+def extract_affine(
+    pipeline: Pipeline, device, dtype=torch.float32
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """The probe's current decision score is affine in the raw (unscaled)
+    activation r: s(r) = w_eff . r + b_eff, folding the StandardScaler into
+    the LogisticRegression coefficients. Returns detached torch tensors."""
+    scaler = pipeline.named_steps["standardscaler"]
+    logreg = pipeline.named_steps["logisticregression"]
+    mu = torch.as_tensor(scaler.mean_, device=device, dtype=dtype)
+    sigma = torch.as_tensor(scaler.scale_, device=device, dtype=dtype)
+    w = torch.as_tensor(logreg.coef_[0], device=device, dtype=dtype)
+    b = float(logreg.intercept_[0])
+    w_eff = w / sigma
+    b_eff = b - (w * mu / sigma).sum()
+    return w_eff.detach(), b_eff.detach()
 
-    `shrinkage` (lda only): relative ridge added to the pooled within-class
-    covariance before inverting it, as `shrinkage * mean(diag(S_W))`. Needed
-    because S_W (d_model x d_model) is often rank-deficient (post-ReLU
-    activations, small per-class batches), which would make the exact inverse
-    singular/unstable.
-    """
+
+def score_penalty(
+    caches: list[torch.Tensor],
+    affines: dict[int, tuple[torch.Tensor, torch.Tensor]],
+    layers: list[int],
+    label: torch.Tensor,
+    kind: str,
+) -> torch.Tensor:
+    """Differentiable adversarial penalty: for each penalized layer, project
+    the live (grad-carrying) activations onto the probe's current learned
+    direction and push the two classes' mean scores together."""
     per_layer = []
     for lyr in layers:
-        a, b = caches_lo[lyr], caches_hi[lyr]  # (N, d) each, differentiable
-        mu = b.mean(0) - a.mean(0)  # Δμ, (d,)
-        if variant == "squared":
-            per_layer.append((mu**2).sum())
-        elif variant == "absolute":
-            per_layer.append(torch.sqrt(mu.norm() ** 2 + eps**2))
-        elif variant in ("squared-var", "absolute-std"):
-            u = mu / (mu.norm() + eps)
-            if detach:
-                u = u.detach()
-            var = 0.5 * (a @ u).var(unbiased=False) + 0.5 * (b @ u).var(unbiased=False)
-            if detach:
-                var = var.detach()
-            if variant == "squared-var":
-                per_layer.append((mu**2).sum() / (var + eps))
-            else:
-                per_layer.append(mu.norm() / torch.sqrt(var + eps))
-        elif variant == "lda":
-            ac, bc = a - a.mean(0), b - b.mean(0)
-            n = a.shape[0] + b.shape[0]
-            S_W = (ac.T @ ac + bc.T @ bc) / n  # (d, d) pooled within-class cov
-            reg = shrinkage * torch.diagonal(S_W).mean()
-            S = S_W + reg * torch.eye(S_W.shape[0], device=S_W.device, dtype=S_W.dtype)
-            if detach:
-                S = S.detach()
-            per_layer.append(mu @ torch.linalg.solve(S, mu))
+        w_eff, b_eff = affines[lyr]
+        s = caches[lyr] @ w_eff + b_eff
+        gap = s[label].mean() - s[~label].mean()
+        if kind == "meandiff-relu":
+            per_layer.append(torch.relu(gap))
+        elif kind == "meandiff":
+            per_layer.append(gap)
         else:
-            raise ValueError(f"unknown probe_loss variant: {variant!r}")
+            raise ValueError(f"unknown probe_loss_kind: {kind!r}")
     return torch.stack(per_layer).mean()
 
 
@@ -343,39 +292,16 @@ def main(args):
 
     torch.manual_seed(args.seed)
 
-    # --- build / initialize the model ---
-    if args.init == "warmstart":
-        if not os.path.exists(args.warmstart_path):
-            raise SystemExit(
-                f"[error] --init warmstart but checkpoint not found: "
-                f"{args.warmstart_path}"
-            )
-        model, _ = ResidualMLP.load(args.warmstart_path, map_location=device)
-        model = model.to(device)
-        model_config = model.config
-        num_x, d_model, d_mlp, num_blocks = (
-            model_config.num_x,
-            model_config.d_model,
-            model_config.d_mlp,
-            model_config.num_blocks,
+    # --- warm-start the model (only supported init path) ---
+    if not os.path.exists(args.warmstart_path):
+        raise SystemExit(
+            f"[error] --warmstart-path checkpoint not found: {args.warmstart_path}"
         )
-        print(f"[init] warm-started from {args.warmstart_path} (cfg={model_config})")
-    else:
-        num_x = args.num_x
-        d_model = args.d_model
-        num_blocks = args.num_blocks
-        model_config = ResidualMLPConfig(
-            num_x=num_x,
-            d_model=d_model,
-            d_mlp=args.d_mlp,
-            num_blocks=num_blocks,
-            out_init_scale=args.out_init_scale,
-            leaky_relu_slope=args.leaky_relu_slope,
-            layer_norm=args.layer_norm,
-        )
-        model = ResidualMLP(model_config).to(device)
-        d_mlp = model_config.d_mlp
-        print(f"[init] scratch model num_x={num_x} d_model={d_model} d_mlp={d_mlp}")
+    model, _ = ResidualMLP.load(args.warmstart_path, map_location=device)
+    model = model.to(device)
+    model_config = model.config
+    num_x, num_blocks = model_config.num_x, model_config.num_blocks
+    print(f"[init] warm-started from {args.warmstart_path} (cfg={model_config})")
 
     hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
     if not hidden_layers:
@@ -384,17 +310,16 @@ def main(args):
             f"layers). Nothing to hide against."
         )
 
-    adv_config = AdversarialConfig(
+    adv_config = LogregAdversarialConfig(
         lam=args.lam,
         lam_warmup_iters=args.lam_warmup_iters,
         penalty_layers=hidden_layers,
-        init=args.init,
-        warmstart_path=args.warmstart_path if args.init == "warmstart" else None,
+        warmstart_path=args.warmstart_path,
         seed=args.seed,
-        probe_loss=args.probe_loss,
-        probe_loss_eps=args.probe_loss_eps,
-        lda_shrinkage=args.lda_shrinkage,
-        probe_loss_detach_denom=args.probe_loss_detach_denom,
+        probe_C=args.probe_C,
+        probe_init_iters=args.probe_init_iters,
+        class_threshold=args.class_threshold,
+        probe_loss_kind=args.probe_loss_kind,
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -417,6 +342,9 @@ def main(args):
             with open(hist_path) as f:
                 history = json.load(f)
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
+        # Note: probes are stateful sklearn objects, not part of the
+        # checkpoint -- resume re-inits them from the resumed model below,
+        # same as a fresh run.
 
     def save(path, it):
         model.save(
@@ -424,54 +352,64 @@ def main(args):
             iter=it,
             opt=opt.state_dict(),
             best_loss=best_loss,
-            # adversarial metadata (not architecture, so kept out of "config");
-            # includes seed, so it is not passed separately here.
             **adv_config.to_dict(),
         )
 
-    # Fixed eval batch, drawn once from gen so the delta-mean trace reflects the
-    # model changing, not the batch.
-    eval_x_lo, _ = sample_fixed_c(20_000, num_x, 1.0, gen, device)
-    eval_x_hi, _ = sample_fixed_c(20_000, num_x, 2.0, gen, device)
-
-    @torch.no_grad()
-    def eval_delta_norms():
-        """Clean per-layer ||Δmean|| on the fixed eval batch (for stable traces)."""
-        deltas = _delta_means_from_x(model, eval_x_lo, eval_x_hi, hidden_layers)
-        return {lyr: float(d.norm().item()) for lyr, d in deltas.items()}
+    # --- init-fit one probe per penalized hidden layer ---
+    x_full, _ = sample_batch(args.batch_size, num_x, generator=gen, device=device)
+    with torch.no_grad():
+        _, init_caches = model.forward(x_full, return_cache=True)
+    init_label_np = (x_full[:, num_x] >= args.class_threshold).cpu().numpy()
+    assert init_label_np.any() and (~init_label_np).any(), (
+        "init batch has only one probe class present -- check --class-threshold "
+        "against c's range."
+    )
+    probes: dict[int, Pipeline] = {}
+    for lyr in hidden_layers:
+        pipe = build_probe_pipeline(args.probe_C, args.probe_init_iters)
+        pipe.fit(init_caches[lyr].cpu().numpy(), init_label_np)
+        probes[lyr] = pipe
+    print(
+        f"[init] fit probes on layers {hidden_layers}, "
+        f"init_iters={args.probe_init_iters}, C={args.probe_C}"
+    )
 
     print(
-        f"[adv] tag={args.tag} init={args.init} lam={args.lam} "
-        f"penalty_layers={hidden_layers} num_blocks={num_blocks} "
-        f"bs={args.batch_size} probe_bs={args.probe_batch_size}/class "
-        f"probe_loss={args.probe_loss} "
+        f"[adv] tag={args.tag} lam={args.lam} penalty_layers={hidden_layers} "
+        f"num_blocks={num_blocks} bs={args.batch_size} "
+        f"class_threshold={args.class_threshold} probe_loss_kind={args.probe_loss_kind} "
         f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
+
+    for pg in opt.param_groups:
+        pg["lr"] = args.lr
 
     t0 = time.time()
     it = start_iter
     for it in range(start_iter, args.max_iters):
-        lr = _cosine_lr(it, args.max_iters, args.lr, args.lr_final)
-        for pg in opt.param_groups:
-            pg["lr"] = lr
-
-        # task loss on the FULL c-range
+        t_fwd0 = time.time()
         x_full, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
-        pred = model.task_output(x_full)
-        l_task = torch.mean((pred - y) ** 2)
+        y_pred_full, caches = model.forward(x_full, return_cache=True)
+        l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
+        fwd_dt = time.time() - t_fwd0
 
-        # probe penalty on a separate pinned sub-batch (x resampled)
-        caches_lo, caches_hi = _probe_caches(
-            model, num_x, args.probe_batch_size, hidden_layers, gen, device
+        label = x_full[:, num_x] >= args.class_threshold
+        label_np = label.detach().cpu().numpy()
+        assert label_np.any() and (~label_np).any(), (
+            "batch has only one probe class present -- check --class-threshold "
+            "against c's range."
         )
-        l_probe = _probe_penalty(
-            caches_lo,
-            caches_hi,
-            hidden_layers,
-            args.probe_loss,
-            args.probe_loss_eps,
-            args.lda_shrinkage,
-            args.probe_loss_detach_denom,
+
+        t_probe0 = time.time()
+        affines = {}
+        for lyr in hidden_layers:
+            X = caches[lyr].detach().cpu().numpy()
+            fit_probe(probes[lyr], X, label_np, PROBE_STEP_MAX_ITER)
+            affines[lyr] = extract_affine(probes[lyr], device)
+        probe_dt = time.time() - t_probe0
+
+        l_probe = score_penalty(
+            caches, affines, hidden_layers, label, args.probe_loss_kind
         )
 
         if args.lam_warmup_iters > 0:
@@ -480,9 +418,11 @@ def main(args):
             lam_eff = args.lam
         loss = lam_eff * l_probe + (1 - lam_eff) * l_task
 
+        t_bwd0 = time.time()
         opt.zero_grad(set_to_none=True)
         loss.backward()
         opt.step()
+        model_dt = fwd_dt + (time.time() - t_bwd0)
 
         lv = loss.item()
         if lv < best_loss:
@@ -491,7 +431,6 @@ def main(args):
 
         if it % args.log_interval == 0:
             me = eval_max_err(model, num_x, gen, device=device)
-            dn = eval_delta_norms()
             history.append(
                 {
                     "iter": it,
@@ -500,17 +439,18 @@ def main(args):
                     "l_probe": float(l_probe.item()),
                     "lam_eff": lam_eff,
                     "max_err": me,
-                    "delta_norms": {str(k): v for k, v in dn.items()},
+                    "probe_dt": probe_dt,
+                    "model_dt": model_dt,
                 }
             )
             with open(hist_path, "w") as f:
                 json.dump(history, f)
             rate = (it - start_iter + 1) / (time.time() - t0 + 1e-9)
-            dn_str = " ".join(f"L{k}:{v:.2e}" for k, v in dn.items())
             print(
                 f"iter {it:>6d}  loss {lv:.3e}  task {l_task.item():.3e}  "
                 f"probe {l_probe.item():.3e}  λ {lam_eff:.2f}  max_err {me:.3e}  "
-                f"|Δμ| [{dn_str}]  lr {lr:.2e}  {rate:.1f} it/s"
+                f"probe_dt {probe_dt*1e3:.1f}ms  model_dt {model_dt*1e3:.1f}ms  "
+                f"{rate:.1f} it/s"
             )
 
         if it % args.ckpt_interval == 0 and it > start_iter:
@@ -519,7 +459,6 @@ def main(args):
     # final logging + save
     save(last_path, it)
     me = eval_max_err(model, num_x, gen, device=device)
-    dn = eval_delta_norms()
     history.append(
         {
             "iter": it,
@@ -527,16 +466,14 @@ def main(args):
             "l_task": None,
             "l_probe": None,
             "max_err": me,
-            "delta_norms": {str(k): v for k, v in dn.items()},
             "final": True,
         }
     )
     with open(hist_path, "w") as f:
         json.dump(history, f)
-    dn_str = " ".join(f"L{k}:{v:.2e}" for k, v in dn.items())
     print(
         f"[done] iter {it}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
-        f"|Δμ| [{dn_str}]  elapsed {time.time()-t0:.1f}s"
+        f"elapsed {time.time()-t0:.1f}s"
     )
     print(f"[done] checkpoints in {run_ckpt_dir}, history in {hist_path}")
     print(f"[next] python adversarial_report.py --tag {args.tag}")
