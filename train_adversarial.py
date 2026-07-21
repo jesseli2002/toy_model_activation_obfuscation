@@ -321,7 +321,7 @@ def probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach)
             per_layer.append(mu @ torch.linalg.solve(S, mu))
         else:
             raise ValueError(f"unknown probe_loss variant: {variant!r}")
-    return torch.stack(per_layer).sum()
+    return torch.stack(per_layer).mean()
 
 
 def main(args):
