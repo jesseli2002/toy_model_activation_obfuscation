@@ -202,6 +202,17 @@ def parse_args():
     )
     p.add_argument("--log-interval", type=int, default=100)
     p.add_argument("--ckpt-interval", type=int, default=200)
+    p.add_argument(
+        "--save-every-n",
+        type=int,
+        nargs="?",
+        const=-1,
+        default=None,
+        help=(
+            "also save a numbered snapshot checkpoint every N iters "
+            "(omitted = off; given with no value = use --ckpt-interval)"
+        ),
+    )
     return p.parse_args()
 
 
@@ -305,6 +316,8 @@ def score_penalty(
 
 
 def main(args):
+    if args.save_every_n == -1:
+        args.save_every_n = args.ckpt_interval
     warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -381,11 +394,15 @@ def main(args):
         # same as a fresh run.
 
     def save(path, it):
+        w_eff, b_eff = affine
         model.save(
             path,
             iter=it,
             opt=opt.state_dict(),
             best_loss=best_loss,
+            probe_w=w_eff.cpu(),
+            probe_b=b_eff.cpu(),
+            probe_layers=hidden_layers,
             **adv_config.to_dict(),
         )
 
@@ -498,6 +515,13 @@ def main(args):
 
         if it % args.ckpt_interval == 0 and it > start_iter:
             save(last_path, it)
+
+        if (
+            args.save_every_n is not None
+            and it % args.save_every_n == 0
+            and it > start_iter
+        ):
+            save(os.path.join(run_ckpt_dir, f"iter_{it}.pt"), it)
 
     # final logging + save
     save(last_path, it)
