@@ -44,7 +44,7 @@ device = "cuda" if torch.cuda.is_available() else "cpu"
 torch.set_default_device(device)
 
 
-def parse_layers(s: str) -> list[int]:
+def _parse_layers(s: str) -> list[int]:
     return [int(v) for v in s.split(",")]
 
 
@@ -54,7 +54,7 @@ def parse_args():
     p.add_argument("--ckpt", type=str, default="best", choices=["best", "last"])
     p.add_argument(
         "--layers",
-        type=parse_layers,
+        type=_parse_layers,
         default=[1],
         help=(
             "comma-separated residual-stream indices to probe, e.g. '1' or '0,2' "
@@ -114,7 +114,7 @@ def binary_dataset(model, num_x, n, c_lo, c_hi, layers, generator, device):
 
 
 @torch.no_grad()
-def forward_steered(
+def _forward_steered(
     model: ResidualMLP,
     x_full: torch.Tensor,
     steer_layer: int,
@@ -134,7 +134,7 @@ def forward_steered(
 
 
 @torch.no_grad()
-def plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
+def _plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
     xs = torch.linspace(-3, 3, 400, device=device)
     panels = [
         ("c=1, unsteered", 1.0, None, [1.0]),
@@ -152,7 +152,7 @@ def plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
             x = torch.zeros(len(xs), num_x)
             x[:, j] = xs
             x_full = torch.cat([x, torch.full((len(xs), 1), c_val)], dim=1)
-            y = forward_steered(model, x_full, steer_layer, vec)[:, j]
+            y = _forward_steered(model, x_full, steer_layer, vec)[:, j]
             ax.plot(
                 xs.cpu().numpy(),
                 y.cpu().numpy(),
@@ -350,7 +350,7 @@ def main():
         steer_vec = args.steer_scale * torch.tensor(
             w_dom, dtype=r_lo_tr.dtype, device=device
         )
-        plot_steering(model, num_x, args.layers[0], steer_vec, args.tag, plot_dir)
+        _plot_steering(model, num_x, args.layers[0], steer_vec, args.tag, plot_dir)
 
     if args.show:
         plt.show()
