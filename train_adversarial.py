@@ -235,28 +235,19 @@ def delta_means_from_x(model, x_lo, x_hi, layers):
     """Per-layer difference of class means for pre-sampled c=1 / c=2 batches.
 
     Returns {layer: mean(r_l|c=2) - mean(r_l|c=1)}. Differentiable; the caller
-    controls grad via torch.no_grad(). Shared by the training penalty (fresh x
-    each step) and the eval trace (fixed x, built once).
+    controls grad via torch.no_grad(). Used by the eval trace (fixed x, built
+    once).
     """
     _, caches_lo = model.forward(x_lo, return_cache=True)
     _, caches_hi = model.forward(x_hi, return_cache=True)
     return {lyr: caches_hi[lyr].mean(0) - caches_lo[lyr].mean(0) for lyr in layers}
 
 
-def probe_delta_means(model, num_x, n_per_class, layers, generator, device):
-    """Differentiable per-layer difference of class means at pinned c in {1,2},
-    with x resampled from `generator` each call."""
-    xf_lo, _ = sample_fixed_c(n_per_class, num_x, 1.0, generator, device)
-    xf_hi, _ = sample_fixed_c(n_per_class, num_x, 2.0, generator, device)
-    return delta_means_from_x(model, xf_lo, xf_hi, layers)
-
-
 def probe_caches(model, num_x, n_per_class, layers, generator, device):
     """Differentiable per-layer raw activation caches for pinned c=1 / c=2
     sub-batches (x resampled from `generator` each call), sliced to `layers`.
-    Sibling to probe_delta_means: probe_penalty needs the full per-class
-    activations (not just the mean difference) to compute within-class
-    spread/covariance."""
+    probe_penalty needs the full per-class activations (not just the mean
+    difference) to compute within-class spread/covariance."""
     xf_lo, _ = sample_fixed_c(n_per_class, num_x, 1.0, generator, device)
     xf_hi, _ = sample_fixed_c(n_per_class, num_x, 2.0, generator, device)
     _, caches_lo = model.forward(xf_lo, return_cache=True)
