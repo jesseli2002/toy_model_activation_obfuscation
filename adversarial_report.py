@@ -26,6 +26,8 @@ Reading the outcomes (heuristic, printed at the end):
   - no linear probe recovers c anywhere in [1,2]                        => ERASED.
   - DoM -> chance but logreg/LDA at {1,2} stay high                     => defeated
     the specific probe only (means match, covariances differ).
+  The held-out-pairs table (3b) and this interpretation heuristic are the most
+  expensive part of the script and are only printed/written with --detailed.
 
 Optionally pass --baseline-path to run the same probes on the pre-adversarial
 model (e.g. runs/nx32/checkpoints/best.pt) for a before/after contrast.
@@ -33,6 +35,7 @@ model (e.g. runs/nx32/checkpoints/best.pt) for a before/after contrast.
 Usage:
     python adversarial_report.py --tag adv1
     python adversarial_report.py --tag adv1 --baseline-path runs/nx32/checkpoints/best.pt
+    python adversarial_report.py --tag adv1 --detailed
 """
 
 import argparse
@@ -80,6 +83,13 @@ def parse_args():
     p.add_argument("--ridge-alpha", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=20260718)
     p.add_argument("--show", action="store_true")
+    p.add_argument(
+        "--detailed",
+        action="store_true",
+        help="also compute the report-only statistics that feed no saved plot: "
+        "binary held-out c pairs (3b) and the interpretation heuristic. Skipped "
+        "by default since they're the most expensive part of the script.",
+    )
     return p.parse_args()
 
 
@@ -389,60 +399,63 @@ def main(args):
             emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} |     -")
     emit()
 
-    # --- 3b. binary held-out pairs (asymmetric about 1.5) ---
-    emit("## 3b. Binary held-out c pairs (NOT in {1,2}; asymmetric about 1.5)")
-    emit("pair       | layer | DoM acc | logreg acc | LDA acc")
-    emit("-----------|-------|---------|------------|--------")
-    heldout = {}
-    for c_lo, c_hi in args.held_out_pairs:
-        for lyr in hidden_layers:
-            m = binary_probe_metrics(
-                model,
-                c_lo,
-                c_hi,
-                lyr,
-                args.n_train,
-                args.n_test,
-                g,
-            )
-            heldout[(c_lo, c_hi, lyr)] = m
-            emit(
-                f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
-                f"{m['logreg']:.4f}   | {m['lda']:.4f}"
-            )
-    emit()
+    if args.detailed:
+        # --- 3b. binary held-out pairs (asymmetric about 1.5) ---
+        emit("## 3b. Binary held-out c pairs (NOT in {1,2}; asymmetric about 1.5)")
+        emit("pair       | layer | DoM acc | logreg acc | LDA acc")
+        emit("-----------|-------|---------|------------|--------")
+        heldout = {}
+        for c_lo, c_hi in args.held_out_pairs:
+            for lyr in hidden_layers:
+                m = binary_probe_metrics(
+                    model,
+                    c_lo,
+                    c_hi,
+                    lyr,
+                    args.n_train,
+                    args.n_test,
+                    g,
+                )
+                heldout[(c_lo, c_hi, lyr)] = m
+                emit(
+                    f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
+                    f"{m['logreg']:.4f}   | {m['lda']:.4f}"
+                )
+        emit()
 
-    # --- interpretation heuristic ---
-    emit("## Interpretation (heuristic — confirm by eye)")
-    pen_hidden = [l for l in hidden_layers if l in penalty_layers]
-    dom_at_chance = (
-        all(gap[l]["dom"] < 0.6 for l in pen_hidden) if pen_hidden else False
-    )
-    ridge_hidden_max = max((r2_adv[l] for l in pen_hidden), default=0.0)
-    logreg_high = any(gap[l]["logreg"] > 0.9 for l in pen_hidden)
-    heldout_high = any(
-        heldout[(c_lo, c_hi, l)]["logreg"] > 0.9
-        for (c_lo, c_hi) in args.held_out_pairs
-        for l in pen_hidden
-    )
-    emit(f"- penalized-layer DoM at chance (<0.6): {dom_at_chance}")
-    emit(f"- max ridge R^2 on penalized layers: {ridge_hidden_max:+.4f}")
-    emit(f"- any penalized-layer logreg > 0.9 at {{1,2}}: {logreg_high}")
-    emit(f"- any held-out-pair logreg > 0.9 on penalized layers: {heldout_high}")
-    if dom_at_chance and ridge_hidden_max > 0.5:
-        verdict = "HIDDEN (point-hiding): DoM cancelled at {1,2} but c still linearly present across [1,2]."
-    elif dom_at_chance and (logreg_high or heldout_high):
-        verdict = "SPECIFIC-PROBE DEFEATED: DoM at chance but a stronger linear probe still separates."
-    elif dom_at_chance and ridge_hidden_max < 0.1 and not (logreg_high or heldout_high):
-        verdict = (
-            "ERASED: no linear probe recovers c on penalized layers anywhere in [1,2]."
+        # --- interpretation heuristic ---
+        emit("## Interpretation (heuristic — confirm by eye)")
+        pen_hidden = [l for l in hidden_layers if l in penalty_layers]
+        dom_at_chance = (
+            all(gap[l]["dom"] < 0.6 for l in pen_hidden) if pen_hidden else False
         )
-    else:
-        verdict = (
-            "MIXED / penalty not yet biting — inspect traces and per-layer numbers."
+        ridge_hidden_max = max((r2_adv[l] for l in pen_hidden), default=0.0)
+        logreg_high = any(gap[l]["logreg"] > 0.9 for l in pen_hidden)
+        heldout_high = any(
+            heldout[(c_lo, c_hi, l)]["logreg"] > 0.9
+            for (c_lo, c_hi) in args.held_out_pairs
+            for l in pen_hidden
         )
-    emit(f"=> {verdict}")
-    emit()
+        emit(f"- penalized-layer DoM at chance (<0.6): {dom_at_chance}")
+        emit(f"- max ridge R^2 on penalized layers: {ridge_hidden_max:+.4f}")
+        emit(f"- any penalized-layer logreg > 0.9 at {{1,2}}: {logreg_high}")
+        emit(f"- any held-out-pair logreg > 0.9 on penalized layers: {heldout_high}")
+        if dom_at_chance and ridge_hidden_max > 0.5:
+            verdict = "HIDDEN (point-hiding): DoM cancelled at {1,2} but c still linearly present across [1,2]."
+        elif dom_at_chance and (logreg_high or heldout_high):
+            verdict = "SPECIFIC-PROBE DEFEATED: DoM at chance but a stronger linear probe still separates."
+        elif (
+            dom_at_chance
+            and ridge_hidden_max < 0.1
+            and not (logreg_high or heldout_high)
+        ):
+            verdict = "ERASED: no linear probe recovers c on penalized layers anywhere in [1,2]."
+        else:
+            verdict = (
+                "MIXED / penalty not yet biting — inspect traces and per-layer numbers."
+            )
+        emit(f"=> {verdict}")
+        emit()
 
     # --- write report + plots ---
     out_log = log_dir(args.tag)
