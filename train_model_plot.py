@@ -31,7 +31,7 @@ def parse_args():
     return p.parse_args()
 
 
-def plot_dynamics(tag, plot_dir):
+def _plot_dynamics(tag, plot_dir):
     hist_path = os.path.join(log_dir(tag), "history.json")
     with open(hist_path) as f:
         hist = json.load(f)
@@ -66,7 +66,7 @@ def plot_learned_curves(
 ):
     """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
 
-    Split out of plot_curves so callers who already have a model in memory
+    Split out of _plot_curves so callers who already have a model in memory
     (e.g. adversarial_report.py) can reuse it without a checkpoint round-trip.
     """
     num_x = model.num_x
@@ -108,7 +108,7 @@ def plot_learned_curves(
     return p
 
 
-def plot_curves(tag, ckpt, plot_dir):
+def _plot_curves(tag, ckpt, plot_dir):
     path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
     model, _ = ResidualMLP.load(path, map_location="cpu")
     model.eval()
@@ -119,8 +119,8 @@ def main():
     args = parse_args()
     plot_dir = get_plot_dir(args.tag)
     os.makedirs(plot_dir, exist_ok=True)
-    plot_dynamics(args.tag, plot_dir)
-    plot_curves(args.tag, args.ckpt, plot_dir)
+    _plot_dynamics(args.tag, plot_dir)
+    _plot_curves(args.tag, args.ckpt, plot_dir)
 
     if args.show:
         plt.show()
