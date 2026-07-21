@@ -14,71 +14,13 @@ The nonlinearity is LeakyReLU(negative_slope=leaky_relu_slope); leaky_relu_slope
 (the default) reproduces plain ReLU exactly.
 """
 
-import dataclasses
-import warnings
-from dataclasses import dataclass
-
 import torch
 import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-
-@dataclass
-class ResidualMLPConfig:
-    """Architecture + init hyperparameters for ResidualMLP.
-
-    Stored verbatim (as a dict) under checkpoint["config"]. Two distinct
-    notions of "default" apply to each optional field below, and they are
-    deliberately kept separate:
-      - the field default (e.g. `num_blocks: int = 4`) is what a fresh
-        ResidualMLPConfig(...) call gets if the field is omitted -- i.e. the
-        default for code written going forward.
-      - _LEGACY_DEFAULTS is what an *old* checkpoint -- one saved before the
-        field existed, so its config dict is missing the key -- is backfilled
-        to by from_dict(). This is what that field's value effectively WAS,
-        historically, before it became configurable.
-    These currently coincide for every field, but must not be assumed to:
-    if a future change bumps a field's forward default, _LEGACY_DEFAULTS
-    keeps old checkpoints reconstructing with the architecture they were
-    actually trained with.
-    """
-
-    num_x: int
-    d_model: int
-    d_mlp: int
-    num_blocks: int = 8
-    out_init_scale: float = 0.1
-    leaky_relu_slope: float = 0.0
-    layer_norm: bool = False
-
-    # Historical values for fields absent from an old checkpoint's config
-    # dict. Every optional field above must have an entry here.
-    _LEGACY_DEFAULTS = {
-        "num_blocks": 4,
-        "out_init_scale": 0.1,
-        "leaky_relu_slope": 0.0,
-        "layer_norm": False,
-    }
-
-    def to_dict(self) -> dict:
-        return dataclasses.asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "ResidualMLPConfig":
-        """Build a config from a checkpoint's config dict: fields the dict
-        predates are backfilled from _LEGACY_DEFAULTS (not the field default
-        above)."""
-        known = {f.name for f in dataclasses.fields(cls)}
-        unknown = d.keys() - known
-        if unknown:
-            warnings.warn(
-                f"ResidualMLPConfig.from_dict: dropping unrecognized key(s) "
-                f"{sorted(unknown)} -- checkpoint saved by a newer version?"
-            )
-        present = {k: v for k, v in d.items() if k in known}
-        # union over dicts, preferring `present`
-        return cls(**(cls._LEGACY_DEFAULTS | present))
+# Re-exported so `from model import ResidualMLPConfig` keeps working.
+from config import ResidualMLPConfig
 
 
 class ResidualMLPBlock(nn.Module):
