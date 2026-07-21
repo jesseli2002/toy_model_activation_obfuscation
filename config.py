@@ -167,6 +167,8 @@ class LogregAdversarialConfig:
     probe_init_iters: int = 1000
     class_threshold: float = 1.5
     probe_loss_kind: str = "meandiff-relu"
+    probe_subsample: int = 8
+    probe_retrain_interval: int = 32
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
@@ -178,6 +180,8 @@ class LogregAdversarialConfig:
         "probe_init_iters": 1000,
         "class_threshold": 1.5,
         "probe_loss_kind": "meandiff-relu",
+        "probe_subsample": 1,  # legacy runs fit on the full batch every step
+        "probe_retrain_interval": 1,  # legacy runs refit every iteration
     }
 
     def to_dict(self) -> dict:
