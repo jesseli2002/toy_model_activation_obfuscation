@@ -5,3 +5,5 @@ This directory contains plans - both for agents and for humans. The ones specifi
       sections of detailed_plan.md.
 - detailed_plan.md
     - (COMPLETED) Original generated plan at project start (i.e. greenfield plan).
+- train_adversarial_logreg_plan.md
+    - (COMPLETED) Implementation plan for adversarial training with logistic regression probe.

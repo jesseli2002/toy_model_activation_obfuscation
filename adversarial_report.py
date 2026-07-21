@@ -110,7 +110,7 @@ from data import sample_batch, sample_fixed_c
 from model import ResidualMLP
 from paths import log_dir
 from paths import plot_dir as get_plot_dir
-from train_model import eval_max_err
+from data import eval_max_err
 from train_model_plot import plot_learned_curves
 from train_probe import capture_layers_dict, load_model
 from train_probe import plot_probe as plot_probe_separation

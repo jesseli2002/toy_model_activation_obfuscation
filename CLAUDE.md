@@ -13,6 +13,7 @@ import torch # and other heavy imports
 ... # rest of code
 ```
 This is not a hard rule; if argument parsing necessarily relies on some heavy libraries, don't sacrifice code readability or command line ease-of-use for this one specific problem.
+- Indicate tensor/array shapes with jaxtyping on functions and methods
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.

@@ -86,11 +86,14 @@ import time
 import config
 from config import LogregAdversarialConfig, ResidualMLPConfig
 
+import warnings
+from sklearn.exceptions import ConvergenceWarning
+
 # Per-step warm-started solver iterations for the probe update (small: the
 # solver resumes from last step's coefficients, so a handful of lbfgs steps
 # is enough to track the model). The init fit (before the training loop) uses
 # --probe-init-iters instead, since it starts from scratch.
-PROBE_STEP_MAX_ITER = 10
+PROBE_STEP_MAX_ITER = 100
 
 
 def _parse_penalty_layers(s: str) -> str | list[int]:
@@ -198,7 +201,7 @@ def parse_args():
         help="delete an existing runs/<tag> directory before a fresh run.",
     )
     p.add_argument("--log-interval", type=int, default=100)
-    p.add_argument("--ckpt-interval", type=int, default=1000)
+    p.add_argument("--ckpt-interval", type=int, default=200)
     return p.parse_args()
 
 
@@ -215,7 +218,7 @@ from sklearn.preprocessing import StandardScaler
 from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
 from paths import ckpt_dir, log_dir, run_dir
-from train_model import eval_max_err
+from data import eval_max_err
 
 
 def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
@@ -247,7 +250,7 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
 def build_probe_pipeline(C: float, max_iter: int) -> Pipeline:
     return make_pipeline(
         StandardScaler(),
-        LogisticRegression(warm_start=True, C=C, max_iter=max_iter),
+        LogisticRegression(warm_start=True, C=C, max_iter=max_iter, tol=1e-3),
     )
 
 
@@ -302,6 +305,7 @@ def score_penalty(
 
 
 def main(args):
+    warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
     if os.path.exists(run_dir(args.tag)) and not args.resume:
@@ -487,7 +491,7 @@ def main(args):
             rate = (it - start_iter + 1) / (time.time() - t0 + 1e-9)
             print(
                 f"iter {it:>6d}  loss {lv:.3e}  task {l_task.item():.3e}  "
-                f"probe {l_probe.item():.3e}  λ {lam_eff:.2f}  max_err {me:.3e}  "
+                f"probe {l_probe.item():.3e}  λ {lam_eff:.1e}  max_err {me:.3e}  "
                 f"probe_dt {probe_dt*1e3:.1f}ms  model_dt {model_dt*1e3:.1f}ms  "
                 f"{rate:.1f} it/s"
             )

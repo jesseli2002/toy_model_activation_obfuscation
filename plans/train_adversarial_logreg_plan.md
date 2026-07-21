@@ -44,36 +44,18 @@ Keep one `sklearn` pipeline **per penalized hidden layer** (a dict
   and fit each layer's probe with a *large* `max_iter` (add `--probe-init-iters`,
   default e.g. `1000`) so the probe starts well-trained against the warm-started
   model. Store `INIT_ITERS` as the probe's current `max_iter`.
-- **Per-step update**: after the init fit, on each training iteration, increment
-  `logreg.max_iter += 1` and call `pipeline.fit(X, label)` again. With
+- **Per-step update**: after the init fit, on each training iteration, fix
+  `logreg.max_iter = 10` (small number) and call `pipeline.fit(X, label)` again. With
   `warm_start=True` on the `LogisticRegression`, the lbfgs solver resumes from the
-  previous coefficients and runs ~one more iteration — cheap. Reach into the
-  pipeline's `LogisticRegression` step to bump `max_iter` (e.g.
-  `pipe.named_steps["logisticregression"].max_iter += 1`).
+  previous coefficients and runs only a few iterations — cheap. Reach into the
+  pipeline's `LogisticRegression` step to change `max_iter` (e.g.
+  `pipe.named_steps["logisticregression"].max_iter = 10`). Define this constant at the top of the file, for easy access. (Later work will improve code quality by making it configurable, but that's out of scope.)
 - `X` for fit = `caches[l].detach().cpu().numpy()`; `label` = the boolean array
   above. sklearn is CPU/numpy and non-differentiable — the probe *fit* never needs
   gradient.
 - Guard: both classes must be present in the batch (with `c~U[1,2]` and threshold
   1.5 the split is ~50/50 over a 16k batch, so this is safe; add a cheap assert).
-
-> **StandardScaler / warm_start interaction — decision point.** `StandardScaler`
-> refits its mean/std on every `fit` call, so warm-started `LogisticRegression`
-> coefficients are technically re-interpreted in a shifted feature space each step.
-> Two options:
-> - **(A, recommended) Freeze the scaler after the init fit**: fit `StandardScaler`
->   once at init, then only `transform`. This keeps warm-start coherent so "one
->   solver iteration/step" is genuinely meaningful, and the LR can absorb slow
->   activation drift into its coef/intercept. Implement by fitting the scaler on the
->   init batch, then, per step, `X_scaled = scaler.transform(X)` and calling
->   `logreg.fit(X_scaled, label)` directly (skip the pipeline's scaler refit), or by
->   setting the scaler's params and not refitting.
-> - **(B) Keep the plain pipeline** (`pipeline.fit` refits the scaler each step) —
->   simplest, matches the exact "StandardScaler pipeline" wording, warm-start is then
->   only an approximate init hint. Fine early; degrades as the model deliberately
->   shifts activations to fool the probe.
->
-> Default to **(A)**; leave a comment pointing at this tradeoff. Flag to the user if
-> anything about (A) turns out awkward.
+- Make sure to re-fit the StandardScalar as well (`pipeline.fit`); otherwise the model could deliberately shrink its representations to fool the probe.
 
 ### 3. Differentiable adversarial probe loss
 The probe is non-differentiable, so we can't backprop through `pipeline.fit`.
@@ -123,7 +105,7 @@ Total loss keeps the existing convex combination + λ-warmup:
 `loss = lam_eff * l_probe + (1 - lam_eff) * l_task`.
 
 ### 4. Step ordering (per iteration)
-1. Forward pass (with grad) → `y_pred_full`, `caches`; compute `l_task`.
+1. Forward pass (with grad) → `y_pred_full`, `caches`; compute `l_task`. (time this)
 2. `label = (c >= 1.5)`.
 3. **Update probe(s)** on `detach().cpu().numpy()` activations (time this).
 4. Extract `w_eff, b_eff` per layer from the freshly-updated probe; compute
@@ -177,10 +159,11 @@ definition (caches `1..num_blocks-1`).
 ---
 
 ## Open questions to surface to the user (don't block; pick the recommended default and note the assumption)
-1. **Scaler**: freeze after init (recommended, §2A) vs. refit each step (§2B).
-2. **Probe loss**: `relu(meandiff)` along the learned direction (recommended) vs.
+1. **Probe loss**: `relu(meandiff)` along the learned direction (recommended) vs.
    plain `meandiff`; and confirm true-label (not predicted-label) conditioning is OK.
-3. Whether `--init scratch` should be kept at all, or warmstart-only.
+2. Whether `--init scratch` should be kept at all, or warmstart-only.
+
+(Note from user: I've reviewed the plan. Use relu(meandiff), and do not provide a init-from-scratch to simplify the logic -> warmstart only.)
 
 ---
 

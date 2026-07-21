@@ -168,7 +168,7 @@ class LogregAdversarialConfig:
     class_threshold: float = 1.5
     probe_loss_kind: str = "meandiff-relu"
     probe_subsample: int = 8
-    probe_retrain_interval: int = 32
+    probe_retrain_interval: int = 16
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
