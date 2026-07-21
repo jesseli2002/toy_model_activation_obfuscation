@@ -78,21 +78,21 @@ def parse_args():
     p.add_argument(
         "--init",
         choices=["warmstart", "scratch"],
-        default="scratch",
+        default=config.AdversarialConfig.init,
         help="warmstart loads a capable model then applies probe "
         "pressure; scratch conflates learning the task with hiding c.",
     )
     p.add_argument(
         "--warmstart-path",
         type=str,
-        default="runs/nx32/checkpoints/best.pt",
+        default=config.AdversarialConfig.warmstart_path,
         help="checkpoint to warm-start from (only used when --init warmstart). "
         "Architecture is taken from this checkpoint's config.",
     )
     p.add_argument(
         "--lam",
         type=float,
-        default=0.5,
+        default=config.AdversarialConfig.lam,
         help="convex-combination weight: loss = lam * L_probe + (1-lam) * L_task. "
         "lam=1 optimizes purely for hiding c (task loss ignored) -- use this to "
         "test whether hiding is achievable in principle at a given set of "
@@ -102,7 +102,7 @@ def parse_args():
     p.add_argument(
         "--lam-warmup-iters",
         type=int,
-        default=0,
+        default=config.AdversarialConfig.lam_warmup_iters,
         help="linearly ramp the penalty weight 0 -> lam over this many iters "
         "(task weight ramps 1 -> 1-lam correspondingly). Warm-starting from a "
         "near-exact solution and hitting it with the full penalty at once knocks "
@@ -145,21 +145,31 @@ def parse_args():
     )
     p.add_argument(
         "--probe-loss-detach-denom",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=config.AdversarialConfig.probe_loss_detach_denom,
         help="detach the variance/covariance denominator so no gradient flows "
         "through it (squared-var, absolute-std, lda). Default off: the live "
         "denominator gives the true Fisher-ratio / LDA gradient.",
     )
     # Architecture (only used for --init scratch; warmstart reads the checkpoint).
-    p.add_argument("--num-x", type=int, default=config.NUM_X)
-    p.add_argument("--d-model", type=int, default=config.D_MODEL)
+    p.add_argument("--num-x", type=int, default=config.ResidualMLPConfig.num_x)
+    p.add_argument("--d-model", type=int, default=config.ResidualMLPConfig.d_model)
     p.add_argument("--d-mlp", type=int, default=None, help="default: num_x")
-    p.add_argument("--num-blocks", type=int, default=config.NUM_BLOCKS)
-    p.add_argument("--leaky-relu-slope", type=float, default=config.LEAKY_RELU_SLOPE)
-    p.add_argument("--out-init-scale", type=float, default=0.1)
+    p.add_argument(
+        "--num-blocks", type=int, default=config.ResidualMLPConfig.num_blocks
+    )
+    p.add_argument(
+        "--leaky-relu-slope",
+        type=float,
+        default=config.ResidualMLPConfig.leaky_relu_slope,
+    )
+    p.add_argument(
+        "--out-init-scale", type=float, default=config.ResidualMLPConfig.out_init_scale
+    )
     p.add_argument(
         "--layer-norm",
-        action="store_true",
+        action=argparse.BooleanOptionalAction,
+        default=config.ResidualMLPConfig.layer_norm,
         help="apply LayerNorm to each block's input before W_in (--init scratch only)",
     )
     # Optimization
@@ -173,7 +183,7 @@ def parse_args():
     p.add_argument("--lr", type=float, default=1e-3)
     p.add_argument("--lr-final", type=float, default=1e-3)
     p.add_argument("--max-iters", type=int, default=6000)
-    p.add_argument("--seed", type=int, default=913768)
+    p.add_argument("--seed", type=int, default=config.AdversarialConfig.seed)
     # Bookkeeping
     p.add_argument("--resume", action="store_true")
     p.add_argument(
@@ -354,18 +364,18 @@ def main(args):
     else:
         num_x = args.num_x
         d_model = args.d_model
-        d_mlp = args.d_mlp if args.d_mlp is not None else config.d_mlp_for(num_x)
         num_blocks = args.num_blocks
         model_config = ResidualMLPConfig(
             num_x=num_x,
             d_model=d_model,
-            d_mlp=d_mlp,
+            d_mlp=args.d_mlp,
             num_blocks=num_blocks,
             out_init_scale=args.out_init_scale,
             leaky_relu_slope=args.leaky_relu_slope,
             layer_norm=args.layer_norm,
         )
         model = ResidualMLP(model_config).to(device)
+        d_mlp = model_config.d_mlp
         print(f"[init] scratch model num_x={num_x} d_model={d_model} d_mlp={d_mlp}")
 
     hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
