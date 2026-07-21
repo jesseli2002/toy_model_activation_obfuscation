@@ -236,6 +236,17 @@ def plot_probe(
     ):
         ax.hist(proj[lo_mask], bins=60, alpha=0.6, label="c=1")
         ax.hist(proj[hi_mask], bins=60, alpha=0.6, label="c=2")
+
+        # Set plot limit to avoid outliers
+        percentile_5, percentile_95 = np.percentile(proj, [5, 95])
+        percentile_diff = percentile_95 - percentile_5
+        ax.set_xlim(
+            [
+                percentile_5 - percentile_diff * 0.5,
+                percentile_95 + percentile_diff * 0.5,
+            ]
+        )
+
         ax.axvline(0.0, color="k", ls="--", lw=1, label="threshold")
         ax.set_title(title)
         ax.set_xlabel("projection (test set)")
@@ -265,7 +276,7 @@ def plot_probe(
     ax_logreg_resid.set_ylabel("PC1 of logreg-orthogonal residual")
     ax_logreg_resid.legend(fontsize=8)
     ax_logreg_resid.grid(True, alpha=0.3)
-    ax_logreg_resid.set_aspect("equal", adjustable="datalim")
+    # ax_logreg_resid.set_aspect("equal", adjustable="datalim")
 
     layer_str = "-".join(str(i) for i in layers)
     fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
