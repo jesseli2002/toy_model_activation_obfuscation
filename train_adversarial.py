@@ -63,7 +63,7 @@ import time
 import config
 
 
-def parse_penalty_layers(s: str) -> str | list[int]:
+def _parse_penalty_layers(s: str) -> str | list[int]:
     if s.strip().lower() == "all":
         return "all"
     return [int(v) for v in s.split(",") if v.strip() != ""]
@@ -112,7 +112,7 @@ def parse_args():
     )
     p.add_argument(
         "--penalty-layers",
-        type=parse_penalty_layers,
+        type=_parse_penalty_layers,
         default="all",
         help="'all' = every hidden layer (1..num_blocks-1), or a comma-separated "
         "subset e.g. '1,2,3'.",
@@ -198,14 +198,14 @@ from paths import ckpt_dir, log_dir, run_dir
 from train_model import eval_max_err
 
 
-def cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
+def _cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
     if total <= 1:
         return lr0
     t = min(step, total) / total
     return lr1 + 0.5 * (lr0 - lr1) * (1 + math.cos(math.pi * t))
 
 
-def resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
+def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
     """Hidden residual layers = 1 .. num_blocks-1 (see module docstring)."""
     all_hidden = list(range(1, num_blocks))
     if penalty_layers == "all":
@@ -231,7 +231,7 @@ def resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
     return layers
 
 
-def delta_means_from_x(model, x_lo, x_hi, layers):
+def _delta_means_from_x(model, x_lo, x_hi, layers):
     """Per-layer difference of class means for pre-sampled c=1 / c=2 batches.
 
     Returns {layer: mean(r_l|c=2) - mean(r_l|c=1)}. Differentiable; the caller
@@ -243,10 +243,10 @@ def delta_means_from_x(model, x_lo, x_hi, layers):
     return {lyr: caches_hi[lyr].mean(0) - caches_lo[lyr].mean(0) for lyr in layers}
 
 
-def probe_caches(model, num_x, n_per_class, layers, generator, device):
+def _probe_caches(model, num_x, n_per_class, layers, generator, device):
     """Differentiable per-layer raw activation caches for pinned c=1 / c=2
     sub-batches (x resampled from `generator` each call), sliced to `layers`.
-    probe_penalty needs the full per-class activations (not just the mean
+    _probe_penalty needs the full per-class activations (not just the mean
     difference) to compute within-class spread/covariance."""
     xf_lo, _ = sample_fixed_c(n_per_class, num_x, 1.0, generator, device)
     xf_hi, _ = sample_fixed_c(n_per_class, num_x, 2.0, generator, device)
@@ -258,7 +258,7 @@ def probe_caches(model, num_x, n_per_class, layers, generator, device):
     )
 
 
-def probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach):
+def _probe_penalty(caches_lo, caches_hi, layers, variant, eps, shrinkage, detach):
     """Sum over `layers` of the probe-loss penalty on the class-mean gap.
 
     `variant` is one of config.PROBE_LOSS_CHOICES ("squared", "absolute",
@@ -368,7 +368,7 @@ def main(args):
         model = ResidualMLP(model_config).to(device)
         print(f"[init] scratch model num_x={num_x} d_model={d_model} d_mlp={d_mlp}")
 
-    hidden_layers = resolve_hidden_layers(args.penalty_layers, num_blocks)
+    hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
     if not hidden_layers:
         raise SystemExit(
             f"[error] no penalty layers (num_blocks={num_blocks} has no hidden "
@@ -428,7 +428,7 @@ def main(args):
     @torch.no_grad()
     def eval_delta_norms():
         """Clean per-layer ||Δmean|| on the fixed eval batch (for stable traces)."""
-        deltas = delta_means_from_x(model, eval_x_lo, eval_x_hi, hidden_layers)
+        deltas = _delta_means_from_x(model, eval_x_lo, eval_x_hi, hidden_layers)
         return {lyr: float(d.norm().item()) for lyr, d in deltas.items()}
 
     print(
@@ -442,7 +442,7 @@ def main(args):
     t0 = time.time()
     it = start_iter
     for it in range(start_iter, args.max_iters):
-        lr = cosine_lr(it, args.max_iters, args.lr, args.lr_final)
+        lr = _cosine_lr(it, args.max_iters, args.lr, args.lr_final)
         for pg in opt.param_groups:
             pg["lr"] = lr
 
@@ -452,10 +452,10 @@ def main(args):
         l_task = torch.mean((pred - y) ** 2)
 
         # probe penalty on a separate pinned sub-batch (x resampled)
-        caches_lo, caches_hi = probe_caches(
+        caches_lo, caches_hi = _probe_caches(
             model, num_x, args.probe_batch_size, hidden_layers, gen, device
         )
-        l_probe = probe_penalty(
+        l_probe = _probe_penalty(
             caches_lo,
             caches_hi,
             hidden_layers,

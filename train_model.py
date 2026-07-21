@@ -90,7 +90,7 @@ def parse_args():
     return p.parse_args()
 
 
-def cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
+def _cosine_lr(step: int, total: int, lr0: float, lr1: float) -> float:
     import math
 
     if total <= 1:
@@ -201,7 +201,7 @@ def main():
     it = start_iter
     stopped_early = False
     for it in range(start_iter, args.max_iters):
-        lr = cosine_lr(it, args.max_iters, args.lr, args.lr_final)
+        lr = _cosine_lr(it, args.max_iters, args.lr, args.lr_final)
         for pg in opt.param_groups:
             pg["lr"] = lr
 
