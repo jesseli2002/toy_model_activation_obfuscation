@@ -60,8 +60,12 @@ def parse_args():
         "stateful LogisticRegression probe (sklearn or GPU-resident torch).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--tag", type=str, default="adv-logreg")
-    p.add_argument(
+    g_init = p.add_argument_group(
+        "model initialization",
+        "Warm-start from a train_adversarial.py checkpoint (default), or init "
+        "from scratch with the given architecture.",
+    )
+    g_init.add_argument(
         "--warmstart",
         type=str,
         default=None,
@@ -70,7 +74,7 @@ def parse_args():
         "loaded via ResidualMLP.load). Architecture is taken from this "
         "checkpoint's config. Mutually exclusive with --no-warmstart.",
     )
-    p.add_argument(
+    g_init.add_argument(
         "--no-warmstart",
         action="store_true",
         help="init the model from scratch instead of warm-starting -- "
@@ -78,7 +82,37 @@ def parse_args():
         "learning simultaneously, so only use this to intentionally study "
         "that confound. Requires --num-x/--d-model/--d-mlp/--num-blocks.",
     )
-    p.add_argument(
+    g_init.add_argument(
+        "--num-x",
+        type=int,
+        default=ResidualMLPConfig.num_x,
+        help="(--no-warmstart only)",
+    )
+    g_init.add_argument(
+        "--d-model",
+        type=int,
+        default=ResidualMLPConfig.d_model,
+        help="(--no-warmstart only)",
+    )
+    g_init.add_argument(
+        "--d-mlp",
+        type=int,
+        default=None,
+        help="default: num_x. (--no-warmstart only)",
+    )
+    g_init.add_argument(
+        "--num-blocks",
+        type=int,
+        default=ResidualMLPConfig.num_blocks,
+        help="(--no-warmstart only)",
+    )
+
+    g_adv = p.add_argument_group(
+        "adversarial objective",
+        "How much weight to put on hiding c from the probe, and where in the "
+        "model that penalty is applied.",
+    )
+    g_adv.add_argument(
         "--lam",
         type=float,
         default=LogregAdversarialConfig.lam,
@@ -86,35 +120,41 @@ def parse_args():
         "lam=1 optimizes purely for hiding c (task loss ignored). lam=0 is "
         "plain task training.",
     )
-    p.add_argument(
+    g_adv.add_argument(
         "--lam-warmup-iters",
         type=int,
         default=LogregAdversarialConfig.lam_warmup_iters,
         help="linearly ramp the penalty weight 0 -> lam over this many iters "
         "(task weight ramps 1 -> 1-lam correspondingly). 0 = no ramp.",
     )
-    p.add_argument(
+    g_adv.add_argument(
         "--penalty-layers",
         type=_parse_penalty_layers,
         default="all",
         help="'all' = every hidden layer (1..num_blocks-1), or a comma-separated "
         "subset e.g. '1,2,3'.",
     )
-    p.add_argument(
+    g_adv.add_argument(
         "--class-threshold",
         type=float,
         default=LogregAdversarialConfig.class_threshold,
         help="probe class split: label = (c >= threshold). c ~ U[1,2], so 1.5 "
         "gives an ~even split.",
     )
-    p.add_argument(
+
+    g_probe = p.add_argument_group(
+        "probe (adversary) configuration",
+        "The LogisticRegression probe's own hyperparameters and how "
+        "aggressively it's refit each step.",
+    )
+    g_probe.add_argument(
         "--probe-C",
         type=float,
         default=LogregAdversarialConfig.probe_C,
         help="inverse L2 regularization strength for each layer's "
         "LogisticRegression probe (sklearn's C; smaller = more regularization).",
     )
-    p.add_argument(
+    g_probe.add_argument(
         "--probe-init-iters",
         type=int,
         default=LogregAdversarialConfig.probe_init_iters,
@@ -123,7 +163,7 @@ def parse_args():
         f"training instead use a fixed max_iter={PROBE_STEP_MAX_ITER} "
         "(warm-started, so a few iters is enough).",
     )
-    p.add_argument(
+    g_probe.add_argument(
         "--probe-backend",
         choices=config.PROBE_BACKEND_CHOICES,
         default="auto",
@@ -132,7 +172,7 @@ def parse_args():
         "regardless of device -- e.g. to smoke-test the torch backend on a "
         "CPU-only machine.",
     )
-    p.add_argument(
+    g_probe.add_argument(
         "--probe-loss-kind",
         choices=config.PROBE_LOGREG_LOSS_CHOICES,
         default=LogregAdversarialConfig.probe_loss_kind,
@@ -140,7 +180,7 @@ def parse_args():
         "along the probe's current learned direction s. 'meandiff': same but "
         "without the relu cap.",
     )
-    p.add_argument(
+    g_probe.add_argument(
         "--probe-subsample",
         type=int,
         default=LogregAdversarialConfig.probe_subsample,
@@ -149,7 +189,7 @@ def parse_args():
         "fit cost roughly linearly; the model's own forward/backward still "
         "uses the full batch. 1 = no subsampling.",
     )
-    p.add_argument(
+    g_probe.add_argument(
         "--probe-retrain-interval",
         type=int,
         default=LogregAdversarialConfig.probe_retrain_interval,
@@ -158,26 +198,24 @@ def parse_args():
         "affine for the penalty. 1 = refit every iteration (default "
         "behavior before this option existed).",
     )
-    # Architecture (only used for --no-warmstart; warmstart reads the checkpoint).
-    p.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
-    p.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
-    p.add_argument("--d-mlp", type=int, default=None, help="default: num_x")
-    p.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
-    # Optimization
-    p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
-    p.add_argument("--lr", type=float, default=config.LR)
-    p.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
-    p.add_argument("--seed", type=int, default=LogregAdversarialConfig.seed)
-    # Bookkeeping
-    p.add_argument("--resume", action="store_true")
-    p.add_argument(
+
+    g_opt = p.add_argument_group("optimization")
+    g_opt.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
+    g_opt.add_argument("--lr", type=float, default=config.LR)
+    g_opt.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
+    g_opt.add_argument("--seed", type=int, default=LogregAdversarialConfig.seed)
+
+    g_book = p.add_argument_group("bookkeeping")
+    g_book.add_argument("--tag", type=str, default="adv-logreg")
+    g_book.add_argument("--resume", action="store_true")
+    g_book.add_argument(
         "--tag-force",
         action="store_true",
         help="delete an existing runs/<tag> directory before a fresh run.",
     )
-    p.add_argument("--log-interval", type=int, default=100)
-    p.add_argument("--ckpt-interval", type=int, default=200)
-    p.add_argument(
+    g_book.add_argument("--log-interval", type=int, default=100)
+    g_book.add_argument("--ckpt-interval", type=int, default=200)
+    g_book.add_argument(
         "--save-every-n",
         type=int,
         nargs="?",
@@ -188,6 +226,7 @@ def parse_args():
             "(-1 = --ckpt-interval, 0 = disable)"
         ),
     )
+
     args = p.parse_args()
     if args.warmstart is not None and args.no_warmstart:
         p.error("--warmstart and --no-warmstart are mutually exclusive.")
