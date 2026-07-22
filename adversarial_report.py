@@ -79,6 +79,8 @@ if __name__ == "__main__":
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression, Ridge
@@ -92,7 +94,7 @@ from paths import log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
 from train_model_plot import plot_learned_curves
-from train_probe import capture_layers_dict, load_model
+from train_probe import capture_layers_dict, load_model, raw_logreg_affine
 from train_probe import plot_probe as plot_probe_separation
 
 
@@ -110,6 +112,14 @@ def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     pred = (X_te @ w > midpoint).astype(float)
     delta_norm = float(np.linalg.norm(w))
     return float((pred == y_te).mean()), delta_norm
+
+
+def _raw_signed_distance(logreg, X):
+    """Signed distance to logreg's decision boundary in raw (unstandardized)
+    data units, boundary at 0 -- same fold as train_probe.plot_probe's
+    raw-space panel."""
+    w_hat, threshold = raw_logreg_affine(logreg)
+    return X @ w_hat - threshold
 
 
 @torch.no_grad()
@@ -186,6 +196,8 @@ def _binary_probe_metrics_all_layers(
             "delta_norm": delta_norm,
             "logreg": float(logreg.score(X_te, y_te)),
             "lda": float(lda.score(X_te, y_te)),
+            "dist_lo": _raw_signed_distance(logreg, r_lo_te.cpu().numpy()),
+            "dist_hi": _raw_signed_distance(logreg, r_hi_te.cpu().numpy()),
         }
     return out
 
@@ -307,6 +319,78 @@ def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     path = os.path.join(plot_dir, f"{tag}_probe_gap.png")
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"[plot] wrote {path}")
+
+
+def _plot_layer_distributions(tag, c_lo, c_hi, layers, gap, plot_dir):
+    """Per-layer, per-class signed-distance-to-boundary distributions (raw
+    data units, boundary at 0, shared y-axis across layers -- so a collapse
+    in spread at a penalized layer is visually comparable to neighboring
+    layers), plus a companion panel tracking the mean-gap/pooled-std collapse
+    numerically."""
+    lo_label, hi_label = f"c={c_lo:g}", f"c={c_hi:g}"
+    rows = []
+    for lyr in layers:
+        for dist, label in (
+            (gap[lyr]["dist_lo"], lo_label),
+            (gap[lyr]["dist_hi"], hi_label),
+        ):
+            rows.extend(
+                {"layer": f"L{lyr}", "distance": d, "class": label} for d in dist
+            )
+    df = pd.DataFrame(rows)
+
+    layer_gap = [
+        float(gap[l]["dist_hi"].mean() - gap[l]["dist_lo"].mean()) for l in layers
+    ]
+    pooled_std = [
+        float(
+            np.sqrt((gap[l]["dist_lo"].std() ** 2 + gap[l]["dist_hi"].std() ** 2) / 2)
+        )
+        for l in layers
+    ]
+
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(max(7, 1.4 * len(layers)), 7.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+
+    sns.violinplot(
+        data=df,
+        x="layer",
+        y="distance",
+        hue="class",
+        split=True,
+        inner="quart",
+        ax=ax_top,
+    )
+    ax_top.axhline(0.0, color="k", ls="--", lw=1, label="boundary")
+    ax_top.set_title(
+        f"probe signed distance to boundary, per layer ({tag}, {lo_label} vs {hi_label})"
+    )
+    ax_top.set_xlabel("")
+    ax_top.set_ylabel("signed distance (data units)")
+    ax_top.legend(fontsize=8)
+    ax_top.grid(True, alpha=0.3)
+
+    x = np.arange(len(layers))
+    ax_bot.plot(x, layer_gap, marker="o", label="mean gap")
+    ax_bot.plot(x, pooled_std, marker="o", label="pooled std")
+    ax_bot.axhline(0.0, color="k", lw=0.8)
+    ax_bot.set_xticks(x)
+    ax_bot.set_xticklabels([f"L{l}" for l in layers])
+    ax_bot.set_xlabel("layer")
+    ax_bot.set_ylabel("data units")
+    ax_bot.legend(fontsize=8)
+    ax_bot.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    path = os.path.join(plot_dir, f"{tag}_c{c_lo:g}-{c_hi:g}_layer_dist.png")
     fig.savefig(path, dpi=120)
     plt.close(fig)
     print(f"[plot] wrote {path}")
@@ -470,6 +554,7 @@ def main(args):
             history = json.load(f)
         _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
+    _plot_layer_distributions(args.tag, 1.0, 2.0, hidden_layers, gap, plot_dir)
     _plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, plot_dir)
     plot_learned_curves(model, args.tag, plot_dir)
     if base_model is not None:

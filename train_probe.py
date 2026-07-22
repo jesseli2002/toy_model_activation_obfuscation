@@ -183,6 +183,20 @@ def _plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
     print(f"[plot] wrote {path}")
 
 
+def raw_logreg_affine(logreg) -> tuple[Float[np.ndarray, "d"], float]:
+    """Fold logreg's StandardScaler into a raw (unstandardized) unit direction
+    + threshold: `X @ w_hat - threshold` is the signed distance to the
+    decision boundary in data coordinates, with the boundary at 0."""
+    scaler = logreg.named_steps["standardscaler"]
+    clf = logreg.named_steps["logisticregression"]
+    w_logreg: Float[np.ndarray, "d"] = clf.coef_[0] / scaler.scale_
+    w_hat: Float[np.ndarray, "d"] = w_logreg / np.linalg.norm(w_logreg)
+    threshold = float(
+        (np.dot(scaler.mean_, w_logreg) - clf.intercept_[0]) / np.linalg.norm(w_logreg)
+    )
+    return w_hat, threshold
+
+
 def plot_probe(
     tag,
     layers,
@@ -205,10 +219,7 @@ def plot_probe(
     # space, so we can project it out and PCA the residual: this extends the
     # logreg histogram into a second axis showing whether any of the
     # remaining (logreg-orthogonal) variance still separates the classes.
-    scaler = logreg.named_steps["standardscaler"]
-    clf = logreg.named_steps["logisticregression"]
-    w_logreg: Float[np.ndarray, "d"] = clf.coef_[0] / scaler.scale_
-    w_hat: Float[np.ndarray, "d"] = w_logreg / np.linalg.norm(w_logreg)
+    w_hat, logreg_raw_threshold = raw_logreg_affine(logreg)
     X_resid: Float[np.ndarray, "n d"] = X_test - np.outer(X_test @ w_hat, w_hat)
     pc1_resid: Float[np.ndarray, "n"] = PCA(n_components=1).fit_transform(X_resid)[:, 0]
 
@@ -216,9 +227,6 @@ def plot_probe(
     # scatter plot's x-axis: decision_function() reports values in the
     # StandardScaler's space, whereas w_hat @ X_test is in data coordinates.
     proj_logreg_raw: Float[np.ndarray, "n"] = X_test @ w_hat
-    logreg_raw_threshold = float(
-        (np.dot(scaler.mean_, w_logreg) - clf.intercept_[0]) / np.linalg.norm(w_logreg)
-    )
 
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
