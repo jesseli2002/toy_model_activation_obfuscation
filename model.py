@@ -11,9 +11,9 @@ first num_x+1 residual directions are the input coordinates, the rest are unused
 at init. Loss is taken over the first num_x outputs only; the c-slot is free.
 
 The nonlinearity is selectable via `activation`:
-    - "leaky_relu" (default): LeakyReLU(negative_slope=leaky_relu_slope);
+    - "gelu" (default): GELU (leaky_relu_slope is unused).
+    - "leaky_relu": LeakyReLU(negative_slope=leaky_relu_slope);
       leaky_relu_slope=0.0 reproduces plain ReLU exactly.
-    - "gelu": GELU (leaky_relu_slope is unused).
 """
 
 import torch
@@ -71,13 +71,13 @@ class ResidualMLPBlock(nn.Module):
             self.layer_norm(r) if self.layer_norm is not None else r
         )
         pre_act: Float[Tensor, "batch d_mlp"] = r_in @ self.W_in + self.b_in
-        h: Float[Tensor, "batch d_mlp"] = (
-            torch.nn.functional.leaky_relu(
+        h: Float[Tensor, "batch d_mlp"]
+        if self.activation == "leaky_relu":
+            h = torch.nn.functional.leaky_relu(
                 pre_act, negative_slope=self.leaky_relu_slope
             )
-            if self.activation == "leaky_relu"
-            else torch.nn.functional.gelu(pre_act)
-        )
+        else:
+            h = torch.nn.functional.gelu(pre_act)
         o: Float[Tensor, "batch d_model"] = h @ self.W_out + self.b_out
         return o
 

@@ -56,7 +56,7 @@ class ResidualMLPConfig:
     d_mlp: int | None = None
     num_blocks: int = 8
     out_init_scale: float = 0.1
-    activation: str = "leaky_relu"
+    activation: str = "gelu"
     leaky_relu_slope: float = 0.0
     layer_norm: bool = False
 
