@@ -59,7 +59,6 @@ import time
 
 import matplotlib
 
-matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -213,6 +212,7 @@ def main(args):
     fig.tight_layout()
     fig.savefig(args.plot, dpi=150)
     print(f"[done] wrote {args.plot}")
+    plt.show()
 
 
 if __name__ == "__main__":
