@@ -79,6 +79,7 @@ from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
 
 from data import sample_fixed_c
 from model import ResidualMLP
@@ -125,13 +126,16 @@ def _binary_probe_metrics_all_layers(
     n_train,
     n_test,
     g,
-    plot_dir=None,
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
     c_hi) pair, from a single shared forward pass per train/test set.
 
-    If plot_dir is given, also writes the histogram + PCA separation plot for
-    each layer (see train_probe.plot_probe). Returns {layer: metrics}.
+    Pure data generation -- no plotting. Returns `(metrics, plot_inputs)`:
+    `metrics` is {layer: {"dom", "delta_norm", "logreg", "lda"}}, and
+    `plot_inputs` is {layer: {"w_dom", "midpoint", "logreg", "X_te", "y_te"}},
+    everything a caller needs to later feed train_probe.plot_probe for this
+    (c_lo, c_hi) pair -- returned unconditionally since the forward pass and
+    the fit already happened regardless of whether the caller wants a plot.
     """
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -142,7 +146,8 @@ def _binary_probe_metrics_all_layers(
         model, num_x, n_test, c_lo, c_hi, layers, g, device
     )
 
-    out = {}
+    metrics = {}
+    plot_inputs = {}
     for layer in layers:
         r_lo_tr, r_hi_tr = train_ds[layer]
         r_lo_te, r_hi_te = test_ds[layer]
@@ -159,29 +164,25 @@ def _binary_probe_metrics_all_layers(
         logreg.fit(X_tr, y_tr)
         lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
 
-        if plot_dir is not None:
-            mu_lo = r_lo_tr.mean(dim=0)
-            mu_hi = r_hi_tr.mean(dim=0)
-            w_dom = (mu_hi - mu_lo).cpu().numpy()
-            midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
-            plot_probe_separation(
-                f"c{c_lo:g}-{c_hi:g}",
-                [layer],
-                w_dom,
-                midpoint,
-                logreg,
-                X_te,
-                y_te,
-                plot_dir,
-            )
+        mu_lo = r_lo_tr.mean(dim=0)
+        mu_hi = r_hi_tr.mean(dim=0)
+        w_dom = (mu_hi - mu_lo).cpu().numpy()
+        midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
 
-        out[layer] = {
+        metrics[layer] = {
             "dom": dom_acc,
             "delta_norm": delta_norm,
             "logreg": float(logreg.score(X_te, y_te)),
             "lda": float(lda.score(X_te, y_te)),
         }
-    return out
+        plot_inputs[layer] = {
+            "w_dom": w_dom,
+            "midpoint": midpoint,
+            "logreg": logreg,
+            "X_te": X_te,
+            "y_te": y_te,
+        }
+    return metrics, plot_inputs
 
 
 # ----------------------------------------------------------------------------
@@ -259,6 +260,72 @@ def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     print(f"[plot] wrote {path}")
 
 
+def _build_report(
+    args,
+    num_x,
+    model,
+    ck,
+    num_blocks,
+    penalty_layers,
+    hidden_layers,
+    me,
+    me_b,
+    gap,
+    heldout,
+):
+    """Assemble the full report text from already-computed data. Returns the
+    report as a list of lines; produces no side effects (no printing)."""
+    lines = []
+
+    def emit(s=""):
+        lines.append(s)
+
+    emit(f"# Step 3 adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
+    emit()
+    emit(
+        f"config: num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
+        f"num_blocks={num_blocks} lam={ck.get('lam')} init={ck.get('init')} "
+        f"penalty_layers={penalty_layers}"
+    )
+    emit()
+
+    # --- 1. task fidelity ---
+    emit(f"## 1. Task fidelity")
+    emit(f"max abs elementwise error (c~U[1,2]): {me:.3e}")
+    if me_b is not None:
+        emit(f"  baseline max abs error: {me_b:.3e}")
+    emit()
+
+    # --- 2. probe-strength gap at c in {1,2} ---
+    emit("## 2. Probe-strength gap at c in {1,2} (per hidden layer)")
+    emit("layer | penalized | DoM ||Δμ|| |  DoM acc | logreg acc |  LDA acc")
+    emit("------|-----------|-----------|----------|------------|---------")
+    for lyr in hidden_layers:
+        m = gap[lyr]
+        pen = "yes" if lyr in penalty_layers else "no"
+        emit(
+            f"  L{lyr}  |   {pen:>3s}     | {m['delta_norm']:.3e} | "
+            f"{m['dom']:.4f}  |   {m['logreg']:.4f}   | {m['lda']:.4f}"
+        )
+    emit()
+
+    if args.detailed:
+        # --- 3b. binary held-out pairs (asymmetric about 1.5) ---
+        emit("## 3b. Binary held-out c pairs (NOT in {1,2}; asymmetric about 1.5)")
+        emit("pair       | layer | DoM acc | logreg acc | LDA acc")
+        emit("-----------|-------|---------|------------|--------")
+        for c_lo, c_hi in args.held_out_pairs:
+            for lyr in hidden_layers:
+                m = heldout[(c_lo, c_hi, lyr)]
+                emit(
+                    f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
+                    f"{m['logreg']:.4f}   | {m['lda']:.4f}"
+                )
+        emit()
+
+    return lines
+
+
 # ----------------------------------------------------------------------------
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
@@ -278,75 +345,52 @@ def main(args):
         base_model = base_model.to(device)
         base_model.eval()
 
-    lines = []
-
-    def emit(s=""):
-        print(s)
-        lines.append(s)
-
-    emit(f"# Step 3 adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
-    emit()
-    emit(
-        f"config: num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
-        f"num_blocks={num_blocks} lam={ck.get('lam')} init={ck.get('init')} "
-        f"penalty_layers={penalty_layers}"
-    )
-    emit()
-
     g = torch.Generator(device=device).manual_seed(args.seed)
 
-    # --- 1. task fidelity ---
-    me = eval_max_err(model, num_x, g, device=device)
-    emit(f"## 1. Task fidelity")
-    emit(f"max abs elementwise error (c~U[1,2]): {me:.3e}")
-    if base_model is not None:
-        me_b = eval_max_err(base_model, num_x, g, device=device)
-        emit(f"  baseline max abs error: {me_b:.3e}")
-    emit()
-
-    # --- 2. probe-strength gap at c in {1,2} ---
-    emit("## 2. Probe-strength gap at c in {1,2} (per hidden layer)")
-    emit("layer | penalized | DoM ||Δμ|| |  DoM acc | logreg acc |  LDA acc")
-    emit("------|-----------|-----------|----------|------------|---------")
-    gap = _binary_probe_metrics_all_layers(
-        model,
-        1.0,
-        2.0,
-        hidden_layers,
-        args.n_train,
-        args.n_test,
-        g,
-        plot_dir=plot_dir,
+    # --- phase 1: generate all data ---
+    stage_names = ["task fidelity", "probe gap @ {1,2}"] + (
+        [f"held-out {lo:g}-{hi:g}" for lo, hi in args.held_out_pairs]
+        if args.detailed
+        else []
     )
-    for lyr in hidden_layers:
-        m = gap[lyr]
-        pen = "yes" if lyr in penalty_layers else "no"
-        emit(
-            f"  L{lyr}  |   {pen:>3s}     | {m['delta_norm']:.3e} | "
-            f"{m['dom']:.4f}  |   {m['logreg']:.4f}   | {m['lda']:.4f}"
-        )
-    emit()
+    bar = tqdm(total=len(stage_names), desc="generating report data")
 
+    me = eval_max_err(model, num_x, g, device=device)
+    me_b = eval_max_err(base_model, num_x, g, device=device) if base_model else None
+    bar.update(1)
+
+    gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
+        model, 1.0, 2.0, hidden_layers, args.n_train, args.n_test, g
+    )
+    bar.update(1)
+
+    heldout = {}
     if args.detailed:
-        # --- 3b. binary held-out pairs (asymmetric about 1.5) ---
-        emit("## 3b. Binary held-out c pairs (NOT in {1,2}; asymmetric about 1.5)")
-        emit("pair       | layer | DoM acc | logreg acc | LDA acc")
-        emit("-----------|-------|---------|------------|--------")
-        heldout = {}
         for c_lo, c_hi in args.held_out_pairs:
-            pair_metrics = _binary_probe_metrics_all_layers(
+            pair_metrics, _ = _binary_probe_metrics_all_layers(
                 model, c_lo, c_hi, hidden_layers, args.n_train, args.n_test, g
             )
             for lyr in hidden_layers:
-                m = pair_metrics[lyr]
-                heldout[(c_lo, c_hi, lyr)] = m
-                emit(
-                    f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
-                    f"{m['logreg']:.4f}   | {m['lda']:.4f}"
-                )
-        emit()
+                heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
+            bar.update(1)
+    bar.close()
 
-    # --- write report + plots ---
+    # --- phase 2: build + write the report ---
+    lines = _build_report(
+        args,
+        num_x,
+        model,
+        ck,
+        num_blocks,
+        penalty_layers,
+        hidden_layers,
+        me,
+        me_b,
+        gap,
+        heldout,
+    )
+    print("\n".join(lines))
+
     out_log = log_dir(args.tag)
     os.makedirs(out_log, exist_ok=True)
     report_path = os.path.join(out_log, "report.md")
@@ -354,12 +398,25 @@ def main(args):
         f.write("\n".join(lines) + "\n")
     print(f"[report] wrote {report_path}")
 
+    # --- phase 3: generate all plots ---
     hist_path = os.path.join(out_log, "history.json")
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             history = json.load(f)
         _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
+    for lyr in hidden_layers:
+        pi = gap_plot_inputs[lyr]
+        plot_probe_separation(
+            "c1-2",
+            [lyr],
+            pi["w_dom"],
+            pi["midpoint"],
+            pi["logreg"],
+            pi["X_te"],
+            pi["y_te"],
+            plot_dir,
+        )
     plot_learned_curves(model, args.tag, plot_dir)
     if base_model is not None:
         plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
