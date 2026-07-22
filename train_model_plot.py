@@ -3,9 +3,6 @@
 Writes to plot/<tag>/:
   - <tag>_dynamics.png : iteration vs loss, iteration vs max-abs-error
   - <tag>_curves.png   : y vs x for fixed c in [1, 1.333, 1.667, 2], num_x lines each
-
-Usage:
-    python train_plot.py --tag nx1 --ckpt best
 """
 
 import argparse

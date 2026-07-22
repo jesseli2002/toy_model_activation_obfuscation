@@ -18,13 +18,10 @@ probe) while still computing sat(x,-c,c) correctly across the full c-range.
   L_probe — sum over the *hidden* residual layers of a penalty on the difference
             of class means, on a SEPARATE pinned sub-batch (half c=1, half c=2, x
             resampled). The exact penalty is selectable via --probe-loss (see
-            config.PROBE_LOSS_CHOICES / plans/new_probe_losses.md); default is
-            'lda' (full-covariance-whitened Fisher ratio), with 'squared'
-            (sum_{l in hidden} || mean(r_l|c=2) - mean(r_l|c=1) ||^2) preserved as
-            the legacy variant for reproducing pre-change runs. Driving any
-            variant to 0 makes the two class means coincide (in the appropriate
-            metric) at every hidden layer -> DoM accuracy -> chance. Closed form,
-            no inner probe-training loop.
+            config.PROBE_LOSS_CHOICES / plans/new_probe_losses.md). Driving it
+            to 0 makes the two class means coincide (in the appropriate metric)
+            at every hidden layer -> DoM accuracy -> chance. Closed form, no
+            inner probe-training loop.
 
 "Hidden" layers are the residual-stream caches strictly between the embedding
 (cache 0 = input; c sits verbatim in a fixed coordinate, nothing to hide/train)
@@ -38,19 +35,6 @@ This is NOT gated. The deliverable is the trained checkpoint + diagnostics
 science is not "can it hide c" (expected: yes) but HOW: does it hide c only at
 the probed points {1,2} (recoverable elsewhere in [1,2] -> "hidden"), or genuinely
 erase linear c-information across the range ("erased")?
-
-Usage:
-    # primary run: warm-start a capable model, then apply probe pressure
-    # (default --probe-loss lda; pass --probe-loss squared to reproduce the
-    # pre-change canonical run exactly)
-    python train_adversarial.py --tag adv1 --lam 0.5 \
-        --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
-    # from scratch (conflates learning + hiding; kept for contrast)
-    python train_adversarial.py --tag advscratch --init scratch --lam 0.5
-    python train_adversarial.py --resume --tag adv1 --max-iters 12000
-    # feasibility check: can c be hidden at layer 1 at all, ignoring task loss
-    python train_adversarial.py --tag adv-feas-l1 --lam 1.0 --penalty-layers 1 \
-        --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
 """
 
 import argparse

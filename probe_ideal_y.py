@@ -8,9 +8,6 @@ a zero-mean symmetric distribution for every c, so no single linear direction
 the class-conditional means coincide. Contrast this with a trivial nonlinear
 statistic, max_j|y_j|, which converges to c almost surely (c IS the clip
 boundary), to confirm the gap is "linear vs nonlinear", not "no signal at all".
-
-Usage:
-    python probe_ideal_y.py --num-x 32 --c-lo 1.0 --c-hi 2.0
 """
 
 import argparse

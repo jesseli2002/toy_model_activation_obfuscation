@@ -4,38 +4,18 @@ Loads an adversarial checkpoint (from train_adversarial.py) and produces the
 report that IS the Step-3 deliverable. It distinguishes the outcomes the plan
 cares about:
 
-  1. Task fidelity     — max-abs elementwise error (the PRICE of hiding; expected
-                         near-zero, i.e. hiding is nearly free).
-  2. Probe-strength gap at the probed points c in {1,2}, per hidden layer:
-                         raw DoM vs logreg vs LDA accuracy. If DoM -> chance but
-                         logreg/LDA still separate, the model defeated the
-                         *specific* (first-moment) probe while leaving
-                         second-moment structure readable — a reportable outcome.
-  3. Held-out c recovery (the hidden-vs-erased test):
-       - continuous ridge probe on c ~ U[1,2] (R^2 of recovered c) per layer:
-         the cleanest "is c linearly present across the whole range" measure.
-       - binary logreg/LDA at held-out c pairs NOT in {1,2}. Pairs are chosen
-         ASYMMETRIC about c=1.5 on purpose: the residual of an affine
-         cancellation is a quadratic in c with vertex at 1.5, so a symmetric
-         pair (e.g. 1.25/1.75) reads ~0 even when c is merely hidden — you'd
-         falsely conclude "erased".
+  1. Task fidelity           — the PRICE of hiding (expected near-zero).
+  2. Probe-strength gap at the probed points, per hidden layer.
+  3. Held-out c recovery (the hidden-vs-erased test) — a continuous ridge
+     probe across the full c range, plus binary probes at held-out c pairs
+     chosen asymmetric about the training midpoint so an affine cancellation
+     can't masquerade as erasure.
 
-Reading the outcomes (heuristic, printed at the end):
-  - penalized DoM -> chance, but ridge R^2 / held-out binary stay high  => HIDDEN
-    (point-hiding: class means cancelled only at {1,2}; c still represented).
-  - no linear probe recovers c anywhere in [1,2]                        => ERASED.
-  - DoM -> chance but logreg/LDA at {1,2} stay high                     => defeated
-    the specific probe only (means match, covariances differ).
-  The held-out-pairs table (3b) and this interpretation heuristic are the most
-  expensive part of the script and are only printed/written with --detailed.
+The held-out-pairs table and interpretation heuristic are the most expensive
+part of the script and are only printed/written with --detailed.
 
 Optionally pass --baseline-path to run the same probes on the pre-adversarial
-model (e.g. runs/nx32/checkpoints/best.pt) for a before/after contrast.
-
-Usage:
-    python adversarial_report.py --tag adv1
-    python adversarial_report.py --tag adv1 --baseline-path runs/nx32/checkpoints/best.pt
-    python adversarial_report.py --tag adv1 --detailed
+model for a before/after contrast.
 """
 
 import argparse
