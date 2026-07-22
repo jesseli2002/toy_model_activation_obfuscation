@@ -6,10 +6,9 @@ cares about:
 
   1. Task fidelity           — the PRICE of hiding (expected near-zero).
   2. Probe-strength gap at the probed points, per hidden layer.
-  3. Held-out c recovery (the hidden-vs-erased test) — a continuous ridge
-     probe across the full c range, plus binary probes at held-out c pairs
-     chosen asymmetric about the training midpoint so an affine cancellation
-     can't masquerade as erasure.
+  3. Held-out c recovery (the hidden-vs-erased test) — binary probes at
+     held-out c pairs chosen asymmetric about the training midpoint so an
+     affine cancellation can't masquerade as erasure.
 
 The held-out-pairs table and interpretation heuristic are the most expensive
 part of the script and are only printed/written with --detailed.
@@ -57,10 +56,6 @@ def parse_args():
     )
     p.add_argument("--n-train", type=int, default=20_000, help="per class/set")
     p.add_argument("--n-test", type=int, default=50_000, help="per class/set")
-    p.add_argument(
-        "--n-ridge", type=int, default=50_000, help="samples for the ridge probe"
-    )
-    p.add_argument("--ridge-alpha", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=20260718)
     p.add_argument("--show", action="store_true")
     p.add_argument(
@@ -81,12 +76,11 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.metrics import r2_score
+from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
-from data import sample_batch, sample_fixed_c
+from data import sample_fixed_c
 from model import ResidualMLP
 from paths import log_dir
 from paths import plot_dir as get_plot_dir
@@ -190,29 +184,6 @@ def _binary_probe_metrics_all_layers(
     return out
 
 
-def _ridge_r2_all_layers(model, layers, n_train, n_test, alpha, g):
-    """R^2 of a ridge probe recovering continuous c ~ U[1,2], for every layer
-    in `layers`, from a single shared forward pass per train/test set.
-    Returns {layer: r2}."""
-    num_x = model.num_x
-    device = next(model.parameters()).device
-
-    def ds(n):
-        x_full, _ = sample_batch(n, num_x, generator=g, device=device)
-        r = capture_layers_dict(model, x_full, layers)
-        c = x_full[:, num_x].cpu().numpy()
-        return {layer: r[layer].cpu().numpy() for layer in layers}, c
-
-    X_tr, c_tr = ds(n_train)
-    X_te, c_te = ds(n_test)
-
-    out = {}
-    for layer in layers:
-        reg = Ridge(alpha=alpha).fit(X_tr[layer], c_tr)
-        out[layer] = float(r2_score(c_te, reg.predict(X_te[layer])))
-    return out
-
-
 # ----------------------------------------------------------------------------
 # Plots
 # ----------------------------------------------------------------------------
@@ -264,30 +235,6 @@ def _plot_training_traces(tag, history, hidden_layers, plot_dir):
     print(f"[plot] wrote {path}")
 
 
-def _plot_heldout_r2(tag, layers, r2_adv, r2_base, plot_dir):
-    x = np.arange(len(layers))
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    if r2_base is not None:
-        ax.bar(x - 0.2, [r2_base[l] for l in layers], 0.4, label="baseline", alpha=0.8)
-        ax.bar(
-            x + 0.2, [r2_adv[l] for l in layers], 0.4, label="adversarial", alpha=0.8
-        )
-        ax.legend()
-    else:
-        ax.bar(x, [r2_adv[l] for l in layers], 0.6, label="adversarial")
-    ax.axhline(0.0, color="k", lw=0.8)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"L{l}" for l in layers])
-    ax.set_ylabel("ridge R^2 for continuous c")
-    ax.set_title(f"held-out c recovery across [1,2] ({tag})")
-    ax.grid(True, axis="y", alpha=0.3)
-    fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_heldout_r2.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
-
-
 def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     x = np.arange(len(hidden_layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
@@ -321,7 +268,6 @@ def main(args):
     num_blocks = model.num_blocks
     penalty_layers = ck.get("penalty_layers") or list(range(1, num_blocks))
     hidden_layers = list(range(1, num_blocks))
-    all_layers = list(range(0, num_blocks + 1))  # 0=embed .. num_blocks=output
 
     plot_dir = get_plot_dir(args.tag)
     os.makedirs(plot_dir, exist_ok=True)
@@ -379,28 +325,6 @@ def main(args):
             f"  L{lyr}  |   {pen:>3s}     | {m['delta_norm']:.3e} | "
             f"{m['dom']:.4f}  |   {m['logreg']:.4f}   | {m['lda']:.4f}"
         )
-    emit()
-
-    # --- 3a. continuous ridge R^2 across [1,2], every layer ---
-    emit("## 3a. Continuous ridge probe R^2 for c ~ U[1,2] (per layer)")
-    emit("layer | role      | adv R^2  | baseline R^2")
-    emit("------|-----------|----------|-------------")
-    r2_adv = _ridge_r2_all_layers(
-        model, all_layers, args.n_ridge, args.n_ridge, args.ridge_alpha, g
-    )
-    r2_base = None
-    if base_model is not None:
-        r2_base = _ridge_r2_all_layers(
-            base_model, all_layers, args.n_ridge, args.n_ridge, args.ridge_alpha, g
-        )
-    for lyr in all_layers:
-        r2a = r2_adv[lyr]
-        role = "embed" if lyr == 0 else "output" if lyr == num_blocks else "hidden"
-        if base_model is not None:
-            r2b = r2_base[lyr]
-            emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} | {r2b:+.4f}")
-        else:
-            emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} |     -")
     emit()
 
     if args.detailed:
@@ -470,7 +394,6 @@ def main(args):
             history = json.load(f)
         _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
-    _plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, plot_dir)
     plot_learned_curves(model, args.tag, plot_dir)
     if base_model is not None:
         plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
