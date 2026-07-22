@@ -81,7 +81,9 @@ import argparse
 import json
 import os
 import shutil
+import signal
 import time
+from contextlib import contextmanager
 from dataclasses import dataclass
 
 import config
@@ -338,7 +340,6 @@ def train_steps(
     probe: Pipeline,
     args,
     hidden_layers: list[int],
-    num_x: int,
     start_iter: int,
     affine: tuple[torch.Tensor, torch.Tensor],
     device,
@@ -349,6 +350,7 @@ def train_steps(
     yields. This also means a KeyboardInterrupt while the caller is
     consuming this generator always leaves the caller's for-loop variable
     holding the last *fully completed* step, never a half-updated one."""
+    num_x = model.config.num_x
     for it in range(start_iter, args.max_iters):
         t_fwd0 = time.time()
         x_full, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
@@ -407,22 +409,45 @@ def train_steps(
         )
 
 
+@contextmanager
+def _defer_keyboard_interrupt():
+    """Ignore SIGINT for the duration of the wrapped block, then re-raise it
+    (as KeyboardInterrupt) immediately after -- so a Ctrl-C during the block
+    can't leave a half-written checkpoint on disk."""
+    interrupted = False
+    old_handler = signal.getsignal(signal.SIGINT)
+
+    def _handler(signum, frame):
+        nonlocal interrupted
+        interrupted = True
+
+    signal.signal(signal.SIGINT, _handler)
+    try:
+        yield
+    finally:
+        signal.signal(signal.SIGINT, old_handler)
+    if interrupted:
+        raise KeyboardInterrupt
+
+
 def save_checkpoint(
     path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config
 ):
     """Persist model + optimizer state, the probe's affine boundary at
-    `record`, and enough config to resume."""
+    `record`, and enough config to resume. A SIGINT arriving mid-write is
+    deferred until the write completes (see `_defer_keyboard_interrupt`)."""
     w_eff, b_eff = record.affine
-    model.save(
-        path,
-        iter=record.it,
-        opt=opt.state_dict(),
-        best_loss=best_loss,
-        probe_w=w_eff.cpu(),
-        probe_b=b_eff.cpu(),
-        probe_layers=hidden_layers,
-        **adv_config.to_dict(),
-    )
+    with _defer_keyboard_interrupt():
+        model.save(
+            path,
+            iter=record.it,
+            opt=opt.state_dict(),
+            best_loss=best_loss,
+            probe_w=w_eff.cpu(),
+            probe_b=b_eff.cpu(),
+            probe_layers=hidden_layers,
+            **adv_config.to_dict(),
+        )
 
 
 def main(args):
@@ -556,7 +581,6 @@ def main(args):
             probe,
             args,
             hidden_layers,
-            num_x,
             start_iter,
             affine,
             device,
