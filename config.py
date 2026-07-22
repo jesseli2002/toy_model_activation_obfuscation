@@ -157,9 +157,9 @@ class LogregAdversarialConfig:
     stored verbatim (as a dict) alongside the model's own ResidualMLPConfig.
     Sibling to AdversarialConfig: that one drives the closed-form DoM/LDA
     penalty; this one drives the simultaneous stateful-probe design (see
-    train_adversarial_logreg.py's module docstring). warmstart_path has no
-    default -- this script has no from-scratch path, so a value is always
-    required at the CLI.
+    train_adversarial_logreg.py's module docstring). warmstart_path is None
+    when the model was inited from scratch (`--no-warmstart`) rather than
+    warm-started.
     """
 
     lam: float = 0.5
