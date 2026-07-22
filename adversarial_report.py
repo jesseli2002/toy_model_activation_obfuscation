@@ -21,6 +21,8 @@ import argparse
 import json
 import os
 
+import config
+
 
 def _parse_pairs(s: str) -> list[tuple[float, float]]:
     pairs = []
@@ -57,6 +59,14 @@ def parse_args():
     p.add_argument("--n-train", type=int, default=20_000, help="per class/set")
     p.add_argument("--n-test", type=int, default=50_000, help="per class/set")
     p.add_argument("--seed", type=int, default=20260718)
+    p.add_argument(
+        "--probe-backend",
+        choices=config.PROBE_BACKEND_CHOICES,
+        default="auto",
+        help="'auto' (default): torch (GPU-resident) probe iff CUDA is "
+        "available, else sklearn. 'sklearn'/'torch' force a backend "
+        "regardless of device.",
+    )
     p.add_argument("--show", action="store_true")
     p.add_argument(
         "--detailed",
@@ -76,9 +86,6 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 from tqdm import tqdm
 
 from data import sample_fixed_c
@@ -86,6 +93,7 @@ from model import ResidualMLP
 from paths import log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
+from probe_backend import build_probe_pipeline, resolve_probe_backend
 from train_model_plot import plot_learned_curves
 from train_probe import capture_layers_dict, load_model
 from train_probe import plot_probe as plot_probe_separation
@@ -126,16 +134,24 @@ def _binary_probe_metrics_all_layers(
     n_train,
     n_test,
     g,
+    probe_backend_name,
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
     c_hi) pair, from a single shared forward pass per train/test set.
 
     Pure data generation -- no plotting. Returns `(metrics, plot_inputs)`:
     `metrics` is {layer: {"dom", "delta_norm", "logreg", "lda"}}, and
-    `plot_inputs` is {layer: {"w_dom", "midpoint", "logreg", "X_te", "y_te"}},
-    everything a caller needs to later feed train_probe.plot_probe for this
-    (c_lo, c_hi) pair -- returned unconditionally since the forward pass and
-    the fit already happened regardless of whether the caller wants a plot.
+    `plot_inputs` is {layer: {"w_dom", "midpoint", "w_probe", "b_probe",
+    "X_te", "y_te"}}, everything a caller needs to later feed
+    train_probe.plot_probe for this (c_lo, c_hi) pair -- returned
+    unconditionally since the forward pass and the fit already happened
+    regardless of whether the caller wants a plot.
+
+    The logreg probe is fit via `probe_backend` (sklearn or GPU-resident
+    torch, per `probe_backend_name`): X/y are kept as torch tensors on
+    `device` end-to-end for the torch backend, so it actually skips the numpy
+    round-trip rather than just wrapping the same CPU path under a new name.
+    LDA has no GPU variant and stays on the numpy/sklearn path.
     """
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -157,12 +173,31 @@ def _binary_probe_metrics_all_layers(
         y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
         X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
         y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
-
-        # DoM above needs no normalization: it's just a difference of means,
-        # invariant to a shared affine rescaling of features.
-        logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
-        logreg.fit(X_tr, y_tr)
         lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
+
+        X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0)
+        y_tr_t = torch.cat(
+            [
+                torch.zeros(n_train, dtype=torch.bool, device=device),
+                torch.ones(n_train, dtype=torch.bool, device=device),
+            ]
+        )
+        X_te_t = torch.cat([r_lo_te, r_hi_te], dim=0)
+        y_te_t = torch.cat(
+            [
+                torch.zeros(n_test, dtype=torch.bool, device=device),
+                torch.ones(n_test, dtype=torch.bool, device=device),
+            ]
+        )
+        pipeline = build_probe_pipeline(
+            C=1.0, max_iter=2000, backend=probe_backend_name
+        )
+        pipeline.fit(X_tr_t, y_tr_t)
+        w_probe_t, b_probe_t = pipeline.get_affine(device)
+        logreg_pred = (X_te_t @ w_probe_t + b_probe_t) > 0
+        logreg_acc = float((logreg_pred == y_te_t).float().mean())
+        w_probe = w_probe_t.cpu().numpy()
+        b_probe = float(b_probe_t.cpu())
 
         mu_lo = r_lo_tr.mean(dim=0)
         mu_hi = r_hi_tr.mean(dim=0)
@@ -172,13 +207,14 @@ def _binary_probe_metrics_all_layers(
         metrics[layer] = {
             "dom": dom_acc,
             "delta_norm": delta_norm,
-            "logreg": float(logreg.score(X_te, y_te)),
+            "logreg": logreg_acc,
             "lda": float(lda.score(X_te, y_te)),
         }
         plot_inputs[layer] = {
             "w_dom": w_dom,
             "midpoint": midpoint,
-            "logreg": logreg,
+            "w_probe": w_probe,
+            "b_probe": b_probe,
             "X_te": X_te,
             "y_te": y_te,
         }
@@ -346,6 +382,7 @@ def main(args):
         base_model.eval()
 
     g = torch.Generator(device=device).manual_seed(args.seed)
+    probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
     # --- phase 1: generate all data ---
     stage_names = ["task fidelity", "probe gap @ {1,2}"] + (
@@ -360,7 +397,7 @@ def main(args):
     bar.update(1)
 
     gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
-        model, 1.0, 2.0, hidden_layers, args.n_train, args.n_test, g
+        model, 1.0, 2.0, hidden_layers, args.n_train, args.n_test, g, probe_backend_name
     )
     bar.update(1)
 
@@ -368,7 +405,14 @@ def main(args):
     if args.detailed:
         for c_lo, c_hi in args.held_out_pairs:
             pair_metrics, _ = _binary_probe_metrics_all_layers(
-                model, c_lo, c_hi, hidden_layers, args.n_train, args.n_test, g
+                model,
+                c_lo,
+                c_hi,
+                hidden_layers,
+                args.n_train,
+                args.n_test,
+                g,
+                probe_backend_name,
             )
             for lyr in hidden_layers:
                 heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
@@ -412,7 +456,8 @@ def main(args):
             [lyr],
             pi["w_dom"],
             pi["midpoint"],
-            pi["logreg"],
+            pi["w_probe"],
+            pi["b_probe"],
             pi["X_te"],
             pi["y_te"],
             plot_dir,
