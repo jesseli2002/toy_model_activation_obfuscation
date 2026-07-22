@@ -10,8 +10,8 @@ cares about:
      held-out c pairs chosen asymmetric about the training midpoint so an
      affine cancellation can't masquerade as erasure.
 
-The held-out-pairs table and interpretation heuristic are the most expensive
-part of the script and are only printed/written with --detailed.
+The held-out-pairs table is the most expensive part of the script and is
+only printed/written with --detailed.
 
 Optionally pass --baseline-path to run the same probes on the pre-adversarial
 model for a before/after contrast.
@@ -62,8 +62,8 @@ def parse_args():
         "--detailed",
         action="store_true",
         help="also compute the report-only statistics that feed no saved plot: "
-        "binary held-out c pairs (3b) and the interpretation heuristic. Skipped "
-        "by default since they're the most expensive part of the script.",
+        "binary held-out c pairs (3b). Skipped by default since they're the "
+        "most expensive part of the script.",
     )
     return p.parse_args()
 
@@ -344,40 +344,6 @@ def main(args):
                     f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
                     f"{m['logreg']:.4f}   | {m['lda']:.4f}"
                 )
-        emit()
-
-        # --- interpretation heuristic ---
-        emit("## Interpretation (heuristic — confirm by eye)")
-        pen_hidden = [l for l in hidden_layers if l in penalty_layers]
-        dom_at_chance = (
-            all(gap[l]["dom"] < 0.6 for l in pen_hidden) if pen_hidden else False
-        )
-        ridge_hidden_max = max((r2_adv[l] for l in pen_hidden), default=0.0)
-        logreg_high = any(gap[l]["logreg"] > 0.9 for l in pen_hidden)
-        heldout_high = any(
-            heldout[(c_lo, c_hi, l)]["logreg"] > 0.9
-            for (c_lo, c_hi) in args.held_out_pairs
-            for l in pen_hidden
-        )
-        emit(f"- penalized-layer DoM at chance (<0.6): {dom_at_chance}")
-        emit(f"- max ridge R^2 on penalized layers: {ridge_hidden_max:+.4f}")
-        emit(f"- any penalized-layer logreg > 0.9 at {{1,2}}: {logreg_high}")
-        emit(f"- any held-out-pair logreg > 0.9 on penalized layers: {heldout_high}")
-        if dom_at_chance and ridge_hidden_max > 0.5:
-            verdict = "HIDDEN (point-hiding): DoM cancelled at {1,2} but c still linearly present across [1,2]."
-        elif dom_at_chance and (logreg_high or heldout_high):
-            verdict = "SPECIFIC-PROBE DEFEATED: DoM at chance but a stronger linear probe still separates."
-        elif (
-            dom_at_chance
-            and ridge_hidden_max < 0.1
-            and not (logreg_high or heldout_high)
-        ):
-            verdict = "ERASED: no linear probe recovers c on penalized layers anywhere in [1,2]."
-        else:
-            verdict = (
-                "MIXED / penalty not yet biting — inspect traces and per-layer numbers."
-            )
-        emit(f"=> {verdict}")
         emit()
 
     # --- write report + plots ---
