@@ -22,10 +22,11 @@ so this is a stress test of whatever hiding the DoM/LDA runs found.
 This is NOT gated. The deliverable is the trained checkpoint + diagnostics;
 run once, then stop and review.
 
-Requires warm-starting from an existing train_adversarial.py-produced
-checkpoint (no from-scratch path -- conflating "learn the task" with "hide c
-from a probe that's learning simultaneously" adds a confound and isn't
-supported here).
+Normally warm-starts from an existing train_adversarial.py-produced
+checkpoint (`--warmstart PATH`). `--no-warmstart` inits a fresh model from
+`--num-x`/`--d-model`/`--d-mlp`/`--num-blocks` instead, conflating "learn the
+task" with "hide c from a probe that's learning simultaneously" -- a
+confound, so only use it to intentionally study that confound.
 """
 
 import argparse
@@ -61,12 +62,21 @@ def parse_args():
     )
     p.add_argument("--tag", type=str, default="adv-logreg")
     p.add_argument(
-        "--warmstart-path",
+        "--warmstart",
         type=str,
-        required=True,
+        default=None,
+        metavar="PATH",
         help="checkpoint to warm-start from (train_adversarial.py-produced, "
         "loaded via ResidualMLP.load). Architecture is taken from this "
-        "checkpoint's config. Required -- this script has no from-scratch path.",
+        "checkpoint's config. Mutually exclusive with --no-warmstart.",
+    )
+    p.add_argument(
+        "--no-warmstart",
+        action="store_true",
+        help="init the model from scratch instead of warm-starting -- "
+        "conflates learning the task with hiding c from a probe that's "
+        "learning simultaneously, so only use this to intentionally study "
+        "that confound. Requires --num-x/--d-model/--d-mlp/--num-blocks.",
     )
     p.add_argument(
         "--lam",
@@ -148,6 +158,11 @@ def parse_args():
         "affine for the penalty. 1 = refit every iteration (default "
         "behavior before this option existed).",
     )
+    # Architecture (only used for --no-warmstart; warmstart reads the checkpoint).
+    p.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
+    p.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
+    p.add_argument("--d-mlp", type=int, default=None, help="default: num_x")
+    p.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
     # Optimization
     p.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     p.add_argument("--lr", type=float, default=config.LR)
@@ -173,7 +188,12 @@ def parse_args():
             "(-1 = --ckpt-interval, 0 = disable)"
         ),
     )
-    return p.parse_args()
+    args = p.parse_args()
+    if args.warmstart is not None and args.no_warmstart:
+        p.error("--warmstart and --no-warmstart are mutually exclusive.")
+    if args.warmstart is None and not args.no_warmstart:
+        p.error("specify --warmstart PATH or --no-warmstart.")
+    return args
 
 
 # parse_args early-exits on --help before the heavy imports below are reached.
@@ -398,16 +418,24 @@ def main(args):
 
     torch.manual_seed(args.seed)
 
-    # --- warm-start the model (only supported init path) ---
-    if not os.path.exists(args.warmstart_path):
-        raise SystemExit(
-            f"[error] --warmstart-path checkpoint not found: {args.warmstart_path}"
+    # --- init the model: warm-start (default) or from scratch ---
+    if not args.no_warmstart:
+        if not os.path.exists(args.warmstart):
+            raise SystemExit(
+                f"[error] --warmstart checkpoint not found: {args.warmstart}"
+            )
+        model, _ = ResidualMLP.load(args.warmstart, map_location=device)
+        model = model.to(device)
+        model_config = model.config
+        num_x, num_blocks = model_config.num_x, model_config.num_blocks
+        print(f"[init] warm-started from {args.warmstart} (cfg={model_config})")
+    else:
+        num_x, num_blocks = args.num_x, args.num_blocks
+        model_config = ResidualMLPConfig(
+            num_x=num_x, d_model=args.d_model, d_mlp=args.d_mlp, num_blocks=num_blocks
         )
-    model, _ = ResidualMLP.load(args.warmstart_path, map_location=device)
-    model = model.to(device)
-    model_config = model.config
-    num_x, num_blocks = model_config.num_x, model_config.num_blocks
-    print(f"[init] warm-started from {args.warmstart_path} (cfg={model_config})")
+        model = ResidualMLP(model_config).to(device)
+        print(f"[init] scratch model cfg={model_config}")
 
     hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
     if not hidden_layers:
@@ -420,7 +448,7 @@ def main(args):
         lam=args.lam,
         lam_warmup_iters=args.lam_warmup_iters,
         penalty_layers=hidden_layers,
-        warmstart_path=args.warmstart_path,
+        warmstart_path=args.warmstart if not args.no_warmstart else None,
         seed=args.seed,
         probe_C=args.probe_C,
         probe_init_iters=args.probe_init_iters,
