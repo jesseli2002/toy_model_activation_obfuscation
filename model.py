@@ -10,8 +10,10 @@ W_E / W_U are fixed (non-trainable buffers) with unit-norm orthogonal rows: the
 first num_x+1 residual directions are the input coordinates, the rest are unused
 at init. Loss is taken over the first num_x outputs only; the c-slot is free.
 
-The nonlinearity is LeakyReLU(negative_slope=leaky_relu_slope); leaky_relu_slope=0.0
-(the default) reproduces plain ReLU exactly.
+The nonlinearity is selectable via `activation`:
+    - "leaky_relu" (default): LeakyReLU(negative_slope=leaky_relu_slope);
+      leaky_relu_slope=0.0 reproduces plain ReLU exactly.
+    - "gelu": GELU (leaky_relu_slope is unused).
 """
 
 import torch
@@ -19,7 +21,7 @@ import torch.nn as nn
 from jaxtyping import Float
 from torch import Tensor
 
-from config import ResidualMLPConfig
+from config import ACTIVATION_CHOICES, ResidualMLPConfig
 
 
 class ResidualMLPBlock(nn.Module):
@@ -27,12 +29,15 @@ class ResidualMLPBlock(nn.Module):
         self,
         d_model: int,
         d_mlp: int,
+        activation: str = "leaky_relu",
         leaky_relu_slope: float = 0.0,
         layer_norm: bool = False,
     ):
         super().__init__()
+        assert activation in ACTIVATION_CHOICES, f"unknown activation {activation!r}"
         self.d_model = d_model
         self.d_mlp = d_mlp
+        self.activation = activation
         self.leaky_relu_slope = leaky_relu_slope
         self.layer_norm = nn.LayerNorm(d_model) if layer_norm else None
         self.W_in = nn.Parameter(torch.empty(d_model, d_mlp))
@@ -41,11 +46,16 @@ class ResidualMLPBlock(nn.Module):
         self.b_out = nn.Parameter(torch.zeros(d_model))
 
     def reset_parameters(self, out_init_scale: float = 0.1):
-        # W_in: standard Kaiming, accounting for the leaky-ReLU negative slope
-        # (a=0.0 reduces to the plain-ReLU case).
-        nn.init.kaiming_uniform_(
-            self.W_in, a=self.leaky_relu_slope, nonlinearity="leaky_relu"
-        )
+        # W_in: standard Kaiming. leaky_relu accounts for the negative slope
+        # (a=0.0 reduces to the plain-ReLU case); gelu has no dedicated gain
+        # in torch, so it's approximated with the plain-ReLU gain (gelu is
+        # ReLU-shaped, so this is close enough -- not an exact match).
+        if self.activation == "leaky_relu":
+            nn.init.kaiming_uniform_(
+                self.W_in, a=self.leaky_relu_slope, nonlinearity="leaky_relu"
+            )
+        else:
+            nn.init.kaiming_uniform_(self.W_in, nonlinearity="relu")
         nn.init.zeros_(self.b_in)
         # W_out: small but nonzero. Nonzero so W_in gets gradient at step 0
         # (zeros would stall it); small so the block starts near identity
@@ -60,8 +70,13 @@ class ResidualMLPBlock(nn.Module):
         r_in: Float[Tensor, "batch d_model"] = (
             self.layer_norm(r) if self.layer_norm is not None else r
         )
-        h: Float[Tensor, "batch d_mlp"] = torch.nn.functional.leaky_relu(
-            r_in @ self.W_in + self.b_in, negative_slope=self.leaky_relu_slope
+        pre_act: Float[Tensor, "batch d_mlp"] = r_in @ self.W_in + self.b_in
+        h: Float[Tensor, "batch d_mlp"] = (
+            torch.nn.functional.leaky_relu(
+                pre_act, negative_slope=self.leaky_relu_slope
+            )
+            if self.activation == "leaky_relu"
+            else torch.nn.functional.gelu(pre_act)
         )
         o: Float[Tensor, "batch d_model"] = h @ self.W_out + self.b_out
         return o
@@ -75,6 +90,7 @@ class ResidualMLP(nn.Module):
         self.d_in = config.num_x + 1  # x plus the scalar c
         self.d_model = config.d_model
         self.d_mlp = config.d_mlp
+        self.activation = config.activation
         self.leaky_relu_slope = config.leaky_relu_slope
         self.num_blocks = config.num_blocks
         assert config.d_model >= self.d_in, "d_model must fit the input coordinates"
@@ -90,6 +106,7 @@ class ResidualMLP(nn.Module):
                 ResidualMLPBlock(
                     config.d_model,
                     config.d_mlp,
+                    config.activation,
                     config.leaky_relu_slope,
                     config.layer_norm,
                 )
