@@ -249,14 +249,24 @@ def _plot_training_traces(tag, history, hidden_layers, plot_dir):
     ax_err.set_ylabel("max abs error")
     ax_err.grid(True, alpha=0.3)
 
-    for lyr in hidden_layers:
-        key = str(lyr)
-        ys = [h["delta_norms"].get(key, float("nan")) for h in pts]
-        ax_dom.semilogy(its, ys, label=f"layer {lyr}")
+    if any("delta_norms" in h for h in pts):
+        for lyr in hidden_layers:
+            key = str(lyr)
+            ys = [h.get("delta_norms", {}).get(key, float("nan")) for h in pts]
+            ax_dom.semilogy(its, ys, label=f"layer {lyr}")
+        ax_dom.legend(fontsize=8)
+    else:
+        ax_dom.text(
+            0.5,
+            0.5,
+            "no delta_norms in history",
+            ha="center",
+            va="center",
+            transform=ax_dom.transAxes,
+        )
     ax_dom.set_title("penalized DoM  ||Δμ||  per hidden layer")
     ax_dom.set_xlabel("iter")
     ax_dom.set_ylabel("||mean(c=2) - mean(c=1)||")
-    ax_dom.legend(fontsize=8)
     ax_dom.grid(True, alpha=0.3)
 
     ax_loss.semilogy(its, [h["l_task"] for h in pts], label="L_task")
