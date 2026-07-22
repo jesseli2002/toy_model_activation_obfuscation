@@ -82,21 +82,23 @@ def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
 
 
 @torch.no_grad()
-def capture_layers(
-    model: ResidualMLP, x_full: torch.Tensor, layers: list[int]
-) -> torch.Tensor:
-    _, caches = model.forward(x_full, return_cache=True)
-    return torch.cat([caches[i] for i in layers], dim=-1)
-
-
-@torch.no_grad()
 def capture_layers_dict(
     model: ResidualMLP, x_full: torch.Tensor, layers: list[int]
 ) -> dict[int, torch.Tensor]:
-    """Like capture_layers, but returns each layer separately from a single
-    shared forward pass instead of concatenating them into one tensor."""
+    """Returns each requested layer's residual-stream activations, keyed by
+    layer index, from a single shared forward pass."""
     _, caches = model.forward(x_full, return_cache=True)
     return {i: caches[i] for i in layers}
+
+
+@torch.no_grad()
+def capture_layers(
+    model: ResidualMLP, x_full: torch.Tensor, layers: list[int]
+) -> torch.Tensor:
+    """Like capture_layers_dict, but concatenates the requested layers into a
+    single flat feature tensor."""
+    d = capture_layers_dict(model, x_full, layers)
+    return torch.cat([d[i] for i in layers], dim=-1)
 
 
 @torch.no_grad()
