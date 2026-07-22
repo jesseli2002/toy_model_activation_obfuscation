@@ -7,24 +7,9 @@ c=2 (x resampled each time), and fits two probe types:
       classified by comparing projection to the train-set midpoint.
     - logistic regression (binary c=1 vs c=2)
 
-(LDA and a continuous-c ridge probe were considered but dropped for Step 2: LDA
-is redundant with logreg here -- both are linear classifiers on the same two
-point-masses, and LDA's Gaussian-class-conditional assumption doesn't hold for
-ReLU-transformed activations anyway -- and ridge-on-continuous-c tests a
-different, Step-3-relevant question (is c decodable in between the two probed
-points, needed to distinguish "erased" from "hidden" once the adversary is
-pinning DoM at {1,2}) that's premature before Step 3 exists. See
-plans/detailed_plan.md pitfall #4.)
-
-Gate 2 thresholds (calibrated against the ideal analytic construction, see
-plans/detailed_plan.md -- do NOT expect raw DoM to be near-perfect, ~0.77 is
-correct behavior since ~67% of the DoM signal at r_1 lives in the x-directions):
-    raw DoM      > 0.70   (reported as a diagnostic, not gated on)
-    logreg       > 0.99   (expected ~1.000; this is what Gate 2 keys on)
-
-Usage:
-    python train_probe.py --tag nx32 --ckpt best
-    python train_probe.py --tag nx32 --ckpt best --layers 0,2  # concat r_0 and r_2
+Gate 2 (logreg accuracy) is the pass/fail signal that c is linearly decodable;
+raw DoM is reported as a diagnostic, not gated on. See plans/detailed_plan.md
+for the rationale behind the probe choices and gate thresholds.
 """
 
 import argparse

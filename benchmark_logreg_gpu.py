@@ -3,13 +3,8 @@ probe's actual usage pattern in train_adversarial_logreg.py: an init-scale
 fit (large max_iter, from scratch) and a small warm-started per-step update
 (small max_iter, resumed).
 
-Sweeps dataset dimension d in {32, 64, ..., 1024} (powers of two) at a fixed
-n=10000 points. Requires user help to run the GPU arm -- this sandbox has no
-CUDA device; run this script on a CUDA machine for the real comparison.
-
-Usage:
-    python benchmark_logreg_gpu.py --out benchmark_logreg_gpu.csv \
-        --plot benchmark_logreg_gpu.png
+Requires user help to run the GPU arm -- this sandbox has no CUDA device; run
+this script on a CUDA machine for the real comparison.
 """
 
 import argparse

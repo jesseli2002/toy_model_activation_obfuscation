@@ -3,81 +3,29 @@ LogisticRegression probe, trained *simultaneously* with the model.
 
 Unlike train_adversarial.py's closed-form DoM/LDA penalty (recomputed from
 scratch each step, no inner probe optimizer), this script keeps a single
-LogisticRegression probe over the *concatenation of all penalized hidden
-layers*, warm-started once against the initial model and then advanced by a
-handful of solver iterations per training step -- an actual adversary that
-tracks the model as it moves, rather than a static closed-form proxy for one.
-The probe backend is `sklearn.linear_model.LogisticRegression` (CPU) or a
-GPU-resident torch reimplementation (`torch_logreg.TorchLogisticRegression`),
-selected via `--probe-backend` (default "auto": torch iff CUDA is available;
-see probe_backend.py).
+LogisticRegression probe over the concatenation of all penalized hidden
+layers, warm-started once against the initial model and then advanced a few
+solver iterations per training step -- an actual adversary that tracks the
+model as it moves, rather than a static closed-form proxy for one. The probe
+backend is `sklearn.linear_model.LogisticRegression` (CPU) or a GPU-resident
+torch reimplementation, selected via `--probe-backend` (see probe_backend.py).
 
-    L = lam * L_probe(live activations vs. probe's current boundary)
-      + (1 - lam) * L_task(full-range c ~ U[1,2])
+The training objective combines a probe-adversarial penalty with the task
+loss (see LogregAdversarialConfig for the weighting and probe hyperparameters).
 
-Per iteration:
-  1. One forward pass on a fresh batch (c ~ U[1,2]) gives both the task
-     prediction and the hidden-layer activation caches -- reused for
-     everything below, no separate probe sub-batch.
-  2. Probe labels come from the same batch: label = (c >= --class-threshold),
-     splitting the c in [1,2] range into two classes (~50/50 at the default
-     threshold 1.5).
-  3. The probe is updated in place: `pipeline.fit(X, label)` (backend's
-     `warm_start=True`) on the *detached*, concatenated (across penalized
-     layers) activations, with `max_iter` fixed to a small constant
-     (PROBE_STEP_MAX_ITER) so the solver resumes from last step's
-     coefficients and only takes a few more steps -- cheap relative to the
-     model's forward+backward. The scaler is refit every step too, so the
-     model can't dodge the probe by uniformly shrinking its own
-     representation.
-  4. The probe's current affine decision function (scaler mean_/scale_ +
-     logreg coef_/intercept_) is extracted as detached torch constants
-     `w_eff, b_eff` such that `s(r) = r @ w_eff + b_eff` reproduces the
-     probe's score on the raw (unscaled), concatenated activation vector `r`.
-     `s` is then recomputed on the *live* (grad-carrying) concatenated
-     caches, giving a differentiable adversarial penalty without backprop
-     through the probe's solver:
-         gap   = mean(s[label==1]) - mean(s[label==0])
-         l_probe = relu(gap)
-     relu caps the reward once the classes overlap at the boundary, so the
-     model isn't pushed to over-invert (the probe would just relearn the
-     flipped direction). True labels (from c), not the probe's *predicted*
-     labels, are used for the split -- conditioning on predicted labels would
-     make the loss discontinuous around the boundary.
+The interesting science is the same as train_adversarial.py: not "can it hide
+c" but HOW -- does it hide c only at the probed threshold ("hidden"), or
+genuinely erase linear c-information across the range ("erased")? A moving,
+adaptive probe is a strictly harder adversary than the closed-form penalty,
+so this is a stress test of whatever hiding the DoM/LDA runs found.
 
-     Note: a single probe over the concatenation is a strictly weaker
-     adversary than one probe per layer (it can only learn one global linear
-     combination across all penalized layers, not the best direction within
-     each layer independently) -- but it costs one probe fit per step
-     instead of len(penalty_layers), which is what makes simultaneous
-     training tractable at all.
-
-"Hidden" layers are the residual-stream caches strictly between the embedding
-(cache 0 = input; c sits verbatim in a fixed coordinate, nothing to hide/train)
-and the final residual (cache num_blocks -> y; the task *requires* it to encode
-c, since sat(x,-1,1) != sat(x,-2,2)). So hidden = caches 1 .. num_blocks-1.
-
-This is NOT gated. The deliverable is the trained checkpoint + diagnostics; run
-once, then stop and review. The interesting science is the same as
-train_adversarial.py: not "can it hide c" but HOW -- does it hide c only at the
-probed threshold (recoverable elsewhere in [1,2] -> "hidden"), or genuinely
-erase linear c-information across the range ("erased")? A moving, adaptive
-probe is a strictly harder adversary than the closed-form penalty, so this is
-a stress test of whatever hiding the DoM/LDA runs found.
+This is NOT gated. The deliverable is the trained checkpoint + diagnostics;
+run once, then stop and review.
 
 Requires warm-starting from an existing train_adversarial.py-produced
 checkpoint (no from-scratch path -- conflating "learn the task" with "hide c
 from a probe that's learning simultaneously" adds a confound and isn't
 supported here).
-
-Usage:
-    python train_adversarial_logreg.py --tag adv-logreg1 --lam 0.5 \
-        --warmstart-path runs/nx32/checkpoints/best.pt --max-iters 6000
-    python train_adversarial_logreg.py --resume --tag adv-logreg1 --max-iters 12000
-    # feasibility check: can c be hidden at layer 1 at all, ignoring task loss
-    python train_adversarial_logreg.py --tag adv-logreg-feas-l1 --lam 1.0 \
-        --penalty-layers 1 --warmstart-path runs/nx32/checkpoints/best.pt \
-        --max-iters 6000
 """
 
 import argparse
