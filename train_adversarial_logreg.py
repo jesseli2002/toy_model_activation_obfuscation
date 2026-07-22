@@ -82,6 +82,7 @@ import json
 import os
 import shutil
 import time
+from dataclasses import dataclass
 
 import config
 from config import LogregAdversarialConfig, ResidualMLPConfig
@@ -315,6 +316,115 @@ def score_penalty(
         raise ValueError(f"unknown probe_loss_kind: {kind!r}")
 
 
+@dataclass
+class TrainRecord:
+    """One completed training step, everything a caller needs to checkpoint,
+    log, or resume from it."""
+
+    it: int
+    loss: float
+    l_task: float | None
+    l_probe: float | None
+    lam_eff: float | None
+    affine: tuple[torch.Tensor, torch.Tensor]
+    probe_dt: float
+    model_dt: float
+
+
+def train_steps(
+    model,
+    opt,
+    gen,
+    probe: Pipeline,
+    args,
+    hidden_layers: list[int],
+    num_x: int,
+    start_iter: int,
+    affine: tuple[torch.Tensor, torch.Tensor],
+    device,
+):
+    """Generator over training iterations, yielding one `TrainRecord` per
+    completed step (forward, probe update, backward, optimizer step). No
+    checkpointing/logging here -- that's the caller's job, done between
+    yields. This also means a KeyboardInterrupt while the caller is
+    consuming this generator always leaves the caller's for-loop variable
+    holding the last *fully completed* step, never a half-updated one."""
+    for it in range(start_iter, args.max_iters):
+        t_fwd0 = time.time()
+        x_full, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
+        y_pred_full, caches = model.forward(x_full, return_cache=True)
+        l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
+        fwd_dt = time.time() - t_fwd0
+
+        label = x_full[:, num_x] >= args.class_threshold
+        label_np = label.detach().cpu().numpy()
+        assert label_np.any() and (~label_np).any(), (
+            "batch has only one probe class present -- check --class-threshold "
+            "against c's range."
+        )
+
+        cat_live = concat_caches_torch(caches, hidden_layers)
+
+        t_probe0 = time.time()
+        if it % args.probe_retrain_interval == 0:
+            X = cat_live.detach().cpu().numpy()
+            if args.probe_subsample > 1:
+                X_fit = X[:: args.probe_subsample]
+                label_fit = label_np[:: args.probe_subsample]
+                assert label_fit.any() and (~label_fit).any(), (
+                    "subsampled probe batch has only one class present -- lower "
+                    "--probe-subsample or raise --batch-size."
+                )
+            else:
+                X_fit, label_fit = X, label_np
+            fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
+            affine = extract_affine(probe, device)
+        probe_dt = time.time() - t_probe0
+
+        l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
+
+        if args.lam_warmup_iters > 0:
+            lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
+        else:
+            lam_eff = args.lam
+        loss = lam_eff * l_probe + (1 - lam_eff) * l_task
+
+        t_bwd0 = time.time()
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        opt.step()
+        model_dt = fwd_dt + (time.time() - t_bwd0)
+
+        yield TrainRecord(
+            it=it,
+            loss=loss.item(),
+            l_task=float(l_task.item()),
+            l_probe=float(l_probe.item()),
+            lam_eff=lam_eff,
+            affine=affine,
+            probe_dt=probe_dt,
+            model_dt=model_dt,
+        )
+
+
+def save_checkpoint(
+    path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config
+):
+    """Persist model + optimizer state, the probe's affine boundary at
+    `record`, and enough config to resume."""
+    w_eff, b_eff = record.affine
+    model.save(
+        path,
+        iter=record.it,
+        opt=opt.state_dict(),
+        best_loss=best_loss,
+        probe_w=w_eff.cpu(),
+        probe_b=b_eff.cpu(),
+        probe_layers=hidden_layers,
+        **adv_config.to_dict(),
+    )
+
+
 def main(args):
     if args.save_every_n == -1:
         args.save_every_n = args.ckpt_interval
@@ -393,19 +503,6 @@ def main(args):
         # checkpoint -- resume re-inits them from the resumed model below,
         # same as a fresh run.
 
-    def save(path, it):
-        w_eff, b_eff = affine
-        model.save(
-            path,
-            iter=it,
-            opt=opt.state_dict(),
-            best_loss=best_loss,
-            probe_w=w_eff.cpu(),
-            probe_b=b_eff.cpu(),
-            probe_layers=hidden_layers,
-            **adv_config.to_dict(),
-        )
-
     # --- init-fit a single probe over the concatenation of penalized layers ---
     x_full, _ = sample_batch(args.batch_size, num_x, generator=gen, device=device)
     with torch.no_grad():
@@ -436,119 +533,99 @@ def main(args):
     for pg in opt.param_groups:
         pg["lr"] = args.lr
 
-    current_it = [start_iter]
+    # Placeholder record for the (edge-case) zero-iteration run, e.g.
+    # --resume past --max-iters: train_steps() then yields nothing, and the
+    # final save/log below still needs a record to work with.
+    record = TrainRecord(
+        it=start_iter,
+        loss=best_loss,
+        l_task=None,
+        l_probe=None,
+        lam_eff=None,
+        affine=affine,
+        probe_dt=0.0,
+        model_dt=0.0,
+    )
 
-    def train_loop():
-        nonlocal best_loss, affine, history
-        it = start_iter
-        for it in range(start_iter, args.max_iters):
-            current_it[0] = it
-            t_fwd0 = time.time()
-            x_full, y = sample_batch(
-                args.batch_size, num_x, generator=gen, device=device
-            )
-            y_pred_full, caches = model.forward(x_full, return_cache=True)
-            l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
-            fwd_dt = time.time() - t_fwd0
+    t0 = time.time()
+    try:
+        for record in train_steps(
+            model,
+            opt,
+            gen,
+            probe,
+            args,
+            hidden_layers,
+            num_x,
+            start_iter,
+            affine,
+            device,
+        ):
+            if record.loss < best_loss:
+                best_loss = record.loss
+                save_checkpoint(
+                    best_path, record, model, opt, best_loss, hidden_layers, adv_config
+                )
 
-            label = x_full[:, num_x] >= args.class_threshold
-            label_np = label.detach().cpu().numpy()
-            assert label_np.any() and (~label_np).any(), (
-                "batch has only one probe class present -- check --class-threshold "
-                "against c's range."
-            )
-
-            cat_live = concat_caches_torch(caches, hidden_layers)
-
-            t_probe0 = time.time()
-            if it % args.probe_retrain_interval == 0:
-                X = cat_live.detach().cpu().numpy()
-                if args.probe_subsample > 1:
-                    X_fit = X[:: args.probe_subsample]
-                    label_fit = label_np[:: args.probe_subsample]
-                    assert label_fit.any() and (~label_fit).any(), (
-                        "subsampled probe batch has only one class present -- lower "
-                        "--probe-subsample or raise --batch-size."
-                    )
-                else:
-                    X_fit, label_fit = X, label_np
-                fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
-                affine = extract_affine(probe, device)
-            probe_dt = time.time() - t_probe0
-
-            l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
-
-            if args.lam_warmup_iters > 0:
-                lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
-            else:
-                lam_eff = args.lam
-            loss = lam_eff * l_probe + (1 - lam_eff) * l_task
-
-            t_bwd0 = time.time()
-            opt.zero_grad(set_to_none=True)
-            loss.backward()
-            opt.step()
-            model_dt = fwd_dt + (time.time() - t_bwd0)
-
-            lv = loss.item()
-            if lv < best_loss:
-                best_loss = lv
-                save(best_path, it)
-
-            if it % args.log_interval == 0:
+            if record.it % args.log_interval == 0:
                 me = eval_max_err(model, num_x, gen, device=device)
                 history.append(
                     {
-                        "iter": it,
-                        "loss": lv,
-                        "l_task": float(l_task.item()),
-                        "l_probe": float(l_probe.item()),
-                        "lam_eff": lam_eff,
+                        "iter": record.it,
+                        "loss": record.loss,
+                        "l_task": record.l_task,
+                        "l_probe": record.l_probe,
+                        "lam_eff": record.lam_eff,
                         "max_err": me,
-                        "probe_dt": probe_dt,
-                        "model_dt": model_dt,
+                        "probe_dt": record.probe_dt,
+                        "model_dt": record.model_dt,
                     }
                 )
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
-                rate = (it - start_iter + 1) / (time.time() - t0 + 1e-9)
+                rate = (record.it - start_iter + 1) / (time.time() - t0 + 1e-9)
                 print(
-                    f"iter {it:>6d}  loss {lv:.3e}  task {l_task.item():.3e}  "
-                    f"probe {l_probe.item():.3e}  λ {lam_eff:.1e}  max_err {me:.3e}  "
-                    f"probe_dt {probe_dt*1e3:.1f}ms  model_dt {model_dt*1e3:.1f}ms  "
+                    f"iter {record.it:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
+                    f"probe {record.l_probe:.3e}  λ {record.lam_eff:.1e}  max_err {me:.3e}  "
+                    f"probe_dt {record.probe_dt*1e3:.1f}ms  model_dt {record.model_dt*1e3:.1f}ms  "
                     f"{rate:.1f} it/s"
                 )
 
-            if it % args.ckpt_interval == 0 and it > start_iter:
-                save(last_path, it)
+            if record.it % args.ckpt_interval == 0 and record.it > start_iter:
+                save_checkpoint(
+                    last_path, record, model, opt, best_loss, hidden_layers, adv_config
+                )
 
             if (
                 args.save_every_n != 0  # i.e. not disabled
-                and it % args.save_every_n == 0
-                and it > start_iter
+                and record.it % args.save_every_n == 0
+                and record.it > start_iter
             ):
-                save(os.path.join(run_ckpt_dir, f"iter_{it}.pt"), it)
-
-        return it
-
-    t0 = time.time()
-    try:
-        it = train_loop()
+                save_checkpoint(
+                    os.path.join(run_ckpt_dir, f"iter_{record.it}.pt"),
+                    record,
+                    model,
+                    opt,
+                    best_loss,
+                    hidden_layers,
+                    adv_config,
+                )
     except KeyboardInterrupt:
-        it = current_it[0]
         print(
-            f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {it}..."
+            f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.it}..."
         )
-        save(last_path, it)
+        save_checkpoint(
+            last_path, record, model, opt, best_loss, hidden_layers, adv_config
+        )
         print(f"[interrupt] saved to {last_path}")
         raise
 
     # final logging + save
-    save(last_path, it)
+    save_checkpoint(last_path, record, model, opt, best_loss, hidden_layers, adv_config)
     me = eval_max_err(model, num_x, gen, device=device)
     history.append(
         {
-            "iter": it,
+            "iter": record.it,
             "loss": best_loss,
             "l_task": None,
             "l_probe": None,
@@ -559,7 +636,7 @@ def main(args):
     with open(hist_path, "w") as f:
         json.dump(history, f)
     print(
-        f"[done] iter {it}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
+        f"[done] iter {record.it}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
         f"elapsed {time.time()-t0:.1f}s"
     )
     print(f"[done] checkpoints in {run_ckpt_dir}, history in {hist_path}")
