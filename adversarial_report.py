@@ -82,6 +82,7 @@ import numpy as np
 import pandas as pd
 import seaborn as sns
 import torch
+from matplotlib.collections import PolyCollection
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LogisticRegression, Ridge
 from sklearn.metrics import r2_score
@@ -352,23 +353,39 @@ def _plot_layer_distributions(tag, c_lo, c_hi, layers, gap, plot_dir):
         for l in layers
     ]
 
+    fig_width = round(max(7, 1.4 * len(layers)) * 2 / 3)
     fig, (ax_top, ax_bot) = plt.subplots(
         2,
         1,
-        figsize=(max(7, 1.4 * len(layers)), 7.5),
+        figsize=(fig_width, 7.5),
         sharex=True,
         gridspec_kw={"height_ratios": [3, 1]},
     )
 
+    # density_norm="width" caps every violin at the same max width regardless
+    # of how peaked/spread its KDE is -- otherwise a near-degenerate layer
+    # (tiny std) balloons to full width in a sliver of y-range (reads as a
+    # flat horizontal bar) while a widely-spread layer's per-point density is
+    # low and shrinks to a near-invisible vertical thread, under the default
+    # "area" normalization (equal probability mass -> equal area).
     sns.violinplot(
         data=df,
         x="layer",
         y="distance",
         hue="class",
         split=True,
-        inner="quart",
+        density_norm="width",
+        inner=None,
+        linewidth=1.5,
         ax=ax_top,
     )
+    # Force each violin's outline to match its own fill color: seaborn's
+    # linecolor="auto" default renders dark/near-black, which swallows the
+    # class color-coding entirely once a violin collapses to a thin sliver
+    # (the fill area vanishes and only the outline remains visible).
+    for artist in ax_top.collections:
+        if isinstance(artist, PolyCollection):
+            artist.set_edgecolor(artist.get_facecolor())
     ax_top.axhline(0.0, color="k", ls="--", lw=1, label="boundary")
     ax_top.set_title(
         f"probe signed distance to boundary, per layer ({tag}, {lo_label} vs {hi_label})"
@@ -378,15 +395,28 @@ def _plot_layer_distributions(tag, c_lo, c_hi, layers, gap, plot_dir):
     ax_top.legend(fontsize=8)
     ax_top.grid(True, alpha=0.3)
 
+    # Twin-x: mean gap and pooled std differ by ~an order of magnitude, so a
+    # shared axis makes pooled std unreadable -- each line gets its own axis,
+    # color-matched to its label so the split reads unambiguously.
     x = np.arange(len(layers))
-    ax_bot.plot(x, layer_gap, marker="o", label="mean gap")
-    ax_bot.plot(x, pooled_std, marker="o", label="pooled std")
+    ax_bot2 = ax_bot.twinx()
+    (line_gap,) = ax_bot.plot(
+        x, layer_gap, marker="o", color="tab:blue", label="mean gap"
+    )
+    (line_std,) = ax_bot2.plot(
+        x, pooled_std, marker="o", color="tab:orange", label="pooled std"
+    )
     ax_bot.axhline(0.0, color="k", lw=0.8)
     ax_bot.set_xticks(x)
     ax_bot.set_xticklabels([f"L{l}" for l in layers])
     ax_bot.set_xlabel("layer")
-    ax_bot.set_ylabel("data units")
-    ax_bot.legend(fontsize=8)
+    ax_bot.set_ylabel("mean gap (data units)", color="tab:blue")
+    ax_bot.tick_params(axis="y", labelcolor="tab:blue")
+    ax_bot2.set_ylabel("pooled std (data units)", color="tab:orange")
+    ax_bot2.tick_params(axis="y", labelcolor="tab:orange")
+    ax_bot.legend(
+        [line_gap, line_std], [line_gap.get_label(), line_std.get_label()], fontsize=8
+    )
     ax_bot.grid(True, alpha=0.3)
 
     fig.tight_layout()
