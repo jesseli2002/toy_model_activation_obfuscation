@@ -62,7 +62,14 @@ def build_exact_model(
     assert d_mlp >= num_x, "need at least num_x hidden neurons per block"
     # The exact construction wires blocks 0 and 1; extra blocks stay ~identity.
     assert num_blocks >= 2, "exact construction requires num_blocks >= 2"
-    m = ResidualMLP(ResidualMLPConfig(num_x, d_model, d_mlp, num_blocks=num_blocks))
+    # activation pinned to leaky_relu (slope 0 = plain ReLU): the hand-set
+    # weights below are an exact ReLU identity, independent of whatever
+    # ResidualMLPConfig's own default activation happens to be.
+    m = ResidualMLP(
+        ResidualMLPConfig(
+            num_x, d_model, d_mlp, num_blocks=num_blocks, activation="leaky_relu"
+        )
+    )
     with torch.no_grad():
         for p in m.parameters():
             p.zero_()
@@ -88,7 +95,14 @@ def build_exact_obfuscator(
     """
     assert d_mlp >= 1, "need at least one MLP neuron"
     assert num_blocks >= 1, "exact construction requires num_blocks >= 1"
-    m = ResidualMLP(ResidualMLPConfig(num_x, d_model, d_mlp, num_blocks=num_blocks))
+    # activation pinned to leaky_relu (slope 0 = plain ReLU): the hand-set
+    # weights below are an exact ReLU identity, independent of whatever
+    # ResidualMLPConfig's own default activation happens to be.
+    m = ResidualMLP(
+        ResidualMLPConfig(
+            num_x, d_model, d_mlp, num_blocks=num_blocks, activation="leaky_relu"
+        )
+    )
 
     with torch.no_grad():
         for p in m.parameters():
