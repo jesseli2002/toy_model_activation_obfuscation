@@ -25,6 +25,7 @@ EARLY_STOP_LOSS = 1e-12  # float32 eps^2 ~ 1.4e-14; 1e-12 is a sane "exact" bar
 
 PROBE_LOSS_CHOICES = ["squared", "absolute", "squared-var", "absolute-std", "lda"]
 PROBE_LOGREG_LOSS_CHOICES = ["meandiff-relu", "meandiff"]
+PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch"]
 
 
 @dataclass
