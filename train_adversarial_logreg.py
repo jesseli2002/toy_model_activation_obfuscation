@@ -1,13 +1,16 @@
-"""Step 3 (variant) — adversarial training: model vs. a stateful sklearn
+"""Step 3 (variant) — adversarial training: model vs. a stateful
 LogisticRegression probe, trained *simultaneously* with the model.
 
 Unlike train_adversarial.py's closed-form DoM/LDA penalty (recomputed from
 scratch each step, no inner probe optimizer), this script keeps a single
-`sklearn.linear_model.LogisticRegression` probe over the *concatenation of
-all penalized hidden layers*, warm-started once against the initial model
-and then advanced by a handful of solver iterations per training step -- an
-actual adversary that tracks the model as it moves, rather than a static
-closed-form proxy for one.
+LogisticRegression probe over the *concatenation of all penalized hidden
+layers*, warm-started once against the initial model and then advanced by a
+handful of solver iterations per training step -- an actual adversary that
+tracks the model as it moves, rather than a static closed-form proxy for one.
+The probe backend is `sklearn.linear_model.LogisticRegression` (CPU) or a
+GPU-resident torch reimplementation (`torch_logreg.TorchLogisticRegression`),
+selected via `--probe-backend` (default "auto": torch iff CUDA is available;
+see probe_backend.py).
 
     L = lam * L_probe(live activations vs. probe's current boundary)
       + (1 - lam) * L_task(full-range c ~ U[1,2])
@@ -19,13 +22,13 @@ Per iteration:
   2. Probe labels come from the same batch: label = (c >= --class-threshold),
      splitting the c in [1,2] range into two classes (~50/50 at the default
      threshold 1.5).
-  3. The probe is updated in place: `pipeline.fit(X, label)` on the
-     *detached*, concatenated (across penalized layers) activations, with
-     `LogisticRegression(warm_start=True)` and `max_iter` fixed to a small
-     constant (PROBE_STEP_MAX_ITER) so the lbfgs solver resumes from last
-     step's coefficients and only takes a few more steps -- cheap relative to
-     the model's forward+backward. The StandardScaler is refit every step
-     too, so the model can't dodge the probe by uniformly shrinking its own
+  3. The probe is updated in place: `pipeline.fit(X, label)` (backend's
+     `warm_start=True`) on the *detached*, concatenated (across penalized
+     layers) activations, with `max_iter` fixed to a small constant
+     (PROBE_STEP_MAX_ITER) so the solver resumes from last step's
+     coefficients and only takes a few more steps -- cheap relative to the
+     model's forward+backward. The scaler is refit every step too, so the
+     model can't dodge the probe by uniformly shrinking its own
      representation.
   4. The probe's current affine decision function (scaler mean_/scale_ +
      logreg coef_/intercept_) is extracted as detached torch constants
@@ -33,7 +36,7 @@ Per iteration:
      probe's score on the raw (unscaled), concatenated activation vector `r`.
      `s` is then recomputed on the *live* (grad-carrying) concatenated
      caches, giving a differentiable adversarial penalty without backprop
-     through sklearn's solver:
+     through the probe's solver:
          gap   = mean(s[label==1]) - mean(s[label==0])
          l_probe = relu(gap)
      relu caps the reward once the classes overlap at the boundary, so the
@@ -45,7 +48,7 @@ Per iteration:
      Note: a single probe over the concatenation is a strictly weaker
      adversary than one probe per layer (it can only learn one global linear
      combination across all penalized layers, not the best direction within
-     each layer independently) -- but it costs one sklearn fit per step
+     each layer independently) -- but it costs one probe fit per step
      instead of len(penalty_layers), which is what makes simultaneous
      training tractable at all.
 
@@ -89,9 +92,6 @@ from dataclasses import dataclass
 import config
 from config import LogregAdversarialConfig, ResidualMLPConfig
 
-import warnings
-from sklearn.exceptions import ConvergenceWarning
-
 # Per-step warm-started solver iterations for the probe update (small: the
 # solver resumes from last step's coefficients, so a handful of lbfgs steps
 # is enough to track the model). The init fit (before the training loop) uses
@@ -108,7 +108,7 @@ def _parse_penalty_layers(s: str) -> str | list[int]:
 def parse_args():
     p = argparse.ArgumentParser(
         description="Adversarial training: model vs. a simultaneous, "
-        "stateful sklearn LogisticRegression probe.",
+        "stateful LogisticRegression probe (sklearn or GPU-resident torch).",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--tag", type=str, default="adv-logreg")
@@ -164,6 +164,15 @@ def parse_args():
         "which starts each probe from scratch. Per-step updates during "
         f"training instead use a fixed max_iter={PROBE_STEP_MAX_ITER} "
         "(warm-started, so a few iters is enough).",
+    )
+    p.add_argument(
+        "--probe-backend",
+        choices=config.PROBE_BACKEND_CHOICES,
+        default="auto",
+        help="'auto' (default): torch (GPU-resident) probe iff CUDA is "
+        "available, else sklearn. 'sklearn'/'torch' force a backend "
+        "regardless of device -- e.g. to smoke-test the torch backend on a "
+        "CPU-only machine.",
     )
     p.add_argument(
         "--probe-loss-kind",
@@ -223,16 +232,16 @@ def parse_args():
 if __name__ == "__main__":
     args = parse_args()
 
-import numpy as np
+import warnings
+
 import torch
-from sklearn.linear_model import LogisticRegression
-from sklearn.pipeline import Pipeline, make_pipeline
-from sklearn.preprocessing import StandardScaler
+from sklearn.exceptions import ConvergenceWarning
 
 from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
 from paths import ckpt_dir, log_dir, run_dir
 from data import eval_max_err
+from probe_backend import build_probe_pipeline, fit_probe, resolve_probe_backend
 
 
 def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
@@ -259,39 +268,6 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
                 f"[error] penalty layer {lyr} out of range [0, {num_blocks}]."
             )
     return layers
-
-
-def build_probe_pipeline(C: float, max_iter: int) -> Pipeline:
-    return make_pipeline(
-        StandardScaler(),
-        LogisticRegression(warm_start=True, C=C, max_iter=max_iter, tol=1e-3),
-    )
-
-
-def fit_probe(pipeline: Pipeline, X: np.ndarray, label: np.ndarray, max_iter: int):
-    """Update `pipeline` in place: refit the StandardScaler (so the model
-    can't dodge the probe by uniformly shrinking its own activations) and
-    advance the warm-started LogisticRegression solver by `max_iter` more
-    iterations."""
-    pipeline.named_steps["logisticregression"].max_iter = max_iter
-    pipeline.fit(X, label)
-
-
-def extract_affine(
-    pipeline: Pipeline, device, dtype=torch.float32
-) -> tuple[torch.Tensor, torch.Tensor]:
-    """The probe's current decision score is affine in the raw (unscaled)
-    activation r: s(r) = w_eff . r + b_eff, folding the StandardScaler into
-    the LogisticRegression coefficients. Returns detached torch tensors."""
-    scaler = pipeline.named_steps["standardscaler"]
-    logreg = pipeline.named_steps["logisticregression"]
-    mu = torch.as_tensor(scaler.mean_, device=device, dtype=dtype)
-    sigma = torch.as_tensor(scaler.scale_, device=device, dtype=dtype)
-    w = torch.as_tensor(logreg.coef_[0], device=device, dtype=dtype)
-    b = float(logreg.intercept_[0])
-    w_eff = w / sigma
-    b_eff = b - (w * mu / sigma).sum()
-    return w_eff.detach(), b_eff.detach()
 
 
 def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.Tensor:
@@ -337,7 +313,7 @@ def train_steps(
     model,
     opt,
     gen,
-    probe: Pipeline,
+    probe,
     args,
     hidden_layers: list[int],
     start_iter: int,
@@ -359,8 +335,7 @@ def train_steps(
         fwd_dt = time.time() - t_fwd0
 
         label = x_full[:, num_x] >= args.class_threshold
-        label_np = label.detach().cpu().numpy()
-        assert label_np.any() and (~label_np).any(), (
+        assert label.any() and (~label).any(), (
             "batch has only one probe class present -- check --class-threshold "
             "against c's range."
         )
@@ -369,18 +344,18 @@ def train_steps(
 
         t_probe0 = time.time()
         if it % args.probe_retrain_interval == 0:
-            X = cat_live.detach().cpu().numpy()
+            X = cat_live.detach()
             if args.probe_subsample > 1:
                 X_fit = X[:: args.probe_subsample]
-                label_fit = label_np[:: args.probe_subsample]
+                label_fit = label[:: args.probe_subsample]
                 assert label_fit.any() and (~label_fit).any(), (
                     "subsampled probe batch has only one class present -- lower "
                     "--probe-subsample or raise --batch-size."
                 )
             else:
-                X_fit, label_fit = X, label_np
+                X_fit, label_fit = X, label
             fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
-            affine = extract_affine(probe, device)
+            affine = probe.get_affine(device)
         probe_dt = time.time() - t_probe0
 
         l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
@@ -453,8 +428,11 @@ def save_checkpoint(
 def main(args):
     if args.save_every_n == -1:
         args.save_every_n = args.ckpt_interval
+    # ad-hoc band-aid for this script's own (sklearn-backend) probe fits;
+    # doesn't belong in probe_backend.py, which is meant to be reusable.
     warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
     device = "cuda" if torch.cuda.is_available() else "cpu"
+    probe_backend = resolve_probe_backend(args.probe_backend, device)
 
     if os.path.exists(run_dir(args.tag)) and not args.resume:
         if args.tag_force:
@@ -532,25 +510,25 @@ def main(args):
     x_full, _ = sample_batch(args.batch_size, num_x, generator=gen, device=device)
     with torch.no_grad():
         _, init_caches = model.forward(x_full, return_cache=True)
-    init_label_np = (x_full[:, num_x] >= args.class_threshold).cpu().numpy()
-    assert init_label_np.any() and (~init_label_np).any(), (
+    init_label = x_full[:, num_x] >= args.class_threshold
+    assert init_label.any() and (~init_label).any(), (
         "init batch has only one probe class present -- check --class-threshold "
         "against c's range."
     )
     cat_init = concat_caches_torch(init_caches, hidden_layers)
-    probe: Pipeline = build_probe_pipeline(args.probe_C, args.probe_init_iters)
-    probe.fit(cat_init.cpu().numpy(), init_label_np)
-    affine = extract_affine(probe, device)
+    probe = build_probe_pipeline(args.probe_C, args.probe_init_iters, probe_backend)
+    probe.fit(cat_init.detach(), init_label)
+    affine = probe.get_affine(device)
     print(
-        f"[init] fit concatenated probe over layers {hidden_layers}, "
-        f"init_iters={args.probe_init_iters}, C={args.probe_C}"
+        f"[init] fit concatenated probe (backend={probe_backend}) over layers "
+        f"{hidden_layers}, init_iters={args.probe_init_iters}, C={args.probe_C}"
     )
 
     print(
         f"[adv] tag={args.tag} lam={args.lam} penalty_layers={hidden_layers} "
         f"num_blocks={num_blocks} bs={args.batch_size} "
         f"class_threshold={args.class_threshold} probe_loss_kind={args.probe_loss_kind} "
-        f"probe_subsample={args.probe_subsample} "
+        f"probe_backend={probe_backend} probe_subsample={args.probe_subsample} "
         f"probe_retrain_interval={args.probe_retrain_interval} "
         f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
