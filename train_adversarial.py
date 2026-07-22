@@ -34,7 +34,7 @@ This is NOT gated. The deliverable is the trained checkpoint + diagnostics
 (see adversarial_report.py); run once, then stop and review. The interesting
 science is not "can it hide c" (expected: yes) but HOW: does it hide c only at
 the probed points {1,2} (recoverable elsewhere in [1,2] -> "hidden"), or genuinely
-erase linear c-information across the range ("erased")?
+erase linear c-information across the range ("erased").
 """
 
 import argparse
@@ -142,9 +142,15 @@ def parse_args():
     p.add_argument("--d-mlp", type=int, default=None, help="default: num_x")
     p.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
     p.add_argument(
+        "--activation",
+        choices=config.ACTIVATION_CHOICES,
+        default=ResidualMLPConfig.activation,
+    )
+    p.add_argument(
         "--leaky-relu-slope",
         type=float,
         default=ResidualMLPConfig.leaky_relu_slope,
+        help="only used when --activation leaky_relu.",
     )
     p.add_argument(
         "--out-init-scale", type=float, default=ResidualMLPConfig.out_init_scale
@@ -366,6 +372,7 @@ def main(args):
             d_mlp=args.d_mlp,
             num_blocks=num_blocks,
             out_init_scale=args.out_init_scale,
+            activation=args.activation,
             leaky_relu_slope=args.leaky_relu_slope,
             layer_norm=args.layer_norm,
         )

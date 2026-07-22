@@ -25,6 +25,7 @@ EARLY_STOP_LOSS = 1e-12  # float32 eps^2 ~ 1.4e-14; 1e-12 is a sane "exact" bar
 
 PROBE_LOSS_CHOICES = ["squared", "absolute", "squared-var", "absolute-std", "lda"]
 PROBE_LOGREG_LOSS_CHOICES = ["meandiff-relu", "meandiff"]
+ACTIVATION_CHOICES = ["leaky_relu", "gelu"]
 PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch"]
 
 
@@ -55,6 +56,7 @@ class ResidualMLPConfig:
     d_mlp: int | None = None
     num_blocks: int = 8
     out_init_scale: float = 0.1
+    activation: str = "gelu"
     leaky_relu_slope: float = 0.0
     layer_norm: bool = False
 
@@ -63,6 +65,7 @@ class ResidualMLPConfig:
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "num_blocks": 4,
         "out_init_scale": 0.1,
+        "activation": "leaky_relu",
         "leaky_relu_slope": 0.0,
         "layer_norm": False,
     }
