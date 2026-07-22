@@ -13,7 +13,7 @@ import torch # and other heavy imports
 ... # rest of code
 ```
 This is not a hard rule; if argument parsing necessarily relies on some heavy libraries, don't sacrifice code readability or command line ease-of-use for this one specific problem.
-- Indicate tensor/array shapes with jaxtyping on functions and methods
+- Indicate tensor/array shapes/sizes with jaxtyping on functions and methods
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
@@ -22,6 +22,7 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
 ## Autonomous engineering
 - Due to machine resource limitations, realistically at most one agent should be running training code at a time. If tasking subagents to complete work, this should be considered for task allocation.
 - For pure code-location tasks (Explore agent, "quick"/"medium" breadth), use model: "haiku". Reserve Sonnet/Opus for exploration that requires judging ambiguous matches or synthesizing findings.
+- There are some unit tests but they only cover specific parts of the codebase - unit tests passing DOES NOT mean that the codebase is working.
 
 ## Background processes
 Each Bash call runs in its own PID namespace, so a sandboxed `ps` sees only its own invocation, and plain `&`/`nohup`/`setsid` processes are killed when the invocation ends.
