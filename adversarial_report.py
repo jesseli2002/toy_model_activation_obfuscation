@@ -63,9 +63,8 @@ def parse_args():
         "--probe-backend",
         choices=config.PROBE_BACKEND_CHOICES,
         default="auto",
-        help="'auto' (default): torch (GPU-resident) probe iff CUDA is "
-        "available, else sklearn. 'sklearn'/'torch' force a backend "
-        "regardless of device.",
+        help="'auto': torch (GPU-resident) probe iff CUDA is available, else "
+        "sklearn. 'sklearn'/'torch' force a backend regardless of device.",
     )
     p.add_argument("--show", action="store_true")
     p.add_argument(
@@ -135,6 +134,7 @@ def _binary_probe_metrics_all_layers(
     n_test,
     g,
     probe_backend_name,
+    desc="layers",
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
     c_hi) pair, from a single shared forward pass per train/test set.
@@ -164,7 +164,7 @@ def _binary_probe_metrics_all_layers(
 
     metrics = {}
     plot_inputs = {}
-    for layer in layers:
+    for layer in tqdm(layers, desc=desc, leave=False):
         r_lo_tr, r_hi_tr = train_ds[layer]
         r_lo_te, r_hi_te = test_ds[layer]
         dom_acc, delta_norm = _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
@@ -385,25 +385,24 @@ def main(args):
     probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
     # --- phase 1: generate all data ---
-    stage_names = ["task fidelity", "probe gap @ {1,2}"] + (
-        [f"held-out {lo:g}-{hi:g}" for lo, hi in args.held_out_pairs]
-        if args.detailed
-        else []
-    )
-    bar = tqdm(total=len(stage_names), desc="generating report data")
-
     me = eval_max_err(model, num_x, g, device=device)
     me_b = eval_max_err(base_model, num_x, g, device=device) if base_model else None
-    bar.update(1)
 
     gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
-        model, 1.0, 2.0, hidden_layers, args.n_train, args.n_test, g, probe_backend_name
+        model,
+        1.0,
+        2.0,
+        hidden_layers,
+        args.n_train,
+        args.n_test,
+        g,
+        probe_backend_name,
+        desc="probe gap @ {1,2}",
     )
-    bar.update(1)
 
     heldout = {}
     if args.detailed:
-        for c_lo, c_hi in args.held_out_pairs:
+        for c_lo, c_hi in tqdm(args.held_out_pairs, desc="held-out pairs"):
             pair_metrics, _ = _binary_probe_metrics_all_layers(
                 model,
                 c_lo,
@@ -413,11 +412,10 @@ def main(args):
                 args.n_test,
                 g,
                 probe_backend_name,
+                desc=f"held-out {c_lo:g}-{c_hi:g}",
             )
             for lyr in hidden_layers:
                 heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
-            bar.update(1)
-    bar.close()
 
     # --- phase 2: build + write the report ---
     lines = _build_report(
