@@ -147,12 +147,14 @@ class ResidualMLP(nn.Module):
         Float[Tensor, "batch d_in"]
         | tuple[Float[Tensor, "batch d_in"], list[Float[Tensor, "batch d_model"]]]
     ):
-        """`noise_std > 0` adds absolute Gaussian noise to the residual stream
-        after every block except the last, i.e. onto caches 1..num_blocks-1 --
-        the penalized hidden layers (see plans/resid_stream_noise_plan.md).
-        Embedding (cache 0) and the final residual (cache num_blocks -> y) are
-        never injected into directly. `noise_std=0.0` (default) is bit-identical
-        to the pre-noise forward."""
+        """
+        :param x_full: input batch.
+        :param return_cache: also return the per-layer residual-stream caches.
+        :param noise_std: if > 0, adds absolute Gaussian noise to the residual
+            stream after every block except the last (caches 1..num_blocks-1).
+            0.0 (default) is bit-identical to the pre-noise forward.
+        :param generator: optional RNG generator for the noise.
+        """
         r: Float[Tensor, "batch d_model"] = x_full @ self.W_E
         caches = [r]
         for i, block in enumerate(self.blocks):

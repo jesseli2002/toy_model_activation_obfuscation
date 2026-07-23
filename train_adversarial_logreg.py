@@ -147,10 +147,7 @@ def parse_args():
         default=LogregAdversarialConfig.resid_noise_std,
         help="absolute Gaussian noise std added to the residual stream after "
         "every hidden layer (caches 1..num_blocks-1) on the task-loss forward "
-        "pass only. Closes off shrinking c's encoding without bound: past this "
-        "floor, shrinking stops helping since c must still survive transit to "
-        "the output at amplitude >= this. 0 = no noise (pre-noise behavior). "
-        "See plans/resid_stream_noise_plan.md.",
+        "pass only. 0 = no noise (pre-noise behavior).",
     )
 
     g_probe = p.add_argument_group(
