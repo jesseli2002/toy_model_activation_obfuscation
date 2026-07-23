@@ -141,6 +141,14 @@ def parse_args():
         help="probe class split: label = (c >= threshold). c ~ U[1,2], so 1.5 "
         "gives an ~even split.",
     )
+    g_adv.add_argument(
+        "--resid-noise-std",
+        type=float,
+        default=LogregAdversarialConfig.resid_noise_std,
+        help="absolute Gaussian noise std added to the residual stream after "
+        "every hidden layer (caches 1..num_blocks-1) on the task-loss forward "
+        "pass only. 0 = no noise (pre-noise behavior).",
+    )
 
     g_probe = p.add_argument_group(
         "probe (adversary) configuration",
@@ -337,8 +345,17 @@ def train_steps(
     for it in range(start_iter, args.max_iters):
         t_fwd0 = time.time()
         x_full, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
-        y_pred_full, caches = model.forward(x_full, return_cache=True)
+
+        # task: noisy pass -- this is what forbids shrinking c's encoding
+        # below the noise floor (see plans/resid_stream_noise_plan.md).
+        y_pred_full = model.forward(
+            x_full, noise_std=args.resid_noise_std, generator=gen
+        )
         l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
+
+        # probe fit + penalty: clean pass, full resolution -- the probe stays
+        # exempt from the noise so it can still out-resolve the model.
+        _, caches = model.forward(x_full, return_cache=True)
         fwd_dt = time.time() - t_fwd0
 
         label = x_full[:, num_x] >= args.class_threshold
@@ -495,6 +512,7 @@ def main(args):
         probe_loss_kind=args.probe_loss_kind,
         probe_subsample=args.probe_subsample,
         probe_retrain_interval=args.probe_retrain_interval,
+        resid_noise_std=args.resid_noise_std,
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -545,6 +563,7 @@ def main(args):
         f"class_threshold={args.class_threshold} probe_loss_kind={args.probe_loss_kind} "
         f"probe_backend={probe_backend} probe_subsample={args.probe_subsample} "
         f"probe_retrain_interval={args.probe_retrain_interval} "
+        f"resid_noise_std={args.resid_noise_std} "
         f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
 

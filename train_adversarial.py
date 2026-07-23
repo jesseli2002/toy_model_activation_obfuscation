@@ -136,6 +136,14 @@ def parse_args():
         "through it (squared-var, absolute-std, lda). Default off: the live "
         "denominator gives the true Fisher-ratio / LDA gradient.",
     )
+    p.add_argument(
+        "--resid-noise-std",
+        type=float,
+        default=AdversarialConfig.resid_noise_std,
+        help="absolute Gaussian noise std added to the residual stream after "
+        "every hidden layer (caches 1..num_blocks-1) on the task-loss forward "
+        "pass only. 0 = no noise (pre-noise behavior).",
+    )
     # Architecture (only used for --init scratch; warmstart reads the checkpoint).
     p.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
     p.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
@@ -398,6 +406,7 @@ def main(args):
         probe_loss_eps=args.probe_loss_eps,
         lda_shrinkage=args.lda_shrinkage,
         probe_loss_detach_denom=args.probe_loss_detach_denom,
+        resid_noise_std=args.resid_noise_std,
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
@@ -447,7 +456,7 @@ def main(args):
         f"[adv] tag={args.tag} init={args.init} lam={args.lam} "
         f"penalty_layers={hidden_layers} num_blocks={num_blocks} "
         f"bs={args.batch_size} probe_bs={args.probe_batch_size}/class "
-        f"probe_loss={args.probe_loss} "
+        f"probe_loss={args.probe_loss} resid_noise_std={args.resid_noise_std} "
         f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
 
@@ -458,9 +467,10 @@ def main(args):
         for pg in opt.param_groups:
             pg["lr"] = lr
 
-        # task loss on the FULL c-range
+        # task loss on the FULL c-range, noisy pass -- forbids shrinking c's
+        # encoding below the noise floor (see plans/resid_stream_noise_plan.md)
         x_full, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
-        pred = model.task_output(x_full)
+        pred = model.task_output(x_full, noise_std=args.resid_noise_std, generator=gen)
         l_task = torch.mean((pred - y) ** 2)
 
         if args.lam_warmup_iters > 0:

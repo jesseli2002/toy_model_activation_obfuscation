@@ -8,6 +8,6 @@ This directory contains plans - both for agents and for humans. The ones specifi
 - train_adversarial_logreg_plan.md
     - (COMPLETED) Implementation plan for adversarial training with logistic regression probe.
 - resid_stream_noise_plan.md
-    - (NOT STARTED) Add absolute Gaussian noise to the residual stream during adversarial
+    - (COMPLETED) Add absolute Gaussian noise to the residual stream during adversarial
       training, so the model can no longer evade the probe by shrinking its c-encoding
       without bound. Touches model.py, config.py, and both train_adversarial*.py.
