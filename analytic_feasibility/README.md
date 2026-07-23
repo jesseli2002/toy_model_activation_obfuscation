@@ -143,6 +143,11 @@ If training with period-2/4 probes finds low-loss hidden solutions, look for:
 - `period2_decode.py` — sympy feasibility system for the one-layer decode.
 - `period2_net.py` — self-contained period-2 exact-obfuscation demo
   (re-derives atoms, builds the literal network, verifies to 1e-14).
+- `period2_decode_walkthrough.ipynb` — interactive (ipywidgets slider) notebook
+  walking through how the period-2 decode formula works, step by step: the
+  `v1`/`v2` encoding, the easy-but-ungateable 5-window decode, the
+  curve-vanishing ReLU atoms that remove the gating, and the final
+  `c = affine + Σ w_j·relu(atom_j)` decomposition.
 
 Scripts were written to run from a scratch dir; `search_exact.py` writes
 outputs to `$TMPDIR`.
