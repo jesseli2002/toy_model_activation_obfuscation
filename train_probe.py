@@ -183,50 +183,43 @@ def _plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
     print(f"[plot] wrote {path}")
 
 
-def raw_logreg_affine(logreg) -> tuple[Float[np.ndarray, "d"], float]:
-    """Fold logreg's StandardScaler into a raw (unstandardized) unit direction
-    + threshold: `X @ w_hat - threshold` is the signed distance to the
-    decision boundary in data coordinates, with the boundary at 0."""
-    scaler = logreg.named_steps["standardscaler"]
-    clf = logreg.named_steps["logisticregression"]
-    w_logreg: Float[np.ndarray, "d"] = clf.coef_[0] / scaler.scale_
-    w_hat: Float[np.ndarray, "d"] = w_logreg / np.linalg.norm(w_logreg)
-    threshold = float(
-        (np.dot(scaler.mean_, w_logreg) - clf.intercept_[0]) / np.linalg.norm(w_logreg)
-    )
-    return w_hat, threshold
-
-
 def plot_probe(
     tag,
     layers,
     w_dom: Float[np.ndarray, "d"],
     midpoint,
-    logreg,
+    w_probe: Float[np.ndarray, "d"],
+    b_probe: float,
     X_test: Float[np.ndarray, "n d"],
     y_test: Bool[np.ndarray, "n"],
     plot_dir,
 ):
     """n = test-set size (both classes concatenated), d = probed feature dim
-    (sum of d_model over --layers)."""
+    (sum of d_model over --layers). `w_probe`/`b_probe` are the logreg probe's
+    raw (unstandardized) affine decision score s(r) = w_probe . r + b_probe --
+    i.e. whatever scaler the probe was fit with already folded in, so this
+    function is agnostic to which backend (sklearn/torch) produced them."""
     from sklearn.decomposition import PCA
 
     proj_dom = X_test @ w_dom - midpoint
-    proj_logreg = logreg.decision_function(X_test)
+    proj_logreg = X_test @ w_probe + b_probe
     pca_xy = PCA(n_components=2).fit_transform(X_test)
 
-    # logreg's decision boundary direction in raw (unstandardized) feature
-    # space, so we can project it out and PCA the residual: this extends the
-    # logreg histogram into a second axis showing whether any of the
-    # remaining (logreg-orthogonal) variance still separates the classes.
-    w_hat, logreg_raw_threshold = raw_logreg_affine(logreg)
+    # logreg's decision boundary direction, so we can project it out and PCA
+    # the residual: this extends the logreg histogram into a second axis
+    # showing whether any of the remaining (logreg-orthogonal) variance still
+    # separates the classes.
+    w_logreg: Float[np.ndarray, "d"] = w_probe
+    w_hat: Float[np.ndarray, "d"] = w_logreg / np.linalg.norm(w_logreg)
     X_resid: Float[np.ndarray, "n d"] = X_test - np.outer(X_test @ w_hat, w_hat)
     pc1_resid: Float[np.ndarray, "n"] = PCA(n_components=1).fit_transform(X_resid)[:, 0]
 
-    # raw (unstandardized) projection onto the logreg direction, for the
-    # scatter plot's x-axis: decision_function() reports values in the
-    # StandardScaler's space, whereas w_hat @ X_test is in data coordinates.
+    # raw projection onto the logreg direction, for the scatter plot's
+    # x-axis: proj_logreg above is in "decision score" units (w_probe already
+    # folds in the scaler), whereas w_hat @ X_test is the unnormalized
+    # projection in data coordinates.
     proj_logreg_raw: Float[np.ndarray, "n"] = X_test @ w_hat
+    logreg_raw_threshold = float(-b_probe / np.linalg.norm(w_logreg))
 
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
@@ -338,6 +331,12 @@ def main():
     logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
     logreg.fit(X_train, y_train)
     logreg_acc = float(logreg.score(X_test, y_test))
+    scaler = logreg.named_steps["standardscaler"]
+    clf = logreg.named_steps["logisticregression"]
+    w_probe = clf.coef_[0] / scaler.scale_
+    b_probe = clf.intercept_[0] - float(
+        (clf.coef_[0] * scaler.mean_ / scaler.scale_).sum()
+    )
 
     print(
         f"[Gate 2] tag={args.tag} ckpt={args.ckpt} num_x={num_x} layers={args.layers} "
@@ -359,7 +358,17 @@ def main():
 
     plot_dir = get_plot_dir(args.tag)
     os.makedirs(plot_dir, exist_ok=True)
-    plot_probe(args.tag, args.layers, w_dom, midpoint, logreg, X_test, y_test, plot_dir)
+    plot_probe(
+        args.tag,
+        args.layers,
+        w_dom,
+        midpoint,
+        w_probe,
+        b_probe,
+        X_test,
+        y_test,
+        plot_dir,
+    )
 
     if args.steer:
         assert len(args.layers) == 1, "--steer needs a single --layers entry"

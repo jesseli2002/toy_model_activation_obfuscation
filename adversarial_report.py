@@ -6,13 +6,12 @@ cares about:
 
   1. Task fidelity           — the PRICE of hiding (expected near-zero).
   2. Probe-strength gap at the probed points, per hidden layer.
-  3. Held-out c recovery (the hidden-vs-erased test) — a continuous ridge
-     probe across the full c range, plus binary probes at held-out c pairs
-     chosen asymmetric about the training midpoint so an affine cancellation
-     can't masquerade as erasure.
+  3. Held-out c recovery (the hidden-vs-erased test) — binary probes at
+     held-out c pairs chosen asymmetric about the training midpoint so an
+     affine cancellation can't masquerade as erasure.
 
-The held-out-pairs table and interpretation heuristic are the most expensive
-part of the script and are only printed/written with --detailed.
+The held-out-pairs table is the most expensive part of the script and is
+only printed/written with --detailed.
 
 Optionally pass --baseline-path to run the same probes on the pre-adversarial
 model for a before/after contrast.
@@ -21,6 +20,8 @@ model for a before/after contrast.
 import argparse
 import json
 import os
+
+import config
 
 
 def _parse_pairs(s: str) -> list[tuple[float, float]]:
@@ -57,18 +58,21 @@ def parse_args():
     )
     p.add_argument("--n-train", type=int, default=20_000, help="per class/set")
     p.add_argument("--n-test", type=int, default=50_000, help="per class/set")
-    p.add_argument(
-        "--n-ridge", type=int, default=50_000, help="samples for the ridge probe"
-    )
-    p.add_argument("--ridge-alpha", type=float, default=1.0)
     p.add_argument("--seed", type=int, default=20260718)
+    p.add_argument(
+        "--probe-backend",
+        choices=config.PROBE_BACKEND_CHOICES,
+        default="auto",
+        help="'auto': torch (GPU-resident) probe iff CUDA is available, else "
+        "sklearn. 'sklearn'/'torch' force a backend regardless of device.",
+    )
     p.add_argument("--show", action="store_true")
     p.add_argument(
         "--detailed",
         action="store_true",
         help="also compute the report-only statistics that feed no saved plot: "
-        "binary held-out c pairs (3b) and the interpretation heuristic. Skipped "
-        "by default since they're the most expensive part of the script.",
+        "binary held-out c pairs (3b). Skipped by default since they're the "
+        "most expensive part of the script.",
     )
     return p.parse_args()
 
@@ -84,18 +88,16 @@ import seaborn as sns
 import torch
 from matplotlib.collections import PolyCollection
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
-from sklearn.linear_model import LogisticRegression, Ridge
-from sklearn.metrics import r2_score
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
+from tqdm import tqdm
 
-from data import sample_batch, sample_fixed_c
+from data import sample_fixed_c
 from model import ResidualMLP
 from paths import log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
+from probe_backend import build_probe_pipeline, resolve_probe_backend
 from train_model_plot import plot_learned_curves
-from train_probe import capture_layers_dict, load_model, raw_logreg_affine
+from train_probe import capture_layers_dict, load_model
 from train_probe import plot_probe as plot_probe_separation
 
 
@@ -115,11 +117,12 @@ def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     return float((pred == y_te).mean()), delta_norm
 
 
-def _raw_signed_distance(logreg, X):
-    """Signed distance to logreg's decision boundary in raw (unstandardized)
+def _raw_signed_distance(w_probe, b_probe, X):
+    """Signed distance to the probe's decision boundary in raw (unstandardized)
     data units, boundary at 0 -- same fold as train_probe.plot_probe's
     raw-space panel."""
-    w_hat, threshold = raw_logreg_affine(logreg)
+    w_hat = w_probe / np.linalg.norm(w_probe)
+    threshold = -b_probe / np.linalg.norm(w_probe)
     return X @ w_hat - threshold
 
 
@@ -142,13 +145,25 @@ def _binary_probe_metrics_all_layers(
     n_train,
     n_test,
     g,
-    plot_dir=None,
+    probe_backend_name,
+    desc="layers",
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
     c_hi) pair, from a single shared forward pass per train/test set.
 
-    If plot_dir is given, also writes the histogram + PCA separation plot for
-    each layer (see train_probe.plot_probe). Returns {layer: metrics}.
+    Pure data generation -- no plotting. Returns `(metrics, plot_inputs)`:
+    `metrics` is {layer: {"dom", "delta_norm", "logreg", "lda"}}, and
+    `plot_inputs` is {layer: {"w_dom", "midpoint", "w_probe", "b_probe",
+    "X_te", "y_te", "dist_lo", "dist_hi"}}, everything a caller needs to
+    later feed train_probe.plot_probe or _plot_layer_distributions for this
+    (c_lo, c_hi) pair -- returned unconditionally since the forward pass and
+    the fit already happened regardless of whether the caller wants a plot.
+
+    The logreg probe is fit via `probe_backend` (sklearn or GPU-resident
+    torch, per `probe_backend_name`): X/y are kept as torch tensors on
+    `device` end-to-end for the torch backend, so it actually skips the numpy
+    round-trip rather than just wrapping the same CPU path under a new name.
+    LDA has no GPU variant and stays on the numpy/sklearn path.
     """
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -159,8 +174,9 @@ def _binary_probe_metrics_all_layers(
         model, num_x, n_test, c_lo, c_hi, layers, g, device
     )
 
-    out = {}
-    for layer in layers:
+    metrics = {}
+    plot_inputs = {}
+    for layer in tqdm(layers, desc=desc, leave=False):
         r_lo_tr, r_hi_tr = train_ds[layer]
         r_lo_te, r_hi_te = test_ds[layer]
         dom_acc, delta_norm = _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
@@ -169,61 +185,54 @@ def _binary_probe_metrics_all_layers(
         y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
         X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
         y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
-
-        # DoM above needs no normalization: it's just a difference of means,
-        # invariant to a shared affine rescaling of features.
-        logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
-        logreg.fit(X_tr, y_tr)
         lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
 
-        if plot_dir is not None:
-            mu_lo = r_lo_tr.mean(dim=0)
-            mu_hi = r_hi_tr.mean(dim=0)
-            w_dom = (mu_hi - mu_lo).cpu().numpy()
-            midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
-            plot_probe_separation(
-                f"c{c_lo:g}-{c_hi:g}",
-                [layer],
-                w_dom,
-                midpoint,
-                logreg,
-                X_te,
-                y_te,
-                plot_dir,
-            )
+        X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0)
+        y_tr_t = torch.cat(
+            [
+                torch.zeros(n_train, dtype=torch.bool, device=device),
+                torch.ones(n_train, dtype=torch.bool, device=device),
+            ]
+        )
+        X_te_t = torch.cat([r_lo_te, r_hi_te], dim=0)
+        y_te_t = torch.cat(
+            [
+                torch.zeros(n_test, dtype=torch.bool, device=device),
+                torch.ones(n_test, dtype=torch.bool, device=device),
+            ]
+        )
+        pipeline = build_probe_pipeline(
+            C=1.0, max_iter=2000, backend=probe_backend_name
+        )
+        pipeline.fit(X_tr_t, y_tr_t)
+        w_probe_t, b_probe_t = pipeline.get_affine(device)
+        logreg_pred = (X_te_t @ w_probe_t + b_probe_t) > 0
+        logreg_acc = float((logreg_pred == y_te_t).float().mean())
+        w_probe = w_probe_t.cpu().numpy()
+        b_probe = float(b_probe_t.cpu())
 
-        out[layer] = {
+        mu_lo = r_lo_tr.mean(dim=0)
+        mu_hi = r_hi_tr.mean(dim=0)
+        w_dom = (mu_hi - mu_lo).cpu().numpy()
+        midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
+
+        metrics[layer] = {
             "dom": dom_acc,
             "delta_norm": delta_norm,
-            "logreg": float(logreg.score(X_te, y_te)),
+            "logreg": logreg_acc,
             "lda": float(lda.score(X_te, y_te)),
-            "dist_lo": _raw_signed_distance(logreg, r_lo_te.cpu().numpy()),
-            "dist_hi": _raw_signed_distance(logreg, r_hi_te.cpu().numpy()),
         }
-    return out
-
-
-def _ridge_r2_all_layers(model, layers, n_train, n_test, alpha, g):
-    """R^2 of a ridge probe recovering continuous c ~ U[1,2], for every layer
-    in `layers`, from a single shared forward pass per train/test set.
-    Returns {layer: r2}."""
-    num_x = model.num_x
-    device = next(model.parameters()).device
-
-    def ds(n):
-        x_full, _ = sample_batch(n, num_x, generator=g, device=device)
-        r = capture_layers_dict(model, x_full, layers)
-        c = x_full[:, num_x].cpu().numpy()
-        return {layer: r[layer].cpu().numpy() for layer in layers}, c
-
-    X_tr, c_tr = ds(n_train)
-    X_te, c_te = ds(n_test)
-
-    out = {}
-    for layer in layers:
-        reg = Ridge(alpha=alpha).fit(X_tr[layer], c_tr)
-        out[layer] = float(r2_score(c_te, reg.predict(X_te[layer])))
-    return out
+        plot_inputs[layer] = {
+            "w_dom": w_dom,
+            "midpoint": midpoint,
+            "w_probe": w_probe,
+            "b_probe": b_probe,
+            "X_te": X_te,
+            "y_te": y_te,
+            "dist_lo": _raw_signed_distance(w_probe, b_probe, r_lo_te.cpu().numpy()),
+            "dist_hi": _raw_signed_distance(w_probe, b_probe, r_hi_te.cpu().numpy()),
+        }
+    return metrics, plot_inputs
 
 
 # ----------------------------------------------------------------------------
@@ -277,30 +286,6 @@ def _plot_training_traces(tag, history, hidden_layers, plot_dir):
     print(f"[plot] wrote {path}")
 
 
-def _plot_heldout_r2(tag, layers, r2_adv, r2_base, plot_dir):
-    x = np.arange(len(layers))
-    fig, ax = plt.subplots(figsize=(7, 4.2))
-    if r2_base is not None:
-        ax.bar(x - 0.2, [r2_base[l] for l in layers], 0.4, label="baseline", alpha=0.8)
-        ax.bar(
-            x + 0.2, [r2_adv[l] for l in layers], 0.4, label="adversarial", alpha=0.8
-        )
-        ax.legend()
-    else:
-        ax.bar(x, [r2_adv[l] for l in layers], 0.6, label="adversarial")
-    ax.axhline(0.0, color="k", lw=0.8)
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"L{l}" for l in layers])
-    ax.set_ylabel("ridge R^2 for continuous c")
-    ax.set_title(f"held-out c recovery across [1,2] ({tag})")
-    ax.grid(True, axis="y", alpha=0.3)
-    fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_heldout_r2.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
-
-
 def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     x = np.arange(len(hidden_layers))
     fig, ax = plt.subplots(figsize=(7, 4.2))
@@ -325,7 +310,7 @@ def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     print(f"[plot] wrote {path}")
 
 
-def _plot_layer_distributions(tag, c_lo, c_hi, layers, gap, plot_dir):
+def _plot_layer_distributions(tag, c_lo, c_hi, layers, plot_inputs, plot_dir):
     """Per-layer, per-class signed-distance-to-boundary distributions (raw
     data units, boundary at 0, shared y-axis across layers -- so a collapse
     in spread at a penalized layer is visually comparable to neighboring
@@ -335,8 +320,8 @@ def _plot_layer_distributions(tag, c_lo, c_hi, layers, gap, plot_dir):
     rows = []
     for lyr in layers:
         for dist, label in (
-            (gap[lyr]["dist_lo"], lo_label),
-            (gap[lyr]["dist_hi"], hi_label),
+            (plot_inputs[lyr]["dist_lo"], lo_label),
+            (plot_inputs[lyr]["dist_hi"], hi_label),
         ):
             rows.extend(
                 {"layer": f"L{lyr}", "distance": d, "class": label} for d in dist
@@ -344,11 +329,18 @@ def _plot_layer_distributions(tag, c_lo, c_hi, layers, gap, plot_dir):
     df = pd.DataFrame(rows)
 
     layer_gap = [
-        float(gap[l]["dist_hi"].mean() - gap[l]["dist_lo"].mean()) for l in layers
+        float(plot_inputs[l]["dist_hi"].mean() - plot_inputs[l]["dist_lo"].mean())
+        for l in layers
     ]
     pooled_std = [
         float(
-            np.sqrt((gap[l]["dist_lo"].std() ** 2 + gap[l]["dist_hi"].std() ** 2) / 2)
+            np.sqrt(
+                (
+                    plot_inputs[l]["dist_lo"].std() ** 2
+                    + plot_inputs[l]["dist_hi"].std() ** 2
+                )
+                / 2
+            )
         )
         for l in layers
     ]
@@ -427,29 +419,24 @@ def _plot_layer_distributions(tag, c_lo, c_hi, layers, gap, plot_dir):
 
 
 # ----------------------------------------------------------------------------
-def main(args):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
-
-    model, ck = load_model(args.tag, args.ckpt, device)
-    num_x = model.num_x
-    num_blocks = model.num_blocks
-    penalty_layers = ck.get("penalty_layers") or list(range(1, num_blocks))
-    hidden_layers = list(range(1, num_blocks))
-    all_layers = list(range(0, num_blocks + 1))  # 0=embed .. num_blocks=output
-
-    plot_dir = get_plot_dir(args.tag)
-    os.makedirs(plot_dir, exist_ok=True)
-
-    base_model = None
-    if args.baseline_path:
-        base_model, _ = ResidualMLP.load(args.baseline_path, map_location=device)
-        base_model = base_model.to(device)
-        base_model.eval()
-
+def _build_report(
+    args,
+    num_x,
+    model,
+    ck,
+    num_blocks,
+    penalty_layers,
+    hidden_layers,
+    me,
+    me_b,
+    gap,
+    heldout,
+):
+    """Assemble the full report text from already-computed data. Returns the
+    report as a list of lines; produces no side effects (no printing)."""
     lines = []
 
     def emit(s=""):
-        print(s)
         lines.append(s)
 
     emit(f"# Step 3 adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
@@ -461,14 +448,10 @@ def main(args):
     )
     emit()
 
-    g = torch.Generator(device=device).manual_seed(args.seed)
-
     # --- 1. task fidelity ---
-    me = eval_max_err(model, num_x, g, device=device)
     emit(f"## 1. Task fidelity")
     emit(f"max abs elementwise error (c~U[1,2]): {me:.3e}")
-    if base_model is not None:
-        me_b = eval_max_err(base_model, num_x, g, device=device)
+    if me_b is not None:
         emit(f"  baseline max abs error: {me_b:.3e}")
     emit()
 
@@ -476,16 +459,6 @@ def main(args):
     emit("## 2. Probe-strength gap at c in {1,2} (per hidden layer)")
     emit("layer | penalized | DoM ||Δμ|| |  DoM acc | logreg acc |  LDA acc")
     emit("------|-----------|-----------|----------|------------|---------")
-    gap = _binary_probe_metrics_all_layers(
-        model,
-        1.0,
-        2.0,
-        hidden_layers,
-        args.n_train,
-        args.n_test,
-        g,
-        plot_dir=plot_dir,
-    )
     for lyr in hidden_layers:
         m = gap[lyr]
         pen = "yes" if lyr in penalty_layers else "no"
@@ -495,82 +468,94 @@ def main(args):
         )
     emit()
 
-    # --- 3a. continuous ridge R^2 across [1,2], every layer ---
-    emit("## 3a. Continuous ridge probe R^2 for c ~ U[1,2] (per layer)")
-    emit("layer | role      | adv R^2  | baseline R^2")
-    emit("------|-----------|----------|-------------")
-    r2_adv = _ridge_r2_all_layers(
-        model, all_layers, args.n_ridge, args.n_ridge, args.ridge_alpha, g
-    )
-    r2_base = None
-    if base_model is not None:
-        r2_base = _ridge_r2_all_layers(
-            base_model, all_layers, args.n_ridge, args.n_ridge, args.ridge_alpha, g
-        )
-    for lyr in all_layers:
-        r2a = r2_adv[lyr]
-        role = "embed" if lyr == 0 else "output" if lyr == num_blocks else "hidden"
-        if base_model is not None:
-            r2b = r2_base[lyr]
-            emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} | {r2b:+.4f}")
-        else:
-            emit(f"  L{lyr}  | {role:>6s}    | {r2a:+.4f} |     -")
-    emit()
-
     if args.detailed:
         # --- 3b. binary held-out pairs (asymmetric about 1.5) ---
         emit("## 3b. Binary held-out c pairs (NOT in {1,2}; asymmetric about 1.5)")
         emit("pair       | layer | DoM acc | logreg acc | LDA acc")
         emit("-----------|-------|---------|------------|--------")
-        heldout = {}
         for c_lo, c_hi in args.held_out_pairs:
-            pair_metrics = _binary_probe_metrics_all_layers(
-                model, c_lo, c_hi, hidden_layers, args.n_train, args.n_test, g
-            )
             for lyr in hidden_layers:
-                m = pair_metrics[lyr]
-                heldout[(c_lo, c_hi, lyr)] = m
+                m = heldout[(c_lo, c_hi, lyr)]
                 emit(
                     f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
                     f"{m['logreg']:.4f}   | {m['lda']:.4f}"
                 )
         emit()
 
-        # --- interpretation heuristic ---
-        emit("## Interpretation (heuristic — confirm by eye)")
-        pen_hidden = [l for l in hidden_layers if l in penalty_layers]
-        dom_at_chance = (
-            all(gap[l]["dom"] < 0.6 for l in pen_hidden) if pen_hidden else False
-        )
-        ridge_hidden_max = max((r2_adv[l] for l in pen_hidden), default=0.0)
-        logreg_high = any(gap[l]["logreg"] > 0.9 for l in pen_hidden)
-        heldout_high = any(
-            heldout[(c_lo, c_hi, l)]["logreg"] > 0.9
-            for (c_lo, c_hi) in args.held_out_pairs
-            for l in pen_hidden
-        )
-        emit(f"- penalized-layer DoM at chance (<0.6): {dom_at_chance}")
-        emit(f"- max ridge R^2 on penalized layers: {ridge_hidden_max:+.4f}")
-        emit(f"- any penalized-layer logreg > 0.9 at {{1,2}}: {logreg_high}")
-        emit(f"- any held-out-pair logreg > 0.9 on penalized layers: {heldout_high}")
-        if dom_at_chance and ridge_hidden_max > 0.5:
-            verdict = "HIDDEN (point-hiding): DoM cancelled at {1,2} but c still linearly present across [1,2]."
-        elif dom_at_chance and (logreg_high or heldout_high):
-            verdict = "SPECIFIC-PROBE DEFEATED: DoM at chance but a stronger linear probe still separates."
-        elif (
-            dom_at_chance
-            and ridge_hidden_max < 0.1
-            and not (logreg_high or heldout_high)
-        ):
-            verdict = "ERASED: no linear probe recovers c on penalized layers anywhere in [1,2]."
-        else:
-            verdict = (
-                "MIXED / penalty not yet biting — inspect traces and per-layer numbers."
-            )
-        emit(f"=> {verdict}")
-        emit()
+    return lines
 
-    # --- write report + plots ---
+
+# ----------------------------------------------------------------------------
+def main(args):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+
+    model, ck = load_model(args.tag, args.ckpt, device)
+    num_x = model.num_x
+    num_blocks = model.num_blocks
+    penalty_layers = ck.get("penalty_layers") or list(range(1, num_blocks))
+    hidden_layers = list(range(1, num_blocks))
+
+    plot_dir = get_plot_dir(args.tag)
+    os.makedirs(plot_dir, exist_ok=True)
+
+    base_model = None
+    if args.baseline_path:
+        base_model, _ = ResidualMLP.load(args.baseline_path, map_location=device)
+        base_model = base_model.to(device)
+        base_model.eval()
+
+    g = torch.Generator(device=device).manual_seed(args.seed)
+    probe_backend_name = resolve_probe_backend(args.probe_backend, device)
+
+    # --- phase 1: generate all data ---
+    me = eval_max_err(model, num_x, g, device=device)
+    me_b = eval_max_err(base_model, num_x, g, device=device) if base_model else None
+
+    gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
+        model,
+        1.0,
+        2.0,
+        hidden_layers,
+        args.n_train,
+        args.n_test,
+        g,
+        probe_backend_name,
+        desc="probe gap @ {1,2}",
+    )
+
+    heldout = {}
+    if args.detailed:
+        for c_lo, c_hi in tqdm(args.held_out_pairs, desc="held-out pairs"):
+            pair_metrics, _ = _binary_probe_metrics_all_layers(
+                model,
+                c_lo,
+                c_hi,
+                hidden_layers,
+                args.n_train,
+                args.n_test,
+                g,
+                probe_backend_name,
+                desc=f"held-out {c_lo:g}-{c_hi:g}",
+            )
+            for lyr in hidden_layers:
+                heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
+
+    # --- phase 2: build + write the report ---
+    lines = _build_report(
+        args,
+        num_x,
+        model,
+        ck,
+        num_blocks,
+        penalty_layers,
+        hidden_layers,
+        me,
+        me_b,
+        gap,
+        heldout,
+    )
+    print("\n".join(lines))
+
     out_log = log_dir(args.tag)
     os.makedirs(out_log, exist_ok=True)
     report_path = os.path.join(out_log, "report.md")
@@ -578,14 +563,29 @@ def main(args):
         f.write("\n".join(lines) + "\n")
     print(f"[report] wrote {report_path}")
 
+    # --- phase 3: generate all plots ---
     hist_path = os.path.join(out_log, "history.json")
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             history = json.load(f)
         _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
-    _plot_layer_distributions(args.tag, 1.0, 2.0, hidden_layers, gap, plot_dir)
-    _plot_heldout_r2(args.tag, all_layers, r2_adv, r2_base, plot_dir)
+    _plot_layer_distributions(
+        args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir
+    )
+    for lyr in hidden_layers:
+        pi = gap_plot_inputs[lyr]
+        plot_probe_separation(
+            "c1-2",
+            [lyr],
+            pi["w_dom"],
+            pi["midpoint"],
+            pi["w_probe"],
+            pi["b_probe"],
+            pi["X_te"],
+            pi["y_te"],
+            plot_dir,
+        )
     plot_learned_curves(model, args.tag, plot_dir)
     if base_model is not None:
         plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
