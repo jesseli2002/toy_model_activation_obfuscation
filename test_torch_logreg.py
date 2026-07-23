@@ -137,6 +137,72 @@ def test_warm_start_converges_close_to_full_fit():
     assert cos_sim > 0.99
 
 
+def test_warm_start_reset_interval_creates_fresh_optimizer():
+    X, y = make_binary_data(n=200, d=5, seed=11)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(
+        C=1.0, max_iter=3, warm_start=True, warm_start_reset_interval=4
+    )
+    opt_ids = []
+    for _ in range(9):
+        model.fit(Xt, yt)
+        opt_ids.append(id(model._optimizer))
+
+    # calls 1-3 reuse the same optimizer; call 4 is a periodic reset (new
+    # object); calls 5-7 reuse that one; call 8 resets again; call 9 reuses.
+    assert opt_ids[0] == opt_ids[1] == opt_ids[2]
+    assert opt_ids[3] != opt_ids[2]
+    assert opt_ids[3] == opt_ids[4] == opt_ids[5] == opt_ids[6]
+    assert opt_ids[7] != opt_ids[6]
+    assert opt_ids[7] == opt_ids[8]
+
+
+def test_overflow_triggers_reset_and_retry(monkeypatch):
+    """Regression test for the crash in crash_log/1.txt: a warm-started
+    LBFGS instance's curvature history occasionally blows up its search
+    direction until the line search overflows float32
+    (`RuntimeError: value cannot be converted to type float without
+    overflow`). fit() should catch that specific failure, drop the
+    corrupted optimizer state, and retry once instead of propagating."""
+    X, y = make_binary_data(n=200, d=5, seed=13)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=True)
+    model.fit(Xt, yt)  # establish a real, non-None optimizer + coef_
+    stale_optimizer = model._optimizer
+
+    orig_step = torch.optim.LBFGS.step
+    calls = {"n": 0}
+
+    def flaky_step(self, closure):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError(
+                "value cannot be converted to type float without overflow"
+            )
+        return orig_step(self, closure)
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", flaky_step)
+    model.fit(Xt, yt)
+
+    assert calls["n"] == 2
+    assert model._optimizer is not stale_optimizer
+    assert torch.isfinite(model.coef_).all()
+    assert torch.isfinite(model.intercept_).all()
+
+
+def test_non_overflow_runtime_error_is_not_swallowed(monkeypatch):
+    X, y = make_binary_data(n=200, d=5, seed=17)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=True)
+
+    def broken_step(self, closure):
+        raise RuntimeError("some unrelated bug")
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", broken_step)
+    with pytest.raises(RuntimeError, match="some unrelated bug"):
+        model.fit(Xt, yt)
+
+
 def test_no_warm_start_resets_each_fit():
     X, y = make_binary_data(n=300, d=6, seed=5)
     Xt, yt = to_torch(X, y)

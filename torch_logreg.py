@@ -60,14 +60,26 @@ class TorchLogisticRegression:
         max_iter: int = 100,
         tol: float = 1e-4,
         warm_start: bool = False,
+        warm_start_reset_interval: int | None = 256,
     ):
         self.C = C
         self.max_iter = max_iter
         self.tol = tol
         self.warm_start = warm_start
+        # A warm-started LBFGS instance never resets its curvature history
+        # (old_dirs/old_stps/ro/H_diag) for the life of the run. Repeatedly
+        # refitting an already-near-converged solver produces near-identical
+        # successive gradients, which occasionally admits a near-degenerate
+        # curvature pair (ys just above torch's fixed 1e-10 acceptance floor)
+        # into that history -- and the two-loop recursion can later weight
+        # such a pair heavily enough to blow the search direction up by many
+        # orders of magnitude, overflowing float32 in the line search. This
+        # bounds how long any one pair can persist.
+        self.warm_start_reset_interval = warm_start_reset_interval
         self.coef_: Float[Tensor, " d"] | None = None
         self.intercept_: Float[Tensor, ""] | None = None
         self._optimizer: torch.optim.LBFGS | None = None
+        self._fit_count: int = 0
 
     def _init_params(self, d: int, device, dtype) -> tuple[Tensor, Tensor]:
         if self.warm_start and self.coef_ is not None and self.coef_.shape[0] == d:
@@ -90,11 +102,18 @@ class TorchLogisticRegression:
             -torch.ones((), dtype=X.dtype, device=X.device),
         )
 
+        self._fit_count += 1
+        periodic_reset = (
+            self.warm_start_reset_interval is not None
+            and self._fit_count % self.warm_start_reset_interval == 0
+        )
+
         reuse_optimizer = (
             self.warm_start
             and self._optimizer is not None
             and self.coef_ is not None
             and self.coef_.shape[0] == d
+            and not periodic_reset
         )
         if reuse_optimizer:
             w, b = self._optimizer.param_groups[0]["params"]
@@ -120,7 +139,27 @@ class TorchLogisticRegression:
             loss.backward()
             return loss
 
-        optimizer.step(closure)
+        try:
+            optimizer.step(closure)
+        except RuntimeError as e:
+            if "overflow" not in str(e):
+                raise
+            # The curvature-history blowup described above: recover by
+            # dropping the corrupted optimizer state and retrying once from
+            # the last successfully-fit coefficients, rather than crashing
+            # the whole training run.
+            self._optimizer = None
+            w, b = self._init_params(d, X.device, X.dtype)
+            optimizer = torch.optim.LBFGS(
+                [w, b],
+                max_iter=self.max_iter,
+                tolerance_grad=self.tol,
+                tolerance_change=self.tol * 1e-2,
+                line_search_fn="strong_wolfe",
+            )
+            if self.warm_start:
+                self._optimizer = optimizer
+            optimizer.step(closure)
 
         self.coef_ = w.detach()
         self.intercept_ = b.detach()
