@@ -121,6 +121,7 @@ class AdversarialConfig:
     probe_loss_eps: float = 1e-7
     lda_shrinkage: float = 1e-3
     probe_loss_detach_denom: bool = False
+    resid_noise_std: float = 0.1
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
@@ -133,6 +134,7 @@ class AdversarialConfig:
         "probe_loss_eps": 1e-7,
         "lda_shrinkage": 1e-3,
         "probe_loss_detach_denom": False,
+        "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
     }
 
     def to_dict(self) -> dict:
@@ -173,6 +175,7 @@ class LogregAdversarialConfig:
     probe_loss_kind: str = "meandiff-relu"
     probe_subsample: int = 8
     probe_retrain_interval: int = 16
+    resid_noise_std: float = 0.1
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
@@ -186,6 +189,7 @@ class LogregAdversarialConfig:
         "probe_loss_kind": "meandiff-relu",
         "probe_subsample": 1,  # legacy runs fit on the full batch every step
         "probe_retrain_interval": 1,  # legacy runs refit every iteration
+        "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
     }
 
     def to_dict(self) -> dict:

@@ -138,15 +138,29 @@ class ResidualMLP(nn.Module):
         return model, ck
 
     def forward(
-        self, x_full: Float[Tensor, "batch d_in"], return_cache: bool = False
+        self,
+        x_full: Float[Tensor, "batch d_in"],
+        return_cache: bool = False,
+        noise_std: float = 0.0,
+        generator: torch.Generator | None = None,
     ) -> (
         Float[Tensor, "batch d_in"]
         | tuple[Float[Tensor, "batch d_in"], list[Float[Tensor, "batch d_model"]]]
     ):
+        """`noise_std > 0` adds absolute Gaussian noise to the residual stream
+        after every block except the last, i.e. onto caches 1..num_blocks-1 --
+        the penalized hidden layers (see plans/resid_stream_noise_plan.md).
+        Embedding (cache 0) and the final residual (cache num_blocks -> y) are
+        never injected into directly. `noise_std=0.0` (default) is bit-identical
+        to the pre-noise forward."""
         r: Float[Tensor, "batch d_model"] = x_full @ self.W_E
         caches = [r]
-        for block in self.blocks:
+        for i, block in enumerate(self.blocks):
             r = r + block(r)
+            if noise_std > 0.0 and i + 1 < self.num_blocks:
+                r = r + noise_std * torch.randn(
+                    r.shape, device=r.device, dtype=r.dtype, generator=generator
+                )
             caches.append(r)
         y: Float[Tensor, "batch d_in"] = r @ self.W_U
         if return_cache:
@@ -154,7 +168,12 @@ class ResidualMLP(nn.Module):
         return y
 
     def task_output(
-        self, x_full: Float[Tensor, "batch d_in"]
+        self,
+        x_full: Float[Tensor, "batch d_in"],
+        noise_std: float = 0.0,
+        generator: torch.Generator | None = None,
     ) -> Float[Tensor, "batch num_x"]:
         """The first num_x outputs (the part the loss constrains)."""
-        return self.forward(x_full)[:, : self.num_x]
+        return self.forward(x_full, noise_std=noise_std, generator=generator)[
+            :, : self.num_x
+        ]
