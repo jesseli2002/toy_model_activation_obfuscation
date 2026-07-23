@@ -83,7 +83,10 @@ if __name__ == "__main__":
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
+from matplotlib.collections import PolyCollection
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from tqdm import tqdm
 
@@ -114,6 +117,15 @@ def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     return float((pred == y_te).mean()), delta_norm
 
 
+def _raw_signed_distance(w_probe, b_probe, X):
+    """Signed distance to the probe's decision boundary in raw (unstandardized)
+    data units, boundary at 0 -- same fold as train_probe.plot_probe's
+    raw-space panel."""
+    w_hat = w_probe / np.linalg.norm(w_probe)
+    threshold = -b_probe / np.linalg.norm(w_probe)
+    return X @ w_hat - threshold
+
+
 @torch.no_grad()
 def _binary_dataset_all_layers(model, num_x, n, c_lo, c_hi, layers, generator, device):
     """One forward pass over c_lo and one over c_hi, shared across all
@@ -142,10 +154,10 @@ def _binary_probe_metrics_all_layers(
     Pure data generation -- no plotting. Returns `(metrics, plot_inputs)`:
     `metrics` is {layer: {"dom", "delta_norm", "logreg", "lda"}}, and
     `plot_inputs` is {layer: {"w_dom", "midpoint", "w_probe", "b_probe",
-    "X_te", "y_te"}}, everything a caller needs to later feed
-    train_probe.plot_probe for this (c_lo, c_hi) pair -- returned
-    unconditionally since the forward pass and the fit already happened
-    regardless of whether the caller wants a plot.
+    "X_te", "y_te", "dist_lo", "dist_hi"}}, everything a caller needs to
+    later feed train_probe.plot_probe or _plot_layer_distributions for this
+    (c_lo, c_hi) pair -- returned unconditionally since the forward pass and
+    the fit already happened regardless of whether the caller wants a plot.
 
     The logreg probe is fit via `probe_backend` (sklearn or GPU-resident
     torch, per `probe_backend_name`): X/y are kept as torch tensors on
@@ -217,6 +229,8 @@ def _binary_probe_metrics_all_layers(
             "b_probe": b_probe,
             "X_te": X_te,
             "y_te": y_te,
+            "dist_lo": _raw_signed_distance(w_probe, b_probe, r_lo_te.cpu().numpy()),
+            "dist_hi": _raw_signed_distance(w_probe, b_probe, r_hi_te.cpu().numpy()),
         }
     return metrics, plot_inputs
 
@@ -296,6 +310,115 @@ def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     print(f"[plot] wrote {path}")
 
 
+def _plot_layer_distributions(tag, c_lo, c_hi, layers, plot_inputs, plot_dir):
+    """Per-layer, per-class signed-distance-to-boundary distributions (raw
+    data units, boundary at 0, shared y-axis across layers -- so a collapse
+    in spread at a penalized layer is visually comparable to neighboring
+    layers), plus a companion panel tracking the mean-gap/pooled-std collapse
+    numerically."""
+    lo_label, hi_label = f"c={c_lo:g}", f"c={c_hi:g}"
+    rows = []
+    for lyr in layers:
+        for dist, label in (
+            (plot_inputs[lyr]["dist_lo"], lo_label),
+            (plot_inputs[lyr]["dist_hi"], hi_label),
+        ):
+            rows.extend(
+                {"layer": f"L{lyr}", "distance": d, "class": label} for d in dist
+            )
+    df = pd.DataFrame(rows)
+
+    layer_gap = [
+        float(plot_inputs[l]["dist_hi"].mean() - plot_inputs[l]["dist_lo"].mean())
+        for l in layers
+    ]
+    pooled_std = [
+        float(
+            np.sqrt(
+                (
+                    plot_inputs[l]["dist_lo"].std() ** 2
+                    + plot_inputs[l]["dist_hi"].std() ** 2
+                )
+                / 2
+            )
+        )
+        for l in layers
+    ]
+
+    fig_width = round(max(7, 1.4 * len(layers)) * 2 / 3)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(fig_width, 7.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+
+    # density_norm="width" caps every violin at the same max width regardless
+    # of how peaked/spread its KDE is -- otherwise a near-degenerate layer
+    # (tiny std) balloons to full width in a sliver of y-range (reads as a
+    # flat horizontal bar) while a widely-spread layer's per-point density is
+    # low and shrinks to a near-invisible vertical thread, under the default
+    # "area" normalization (equal probability mass -> equal area).
+    sns.violinplot(
+        data=df,
+        x="layer",
+        y="distance",
+        hue="class",
+        split=True,
+        density_norm="width",
+        inner=None,
+        linewidth=1.5,
+        ax=ax_top,
+    )
+    # Force each violin's outline to match its own fill color: seaborn's
+    # linecolor="auto" default renders dark/near-black, which swallows the
+    # class color-coding entirely once a violin collapses to a thin sliver
+    # (the fill area vanishes and only the outline remains visible).
+    for artist in ax_top.collections:
+        if isinstance(artist, PolyCollection):
+            artist.set_edgecolor(artist.get_facecolor())
+    ax_top.axhline(0.0, color="k", ls="--", lw=1, label="boundary")
+    ax_top.set_title(
+        f"probe signed distance to boundary, per layer ({tag}, {lo_label} vs {hi_label})"
+    )
+    ax_top.set_xlabel("")
+    ax_top.set_ylabel("signed distance (data units)")
+    ax_top.legend(fontsize=8)
+    ax_top.grid(True, alpha=0.3)
+
+    # Twin-x: mean gap and pooled std differ by ~an order of magnitude, so a
+    # shared axis makes pooled std unreadable -- each line gets its own axis,
+    # color-matched to its label so the split reads unambiguously.
+    x = np.arange(len(layers))
+    ax_bot2 = ax_bot.twinx()
+    (line_gap,) = ax_bot.plot(
+        x, layer_gap, marker="o", color="tab:blue", label="mean gap"
+    )
+    (line_std,) = ax_bot2.plot(
+        x, pooled_std, marker="o", color="tab:orange", label="pooled std"
+    )
+    ax_bot.axhline(0.0, color="k", lw=0.8)
+    ax_bot.set_xticks(x)
+    ax_bot.set_xticklabels([f"L{l}" for l in layers])
+    ax_bot.set_xlabel("layer")
+    ax_bot.set_ylabel("mean gap (data units)", color="tab:blue")
+    ax_bot.tick_params(axis="y", labelcolor="tab:blue")
+    ax_bot2.set_ylabel("pooled std (data units)", color="tab:orange")
+    ax_bot2.tick_params(axis="y", labelcolor="tab:orange")
+    ax_bot.legend(
+        [line_gap, line_std], [line_gap.get_label(), line_std.get_label()], fontsize=8
+    )
+    ax_bot.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    path = os.path.join(plot_dir, f"{tag}_c{c_lo:g}-{c_hi:g}_layer_dist.png")
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"[plot] wrote {path}")
+
+
+# ----------------------------------------------------------------------------
 def _build_report(
     args,
     num_x,
@@ -447,6 +570,9 @@ def main(args):
             history = json.load(f)
         _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
+    _plot_layer_distributions(
+        args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir
+    )
     for lyr in hidden_layers:
         pi = gap_plot_inputs[lyr]
         plot_probe_separation(
