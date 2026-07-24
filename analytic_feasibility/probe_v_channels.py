@@ -41,10 +41,11 @@ import os
 import pathlib
 
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 from jaxtyping import Float
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, roc_curve
 
 relu = lambda z: np.maximum(z, 0.0)
 
@@ -111,19 +112,66 @@ def main(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     lo_label, hi_label = f"c={args.c_lo:g}", f"c={args.c_hi:g}"
 
-    # --- Fig 1: raw (v1, v2) scatter. Probes below are fit on (x1, v1, v2),
-    # so their boundary is a plane, not a fixed line in this 2D slice -- this
-    # panel is encoding-shape context only; see Fig 2 for actual separation.
+    # --- Fig 1: raw (v1, v2) scatter with decision boundaries. Probes fit
+    # on (x1, v1, v2), so boundaries are planes; we show their 2D projection
+    # at the mean x1 value (dashed/dotted lines indicate x1-dependence).
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.scatter(*X_te[y_te == 0, 1:].T, s=4, alpha=0.25, label=lo_label)
     ax.scatter(*X_te[y_te == 1, 1:].T, s=4, alpha=0.25, label=hi_label)
+    v1g = np.linspace(X_te[:, 1].min(), X_te[:, 1].max(), 200)
+    x1_mean = X_te[:, 0].mean()
+    for w, b, style, name in [
+        (w_dom, b_dom, "k--", f"DoM (acc={dom_acc:.3f}, AUROC={dom_auroc:.3f})"),
+        (w_lr, b_lr, "r-", f"logreg (acc={logreg_acc:.3f}, AUROC={logreg_auroc:.3f})"),
+    ]:
+        if abs(w[2]) > 1e-9:
+            v2g = -(w[0] * x1_mean + w[1] * v1g + b) / w[2]
+            ax.plot(v1g, v2g, style, label=name, alpha=0.7)
     ax.set_xlabel("v1")
     ax.set_ylabel("v2")
-    ax.set_title(f"v1/v2 encoding, {lo_label} vs {hi_label}\n(probes also see x1)")
+    ax.set_title(
+        f"v1/v2 encoding, {lo_label} vs {hi_label}\n"
+        "(boundaries shown at mean x1; probes also see x1)"
+    )
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     path = out_dir / "v_channels_2d.png"
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+    # --- Fig 1b: 3D scatter of (x1, v1, v2) for comparison, with logreg hyperplane. ---
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(*X_te[y_te == 0].T, s=4, alpha=0.25, label=lo_label, depthshade=False)
+    ax.scatter(*X_te[y_te == 1].T, s=4, alpha=0.25, label=hi_label, depthshade=False)
+
+    # Add logreg hyperplane: w[0]*x1 + w[1]*v1 + w[2]*v2 + b = 0
+    # Solve for v2: v2 = -(w[0]*x1 + w[1]*v1 + b) / w[2]
+    if abs(w_lr[2]) > 1e-9:
+        x1_mesh = np.linspace(X_te[:, 0].min(), X_te[:, 0].max(), 30)
+        v1_mesh = np.linspace(X_te[:, 1].min(), X_te[:, 1].max(), 30)
+        x1_grid, v1_grid = np.meshgrid(x1_mesh, v1_mesh)
+        v2_grid = -(w_lr[0] * x1_grid + w_lr[1] * v1_grid + b_lr) / w_lr[2]
+        ax.plot_surface(
+            x1_grid,
+            v1_grid,
+            v2_grid,
+            alpha=0.2,
+            color="r",
+            label="logreg hyperplane",
+        )
+
+    ax.set_xlabel("x1")
+    ax.set_ylabel("v1")
+    ax.set_zlabel("v2")
+    ax.set_title(
+        f"(x1, v1, v2) encoding, {lo_label} vs {hi_label}\n"
+        f"(red surface = logreg decision boundary)"
+    )
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = out_dir / "v_channels_3d.png"
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
@@ -147,6 +195,26 @@ def main(args):
     ax_dom.set_ylabel("count")
     fig.tight_layout()
     path = out_dir / "v_channels_hist.png"
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+    # --- Fig 3: ROC curves for both probes. ---
+    fig, ax = plt.subplots(figsize=(6, 6))
+    for scores, name, auroc, color in [
+        (dom_scores, "DoM", dom_auroc, "k"),
+        (X_te @ w_lr + b_lr, "logreg", logreg_auroc, "r"),
+    ]:
+        fpr, tpr, _ = roc_curve(y_te, scores)
+        ax.plot(fpr, tpr, color=color, label=f"{name} (AUROC={auroc:.3f})")
+    ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5, label="chance")
+    ax.set_xlabel("FPR (false positive rate)")
+    ax.set_ylabel("TPR (true positive rate)")
+    ax.set_title(f"ROC curves, {lo_label} vs {hi_label}")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    path = out_dir / "v_channels_roc.png"
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
