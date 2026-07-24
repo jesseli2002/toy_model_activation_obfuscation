@@ -44,10 +44,11 @@ class _CheckpointConfigMixin:
         field existed, so its config dict is missing the key -- is backfilled
         to by from_dict(). This is what that field's value effectively WAS,
         historically, before it became configurable.
-    These do NOT always coincide -- see each subclass's docstring for its own
-    divergent fields. Any future change that bumps a field's forward default
-    must leave _LEGACY_DEFAULTS alone, so old checkpoints keep reconstructing
-    with the hyperparameters they were actually run with.
+    These do NOT always coincide -- see the inline comments on each
+    subclass's _LEGACY_DEFAULTS for its own divergent fields. Any future
+    change that bumps a field's forward default must leave _LEGACY_DEFAULTS
+    alone, so old checkpoints keep reconstructing with the hyperparameters
+    they were actually run with.
 
     This mixin owns no fields of its own (no dataclass field-ordering
     concerns from mixing it into @dataclass subclasses) and reads
@@ -74,13 +75,7 @@ class _CheckpointConfigMixin:
 
 @dataclass
 class ResidualMLPConfig(_CheckpointConfigMixin):
-    """Architecture + init hyperparameters for ResidualMLP.
-
-    See _CheckpointConfigMixin for the to_dict/from_dict/_LEGACY_DEFAULTS
-    mechanism. Here, num_blocks forward-defaults to 8 but
-    _LEGACY_DEFAULTS["num_blocks"] stays 4 (old checkpoints were trained with
-    4 blocks before the field's default was bumped).
-    """
+    """Architecture + init hyperparameters for ResidualMLP."""
 
     num_x: int = 32
     d_model: int = 256
@@ -94,7 +89,7 @@ class ResidualMLPConfig(_CheckpointConfigMixin):
     # Historical values for fields absent from an old checkpoint's config
     # dict. Every optional field above must have an entry here.
     _LEGACY_DEFAULTS: ClassVar[dict] = {
-        "num_blocks": 4,
+        "num_blocks": 4,  # old checkpoints were trained with 4 blocks, not 8
         "out_init_scale": 0.1,
         "activation": "leaky_relu",
         "leaky_relu_slope": 0.0,
@@ -109,17 +104,7 @@ class ResidualMLPConfig(_CheckpointConfigMixin):
 @dataclass
 class AdversarialConfig(_CheckpointConfigMixin):
     """Training-hyperparameter metadata for train_adversarial.py, stored
-    verbatim (as a dict) alongside the model's own ResidualMLPConfig. Kept
-    separate from ResidualMLPConfig since the probe-loss variant is a
-    training choice, not an architecture choice.
-
-    See _CheckpointConfigMixin for the to_dict/from_dict/_LEGACY_DEFAULTS
-    mechanism. Here, probe_loss forward-defaults to the new "lda" objective,
-    but old checkpoints trained under the hardcoded squared penalty are
-    backfilled to "squared" so they reconstruct with the objective they were
-    actually trained under; similarly init forward-defaults to "scratch" but
-    old checkpoints backfill to "warmstart".
-    """
+    verbatim (as a dict) alongside the model's own ResidualMLPConfig."""
 
     lam: float = 0.5
     lam_warmup_iters: int = 0
@@ -151,19 +136,7 @@ class AdversarialConfig(_CheckpointConfigMixin):
 @dataclass
 class LogregAdversarialConfig(_CheckpointConfigMixin):
     """Training-hyperparameter metadata for train_adversarial_logreg.py,
-    stored verbatim (as a dict) alongside the model's own ResidualMLPConfig.
-    Sibling to AdversarialConfig: that one drives the closed-form DoM/LDA
-    penalty; this one drives the simultaneous stateful-probe design (see
-    train_adversarial_logreg.py's module docstring). warmstart_path is None
-    when the model was inited from scratch (`--no-warmstart`) rather than
-    warm-started.
-
-    See _CheckpointConfigMixin for the to_dict/from_dict/_LEGACY_DEFAULTS
-    mechanism. Here, probe_subsample and probe_retrain_interval both
-    forward-default to batching/interval values but backfill to 1 (legacy
-    runs fit on the full batch every iteration, with no subsampling or
-    interval skipping).
-    """
+    stored verbatim (as a dict) alongside the model's own ResidualMLPConfig."""
 
     lam: float = 0.5
     lam_warmup_iters: int = 0
