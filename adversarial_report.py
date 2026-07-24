@@ -599,17 +599,26 @@ def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, devic
 
 
 def _plot_linear_y_reconstruction(tag, r2, penalty_layers, plot_dir):
+    """Plots R² relative to the L0 (embedding) baseline, not raw R² -- sat(x,c)
+    is already close to linear (identity off-saturation), so even a linear map
+    from the raw input achieves a high raw R². Rescaling so L0 -> 0 and perfect
+    reconstruction -> 1 isolates how much each layer improves ON TOP OF that
+    trivial baseline; a layer scoring BELOW the baseline shows negative."""
     layers = sorted(r2)
+    baseline = r2[0]
+    rel_r2 = {l: (r2[l] - baseline) / (1 - baseline + 1e-9) for l in layers}
+
     x = np.arange(len(layers))
     colors = ["crimson" if l in penalty_layers else "steelblue" for l in layers]
-    fig, ax = plt.subplots(figsize=(max(7, 1.3 * len(layers)), 4.2))
-    ax.bar(x, [r2[l] for l in layers], color=colors)
+    fig, ax = plt.subplots(figsize=(max(3.5, 0.65 * len(layers)), 4.2))
+    ax.bar(x, [rel_r2[l] for l in layers], color=colors)
     line_ref = ax.axhline(
         1.0, color="k", ls="--", lw=1, label="perfect linear reconstruction"
     )
+    ax.axhline(0.0, color="k", lw=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels([f"L{l}" for l in layers])
-    ax.set_ylabel("R² (linear map -> model's y)")
+    ax.set_ylabel("R² relative to L0 (embedding) baseline")
     ax.set_title(f"linear reconstruction of final y, per layer ({tag})")
     handles = [
         plt.Rectangle((0, 0), 1, 1, color="crimson", label="penalized layer"),
