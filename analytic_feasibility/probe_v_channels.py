@@ -1,14 +1,20 @@
-"""Can a difference-of-means / logistic-regression probe detect the v1/v2
-mean-constant c-encoding (README.md section 1, "v-channels")?
+"""Can a difference-of-means / logistic-regression probe, given (x1, v1, v2),
+detect c through the v1/v2 mean-constant encoding (README.md section 1,
+"v-channels")?
 
 v1, v2 are mean-constant in c by construction (E_x1[v] = 0 for every c), so a
 raw difference-of-means probe is at chance -- that's the whole point of the
 encoding. But mean-constancy says nothing about higher moments: std(v1),
 std(v2), and cov(v1, v2) all vary with c (checked numerically below), so a
-probe that can use curvature/covariance -- logistic regression on (v1, v2) --
-may still separate c_lo from c_hi well above chance. This script checks that
-directly, with no trained network involved: just the closed-form encoding
-from README.md, sampled and fed straight to DoM and logreg classifiers.
+probe that can use curvature/covariance -- logistic regression on (x1, v1,
+v2) -- may still separate c_lo from c_hi well above chance. Probes get x1 as
+well as v1, v2: x1 is itself a residual coordinate (part of the real probe
+scope, see README.md's "probe scope" note) and README.md's exact decode of c
+from the encoding requires x1 to disambiguate which x1-slab a sample falls
+in, so omitting it would understate what a real probe sees. This script
+checks that directly, with no trained network involved: just the closed-form
+encoding from README.md, sampled and fed straight to DoM and logreg
+classifiers.
 """
 
 import argparse
@@ -16,7 +22,7 @@ import argparse
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="DoM vs logreg detectability of the v1/v2 c-encoding.",
+        description="DoM vs logreg detectability of the (x1, v1, v2) c-encoding.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--c-lo", type=float, default=1.0)
@@ -43,17 +49,20 @@ from sklearn.metrics import roc_auc_score
 relu = lambda z: np.maximum(z, 0.0)
 
 
-def sample_v(n: int, c: float, rng: np.random.Generator) -> Float[np.ndarray, "n 2"]:
-    """x1 ~ U[-3, 3]; v1, v2 per README.md's mean-constant encoding."""
+def sample_features(
+    n: int, c: float, rng: np.random.Generator
+) -> Float[np.ndarray, "n 3"]:
+    """(x1, v1, v2): x1 ~ U[-3, 3], v1/v2 per README.md's mean-constant
+    encoding -- the full probe input (x1 is itself a residual coordinate)."""
     x1 = rng.uniform(-3, 3, n)
     v1 = -2 * relu(-x1 - c) + 2 * relu(x1 - 3 + c) - c + 1.5
     v2 = -4 * relu(-x1 - c / 2) + 4 * relu(x1 + c / 2 - 3) - c + 3.0
-    return np.stack([v1, v2], axis=1)
+    return np.stack([x1, v1, v2], axis=1)
 
 
 def dom_probe(
-    X: Float[np.ndarray, "n 2"], y: Float[np.ndarray, "n"]
-) -> tuple[Float[np.ndarray, "2"], float]:
+    X: Float[np.ndarray, "n 3"], y: Float[np.ndarray, "n"]
+) -> tuple[Float[np.ndarray, "3"], float]:
     """Difference-of-means direction/threshold, midpoint-of-means bias."""
     mu0, mu1 = X[y == 0].mean(axis=0), X[y == 1].mean(axis=0)
     w = mu1 - mu0
@@ -66,7 +75,9 @@ def main(args):
     n = args.n
 
     def make_split():
-        X = np.concatenate([sample_v(n, args.c_lo, rng), sample_v(n, args.c_hi, rng)])
+        X = np.concatenate(
+            [sample_features(n, args.c_lo, rng), sample_features(n, args.c_hi, rng)]
+        )
         y = np.concatenate([np.zeros(n), np.ones(n)])
         return X, y
 
@@ -83,7 +94,10 @@ def main(args):
     w_lr, b_lr = clf.coef_[0], float(clf.intercept_[0])
     logreg_auroc = float(roc_auc_score(y_te, X_te @ w_lr + b_lr))
 
-    print(f"v1/v2 encoding, c={args.c_lo:g} vs c={args.c_hi:g} (n_test={2 * n})")
+    print(
+        f"(x1, v1, v2) encoding, c={args.c_lo:g} vs c={args.c_hi:g} "
+        f"(n_test={2 * n})"
+    )
     print(
         f"  DoM    accuracy: {dom_acc:.4f}  AUROC: {dom_auroc:.4f}   "
         f"||w||={np.linalg.norm(w_dom):.4f}"
@@ -97,20 +111,15 @@ def main(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     lo_label, hi_label = f"c={args.c_lo:g}", f"c={args.c_hi:g}"
 
-    # --- Fig 1: raw (v1, v2) scatter with both decision boundaries. ---
+    # --- Fig 1: raw (v1, v2) scatter. Probes below are fit on (x1, v1, v2),
+    # so their boundary is a plane, not a fixed line in this 2D slice -- this
+    # panel is encoding-shape context only; see Fig 2 for actual separation.
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(*X_te[y_te == 0].T, s=4, alpha=0.25, label=lo_label)
-    ax.scatter(*X_te[y_te == 1].T, s=4, alpha=0.25, label=hi_label)
-    v1g = np.linspace(X_te[:, 0].min(), X_te[:, 0].max(), 200)
-    for w, b, style, name in [
-        (w_dom, b_dom, "k--", f"DoM (acc={dom_acc:.3f}, AUROC={dom_auroc:.3f})"),
-        (w_lr, b_lr, "r-", f"logreg (acc={logreg_acc:.3f}, AUROC={logreg_auroc:.3f})"),
-    ]:
-        if abs(w[1]) > 1e-9:
-            ax.plot(v1g, -(w[0] * v1g + b) / w[1], style, label=name)
+    ax.scatter(*X_te[y_te == 0, 1:].T, s=4, alpha=0.25, label=lo_label)
+    ax.scatter(*X_te[y_te == 1, 1:].T, s=4, alpha=0.25, label=hi_label)
     ax.set_xlabel("v1")
     ax.set_ylabel("v2")
-    ax.set_title(f"v1/v2 encoding, {lo_label} vs {hi_label}")
+    ax.set_title(f"v1/v2 encoding, {lo_label} vs {hi_label}\n(probes also see x1)")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
