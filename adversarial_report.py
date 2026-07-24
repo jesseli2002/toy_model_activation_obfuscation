@@ -537,7 +537,7 @@ def _plot_steer_comparison(
             ax.plot(
                 xs.cpu().numpy(),
                 y.cpu().numpy(),
-                color="steelblue",
+                color="blue",
                 alpha=0.3,
                 zorder=5,
             )
