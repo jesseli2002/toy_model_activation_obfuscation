@@ -44,7 +44,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jaxtyping import Float
 from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import roc_auc_score
+from sklearn.metrics import roc_auc_score, roc_curve
 
 relu = lambda z: np.maximum(z, 0.0)
 
@@ -147,6 +147,26 @@ def main(args):
     ax_dom.set_ylabel("count")
     fig.tight_layout()
     path = out_dir / "v_channels_hist.png"
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+    # --- Fig 3: ROC curves for both probes. ---
+    fig, ax = plt.subplots(figsize=(6, 6))
+    for scores, name, auroc, color in [
+        (dom_scores, "DoM", dom_auroc, "k"),
+        (X_te @ w_lr + b_lr, "logreg", logreg_auroc, "r"),
+    ]:
+        fpr, tpr, _ = roc_curve(y_te, scores)
+        ax.plot(fpr, tpr, color=color, label=f"{name} (AUROC={auroc:.3f})")
+    ax.plot([0, 1], [0, 1], "k--", lw=1, alpha=0.5, label="chance")
+    ax.set_xlabel("FPR (false positive rate)")
+    ax.set_ylabel("TPR (true positive rate)")
+    ax.set_title(f"ROC curves, {lo_label} vs {hi_label}")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    ax.set_aspect("equal")
+    fig.tight_layout()
+    path = out_dir / "v_channels_roc.png"
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
