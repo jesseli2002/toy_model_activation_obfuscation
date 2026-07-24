@@ -30,6 +30,7 @@ confound, so only use it to intentionally study that confound.
 """
 
 import argparse
+import dataclasses
 import json
 import os
 import shutil
@@ -324,6 +325,17 @@ class TrainRecord:
     model_dt: float
 
 
+def _history_entry(record: TrainRecord, **extra) -> dict:
+    """Build one `history.json` entry from a `TrainRecord`, overridden/extended
+    by `**extra` -- the single schema shared by the log-interval and final
+    sites, rather than two hand-built dicts drifting independently."""
+    d = dataclasses.asdict(record)
+    del d["affine"]  # tensors aren't JSON-serializable, not needed in history
+    d["iter"] = d.pop("it")  # adversarial_report.py reads history[...]["iter"]
+    d.update(extra)
+    return d
+
+
 def train_steps(
     model,
     opt,
@@ -359,29 +371,25 @@ def train_steps(
         fwd_dt = time.time() - t_fwd0
 
         label = x_full[:, num_x] >= args.class_threshold
-        assert label.any() and (~label).any(), (
-            "batch has only one probe class present -- check --class-threshold "
-            "against c's range."
-        )
-
         cat_live = concat_caches_torch(caches, hidden_layers)
 
         t_probe0 = time.time()
         if it % args.probe_retrain_interval == 0:
             X = cat_live.detach()
-            if args.probe_subsample > 1:
-                X_fit = X[:: args.probe_subsample]
-                label_fit = label[:: args.probe_subsample]
-                assert label_fit.any() and (~label_fit).any(), (
-                    "subsampled probe batch has only one class present -- lower "
-                    "--probe-subsample or raise --batch-size."
-                )
-            else:
-                X_fit, label_fit = X, label
+            X_fit = X[:: args.probe_subsample]  # no-op slice at 1
+            label_fit = label[:: args.probe_subsample]
+            assert label_fit.any() and (~label_fit).any(), (
+                "subsampled probe batch has only one class present -- lower "
+                "--probe-subsample or raise --batch-size."
+            )
             fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
             affine = probe.get_affine(device)
         probe_dt = time.time() - t_probe0
 
+        assert label.any() and (~label).any(), (
+            "batch has only one probe class present -- check --class-threshold "
+            "against c's range."
+        )
         l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
 
         if args.lam_warmup_iters > 0:
@@ -584,6 +592,9 @@ def main(args):
         model_dt=0.0,
     )
 
+    def save(path):
+        save_checkpoint(path, record, model, opt, best_loss, hidden_layers, adv_config)
+
     t0 = time.time()
     try:
         for record in train_steps(
@@ -599,24 +610,11 @@ def main(args):
         ):
             if record.loss < best_loss:
                 best_loss = record.loss
-                save_checkpoint(
-                    best_path, record, model, opt, best_loss, hidden_layers, adv_config
-                )
+                save(best_path)
 
             if record.it % args.log_interval == 0:
                 me = eval_max_err(model, num_x, gen, device=device)
-                history.append(
-                    {
-                        "iter": record.it,
-                        "loss": record.loss,
-                        "l_task": record.l_task,
-                        "l_probe": record.l_probe,
-                        "lam_eff": record.lam_eff,
-                        "max_err": me,
-                        "probe_dt": record.probe_dt,
-                        "model_dt": record.model_dt,
-                    }
-                )
+                history.append(_history_entry(record, max_err=me))
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
                 rate = (record.it - start_iter + 1) / (time.time() - t0 + 1e-9)
@@ -628,46 +626,29 @@ def main(args):
                 )
 
             if record.it % args.ckpt_interval == 0 and record.it > start_iter:
-                save_checkpoint(
-                    last_path, record, model, opt, best_loss, hidden_layers, adv_config
-                )
+                save(last_path)
 
             if (
                 args.save_every_n != 0  # i.e. not disabled
                 and record.it % args.save_every_n == 0
                 and record.it > start_iter
             ):
-                save_checkpoint(
-                    os.path.join(run_ckpt_dir, f"iter_{record.it}.pt"),
-                    record,
-                    model,
-                    opt,
-                    best_loss,
-                    hidden_layers,
-                    adv_config,
-                )
+                save(os.path.join(run_ckpt_dir, f"iter_{record.it}.pt"))
     except KeyboardInterrupt:
         print(
             f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.it}..."
         )
-        save_checkpoint(
-            last_path, record, model, opt, best_loss, hidden_layers, adv_config
-        )
+        save(last_path)
         print(f"[interrupt] saved to {last_path}")
         raise
 
     # final logging + save
-    save_checkpoint(last_path, record, model, opt, best_loss, hidden_layers, adv_config)
+    save(last_path)
     me = eval_max_err(model, num_x, gen, device=device)
     history.append(
-        {
-            "iter": record.it,
-            "loss": best_loss,
-            "l_task": None,
-            "l_probe": None,
-            "max_err": me,
-            "final": True,
-        }
+        _history_entry(
+            record, loss=best_loss, l_task=None, l_probe=None, max_err=me, final=True
+        )
     )
     with open(hist_path, "w") as f:
         json.dump(history, f)
