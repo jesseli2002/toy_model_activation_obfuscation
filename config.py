@@ -89,7 +89,7 @@ class ResidualMLPConfig(_CheckpointConfigMixin):
     # Historical values for fields absent from an old checkpoint's config
     # dict. Every optional field above must have an entry here.
     _LEGACY_DEFAULTS: ClassVar[dict] = {
-        "num_blocks": 4,  # old checkpoints were trained with 4 blocks, not 8
+        "num_blocks": 4,
         "out_init_scale": 0.1,
         "activation": "leaky_relu",
         "leaky_relu_slope": 0.0,
