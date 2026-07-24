@@ -30,6 +30,7 @@ confound, so only use it to intentionally study that confound.
 """
 
 import argparse
+import dataclasses
 import json
 import os
 import shutil
@@ -195,7 +196,7 @@ def parse_args():
         help="fit each per-step probe update on every Nth row of the batch "
         "instead of the full batch (e.g. 8 = 1/8 of the rows). Cuts sklearn "
         "fit cost roughly linearly; the model's own forward/backward still "
-        "uses the full batch. 1 = no subsampling.",
+        "uses the full batch. 1 = no subsampling. (see PR #36)",
     )
     g_probe.add_argument(
         "--probe-retrain-interval",
@@ -204,7 +205,7 @@ def parse_args():
         help="refit the probe (and re-extract its affine) only once every N "
         "training iterations; other iterations reuse the last extracted "
         "affine for the penalty. 1 = refit every iteration (default "
-        "behavior before this option existed).",
+        "behavior before this option existed). (see PR #36)",
     )
 
     g_opt = p.add_argument_group("optimization")
@@ -246,6 +247,10 @@ def parse_args():
 # parse_args early-exits on --help before the heavy imports below are reached.
 if __name__ == "__main__":
     args = parse_args()
+    # Cheap existence check, fired before run-dir setup (in main()) can delete
+    # an existing runs/<tag> out from under a bad --warmstart path.
+    if not args.no_warmstart and not os.path.exists(args.warmstart):
+        raise SystemExit(f"[error] --warmstart checkpoint not found: {args.warmstart}")
 
 import warnings
 
@@ -285,6 +290,27 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
     return layers
 
 
+def resolve_model(args, device):
+    """Warm-start from a train_adversarial.py checkpoint (default) or init
+    from scratch, per --warmstart/--no-warmstart. Assumes --warmstart's
+    existence has already been checked (Tier 2, in the __main__ guard)."""
+    if not args.no_warmstart:
+        model, _ = ResidualMLP.load(args.warmstart, map_location=device)
+        model = model.to(device)
+        model_config = model.config
+        print(f"[init] warm-started from {args.warmstart} (cfg={model_config})")
+    else:
+        model_config = ResidualMLPConfig(
+            num_x=args.num_x,
+            d_model=args.d_model,
+            d_mlp=args.d_mlp,
+            num_blocks=args.num_blocks,
+        )
+        model = ResidualMLP(model_config).to(device)
+        print(f"[init] scratch model cfg={model_config}")
+    return model, model_config
+
+
 def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.Tensor:
     return torch.cat([caches[lyr] for lyr in layers], dim=1)
 
@@ -314,7 +340,7 @@ class TrainRecord:
     """One completed training step, everything a caller needs to checkpoint,
     log, or resume from it."""
 
-    it: int
+    iter: int
     loss: float
     l_task: float | None
     l_probe: float | None
@@ -322,6 +348,16 @@ class TrainRecord:
     affine: tuple[torch.Tensor, torch.Tensor]
     probe_dt: float
     model_dt: float
+
+
+def _history_entry(record: TrainRecord, **extra) -> dict:
+    """Build one `history.json` entry from a `TrainRecord`, overridden/extended
+    by `**extra` -- the single schema shared by the log-interval and final
+    sites, rather than two hand-built dicts drifting independently."""
+    d = dataclasses.asdict(record)
+    del d["affine"]  # tensors aren't JSON-serializable, not needed in history
+    d.update(extra)
+    return d
 
 
 def train_steps(
@@ -359,29 +395,25 @@ def train_steps(
         fwd_dt = time.time() - t_fwd0
 
         label = x_full[:, num_x] >= args.class_threshold
-        assert label.any() and (~label).any(), (
-            "batch has only one probe class present -- check --class-threshold "
-            "against c's range."
-        )
-
         cat_live = concat_caches_torch(caches, hidden_layers)
 
         t_probe0 = time.time()
         if it % args.probe_retrain_interval == 0:
             X = cat_live.detach()
-            if args.probe_subsample > 1:
-                X_fit = X[:: args.probe_subsample]
-                label_fit = label[:: args.probe_subsample]
-                assert label_fit.any() and (~label_fit).any(), (
-                    "subsampled probe batch has only one class present -- lower "
-                    "--probe-subsample or raise --batch-size."
-                )
-            else:
-                X_fit, label_fit = X, label
+            X_fit = X[:: args.probe_subsample]  # no-op slice at 1
+            label_fit = label[:: args.probe_subsample]
+            assert label_fit.any() and (~label_fit).any(), (
+                "subsampled probe batch has only one class present -- lower "
+                "--probe-subsample or raise --batch-size."
+            )
             fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
             affine = probe.get_affine(device)
         probe_dt = time.time() - t_probe0
 
+        assert label.any() and (~label).any(), (
+            "batch has only one probe class present -- check --class-threshold "
+            "against c's range."
+        )
         l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
 
         if args.lam_warmup_iters > 0:
@@ -397,7 +429,7 @@ def train_steps(
         model_dt = fwd_dt + (time.time() - t_bwd0)
 
         yield TrainRecord(
-            it=it,
+            iter=it,
             loss=loss.item(),
             l_task=float(l_task.item()),
             l_probe=float(l_probe.item()),
@@ -432,14 +464,13 @@ def _defer_keyboard_interrupt():
 def save_checkpoint(
     path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config
 ):
-    """Persist model + optimizer state, the probe's affine boundary at
-    `record`, and enough config to resume. A SIGINT arriving mid-write is
-    deferred until the write completes (see `_defer_keyboard_interrupt`)."""
+    """Save all training state needed to resume from disk, atomically (a
+    SIGINT can't corrupt the file)."""
     w_eff, b_eff = record.affine
     with _defer_keyboard_interrupt():
         model.save(
             path,
-            iter=record.it,
+            iter=record.iter,
             opt=opt.state_dict(),
             best_loss=best_loss,
             probe_w=w_eff.cpu(),
@@ -452,8 +483,6 @@ def save_checkpoint(
 def main(args):
     if args.save_every_n == -1:
         args.save_every_n = args.ckpt_interval
-    # ad-hoc band-aid for this script's own (sklearn-backend) probe fits;
-    # doesn't belong in probe_backend.py, which is meant to be reusable.
     warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     probe_backend = resolve_probe_backend(args.probe_backend, device)
@@ -474,25 +503,8 @@ def main(args):
 
     torch.manual_seed(args.seed)
 
-    # --- init the model: warm-start (default) or from scratch ---
-    if not args.no_warmstart:
-        if not os.path.exists(args.warmstart):
-            raise SystemExit(
-                f"[error] --warmstart checkpoint not found: {args.warmstart}"
-            )
-        model, _ = ResidualMLP.load(args.warmstart, map_location=device)
-        model = model.to(device)
-        model_config = model.config
-        num_x, num_blocks = model_config.num_x, model_config.num_blocks
-        print(f"[init] warm-started from {args.warmstart} (cfg={model_config})")
-    else:
-        num_x, num_blocks = args.num_x, args.num_blocks
-        model_config = ResidualMLPConfig(
-            num_x=num_x, d_model=args.d_model, d_mlp=args.d_mlp, num_blocks=num_blocks
-        )
-        model = ResidualMLP(model_config).to(device)
-        print(f"[init] scratch model cfg={model_config}")
-
+    model, model_config = resolve_model(args, device)
+    num_x, num_blocks = model_config.num_x, model_config.num_blocks
     hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
     if not hidden_layers:
         raise SystemExit(
@@ -574,7 +586,7 @@ def main(args):
     # --resume past --max-iters: train_steps() then yields nothing, and the
     # final save/log below still needs a record to work with.
     record = TrainRecord(
-        it=start_iter,
+        iter=start_iter,
         loss=best_loss,
         l_task=None,
         l_probe=None,
@@ -583,6 +595,9 @@ def main(args):
         probe_dt=0.0,
         model_dt=0.0,
     )
+
+    def save(path):
+        save_checkpoint(path, record, model, opt, best_loss, hidden_layers, adv_config)
 
     t0 = time.time()
     try:
@@ -599,80 +614,50 @@ def main(args):
         ):
             if record.loss < best_loss:
                 best_loss = record.loss
-                save_checkpoint(
-                    best_path, record, model, opt, best_loss, hidden_layers, adv_config
-                )
+                save(best_path)
 
-            if record.it % args.log_interval == 0:
+            if record.iter % args.log_interval == 0:
                 me = eval_max_err(model, num_x, gen, device=device)
-                history.append(
-                    {
-                        "iter": record.it,
-                        "loss": record.loss,
-                        "l_task": record.l_task,
-                        "l_probe": record.l_probe,
-                        "lam_eff": record.lam_eff,
-                        "max_err": me,
-                        "probe_dt": record.probe_dt,
-                        "model_dt": record.model_dt,
-                    }
-                )
+                history.append(_history_entry(record, max_err=me))
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
-                rate = (record.it - start_iter + 1) / (time.time() - t0 + 1e-9)
+                rate = (record.iter - start_iter + 1) / (time.time() - t0 + 1e-9)
                 print(
-                    f"iter {record.it:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
+                    f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
                     f"probe {record.l_probe:.3e}  λ {record.lam_eff:.1e}  max_err {me:.3e}  "
                     f"probe_dt {record.probe_dt*1e3:.1f}ms  model_dt {record.model_dt*1e3:.1f}ms  "
                     f"{rate:.1f} it/s"
                 )
 
-            if record.it % args.ckpt_interval == 0 and record.it > start_iter:
-                save_checkpoint(
-                    last_path, record, model, opt, best_loss, hidden_layers, adv_config
-                )
+            if record.iter % args.ckpt_interval == 0 and record.iter > start_iter:
+                save(last_path)
 
             if (
                 args.save_every_n != 0  # i.e. not disabled
-                and record.it % args.save_every_n == 0
-                and record.it > start_iter
+                and record.iter % args.save_every_n == 0
+                and record.iter > start_iter
             ):
-                save_checkpoint(
-                    os.path.join(run_ckpt_dir, f"iter_{record.it}.pt"),
-                    record,
-                    model,
-                    opt,
-                    best_loss,
-                    hidden_layers,
-                    adv_config,
-                )
+                save(os.path.join(run_ckpt_dir, f"iter_{record.iter}.pt"))
     except KeyboardInterrupt:
         print(
-            f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.it}..."
+            f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.iter}..."
         )
-        save_checkpoint(
-            last_path, record, model, opt, best_loss, hidden_layers, adv_config
-        )
+        save(last_path)
         print(f"[interrupt] saved to {last_path}")
         raise
 
     # final logging + save
-    save_checkpoint(last_path, record, model, opt, best_loss, hidden_layers, adv_config)
+    save(last_path)
     me = eval_max_err(model, num_x, gen, device=device)
     history.append(
-        {
-            "iter": record.it,
-            "loss": best_loss,
-            "l_task": None,
-            "l_probe": None,
-            "max_err": me,
-            "final": True,
-        }
+        _history_entry(
+            record, loss=best_loss, l_task=None, l_probe=None, max_err=me, final=True
+        )
     )
     with open(hist_path, "w") as f:
         json.dump(history, f)
     print(
-        f"[done] iter {record.it}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
+        f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
         f"elapsed {time.time()-t0:.1f}s"
     )
     print(f"[done] checkpoints in {run_ckpt_dir}, history in {hist_path}")
