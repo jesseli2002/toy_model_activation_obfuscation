@@ -29,27 +29,53 @@ ACTIVATION_CHOICES = ["leaky_relu", "gelu"]
 PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch"]
 
 
-@dataclass
-class ResidualMLPConfig:
-    """Architecture + init hyperparameters for ResidualMLP.
+class _CheckpointConfigMixin:
+    """Shared to_dict/from_dict for config dataclasses stored verbatim (as
+    dicts) in checkpoints, so they must survive old checkpoints gaining new
+    fields over time.
 
-    Stored verbatim (as a dict) under checkpoint["config"]. Two distinct
-    notions of "default" apply to each optional field below, and they are
-    deliberately kept separate:
-      - the field default (e.g. `num_blocks: int = 8`) is what a fresh
-        ResidualMLPConfig(...) call gets if the field is omitted -- i.e. the
-        default for code written going forward.
+    Subclasses must be @dataclass and define a ClassVar `_LEGACY_DEFAULTS`
+    dict covering every optional field. Two distinct notions of "default"
+    apply to each such field, and they are deliberately kept separate:
+      - the dataclass field default is what a fresh Config(...) call gets if
+        the field is omitted -- i.e. the default for code written going
+        forward.
       - _LEGACY_DEFAULTS is what an *old* checkpoint -- one saved before the
         field existed, so its config dict is missing the key -- is backfilled
         to by from_dict(). This is what that field's value effectively WAS,
         historically, before it became configurable.
-    These do NOT all coincide: num_blocks forward-defaults to 8 but
-    _LEGACY_DEFAULTS["num_blocks"] stays 4 (old checkpoints were trained with
-    4 blocks before the field's default was bumped). Any future change that
-    bumps a field's forward default must leave _LEGACY_DEFAULTS alone, so old
-    checkpoints keep reconstructing with the architecture they were actually
-    trained with.
+    These do NOT always coincide -- see the inline comments on each
+    subclass's _LEGACY_DEFAULTS for its own divergent fields. Any future
+    change that bumps a field's forward default must leave _LEGACY_DEFAULTS
+    alone, so old checkpoints keep reconstructing with the hyperparameters
+    they were actually run with.
+
+    This mixin owns no fields of its own (no dataclass field-ordering
+    concerns from mixing it into @dataclass subclasses) and reads
+    `_LEGACY_DEFAULTS`/`dataclasses.fields(cls)` off whichever subclass calls
+    it, via ordinary classmethod `cls` polymorphism.
     """
+
+    def to_dict(self) -> dict:
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, d: dict):
+        known = {f.name for f in dataclasses.fields(cls)}
+        unknown = d.keys() - known
+        if unknown:
+            warnings.warn(
+                f"{cls.__name__}.from_dict: dropping unrecognized key(s) "
+                f"{sorted(unknown)} -- checkpoint saved by a newer version?"
+            )
+        present = {k: v for k, v in d.items() if k in known}
+        # union over dicts, preferring `present`
+        return cls(**(cls._LEGACY_DEFAULTS | present))
+
+
+@dataclass
+class ResidualMLPConfig(_CheckpointConfigMixin):
+    """Architecture + init hyperparameters for ResidualMLP."""
 
     num_x: int = 32
     d_model: int = 256
@@ -74,42 +100,11 @@ class ResidualMLPConfig:
         if self.d_mlp is None:
             self.d_mlp = self.num_x
 
-    def to_dict(self) -> dict:
-        return dataclasses.asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "ResidualMLPConfig":
-        """Build a config from a checkpoint's config dict: fields the dict
-        predates are backfilled from _LEGACY_DEFAULTS (not the field default
-        above)."""
-        known = {f.name for f in dataclasses.fields(cls)}
-        unknown = d.keys() - known
-        if unknown:
-            warnings.warn(
-                f"ResidualMLPConfig.from_dict: dropping unrecognized key(s) "
-                f"{sorted(unknown)} -- checkpoint saved by a newer version?"
-            )
-        present = {k: v for k, v in d.items() if k in known}
-        # union over dicts, preferring `present`
-        return cls(**(cls._LEGACY_DEFAULTS | present))
-
 
 @dataclass
-class AdversarialConfig:
+class AdversarialConfig(_CheckpointConfigMixin):
     """Training-hyperparameter metadata for train_adversarial.py, stored
-    verbatim (as a dict) alongside the model's own ResidualMLPConfig. Kept
-    separate from ResidualMLPConfig since the probe-loss variant is a
-    training choice, not an architecture choice.
-
-    Same _LEGACY_DEFAULTS / from_dict backfill idiom as ResidualMLPConfig:
-    the field default below is what a fresh AdversarialConfig(...) gets when
-    the field is omitted; _LEGACY_DEFAULTS is what an old checkpoint (saved
-    before the field existed) is backfilled to. Several fields deliberately
-    diverge between the two, e.g. probe_loss forward-defaults to the new "lda"
-    objective, but old checkpoints trained under the hardcoded squared
-    penalty are backfilled to "squared" so they reconstruct with the
-    objective they were actually trained under.
-    """
+    verbatim (as a dict) alongside the model's own ResidualMLPConfig."""
 
     lam: float = 0.5
     lam_warmup_iters: int = 0
@@ -137,32 +132,11 @@ class AdversarialConfig:
         "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
     }
 
-    def to_dict(self) -> dict:
-        return dataclasses.asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "AdversarialConfig":
-        known = {f.name for f in dataclasses.fields(cls)}
-        unknown = d.keys() - known
-        if unknown:
-            warnings.warn(
-                f"AdversarialConfig.from_dict: dropping unrecognized key(s) "
-                f"{sorted(unknown)} -- checkpoint saved by a newer version?"
-            )
-        present = {k: v for k, v in d.items() if k in known}
-        return cls(**(cls._LEGACY_DEFAULTS | present))
-
 
 @dataclass
-class LogregAdversarialConfig:
+class LogregAdversarialConfig(_CheckpointConfigMixin):
     """Training-hyperparameter metadata for train_adversarial_logreg.py,
-    stored verbatim (as a dict) alongside the model's own ResidualMLPConfig.
-    Sibling to AdversarialConfig: that one drives the closed-form DoM/LDA
-    penalty; this one drives the simultaneous stateful-probe design (see
-    train_adversarial_logreg.py's module docstring). warmstart_path is None
-    when the model was inited from scratch (`--no-warmstart`) rather than
-    warm-started.
-    """
+    stored verbatim (as a dict) alongside the model's own ResidualMLPConfig."""
 
     lam: float = 0.5
     lam_warmup_iters: int = 0
@@ -191,19 +165,3 @@ class LogregAdversarialConfig:
         "probe_retrain_interval": 1,  # legacy runs refit every iteration
         "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
     }
-
-    def to_dict(self) -> dict:
-        return dataclasses.asdict(self)
-
-    @classmethod
-    def from_dict(cls, d: dict) -> "LogregAdversarialConfig":
-        known = {f.name for f in dataclasses.fields(cls)}
-        unknown = d.keys() - known
-        if unknown:
-            warnings.warn(
-                f"LogregAdversarialConfig.from_dict: dropping unrecognized "
-                f"key(s) {sorted(unknown)} -- checkpoint saved by a newer "
-                f"version?"
-            )
-        present = {k: v for k, v in d.items() if k in known}
-        return cls(**(cls._LEGACY_DEFAULTS | present))
