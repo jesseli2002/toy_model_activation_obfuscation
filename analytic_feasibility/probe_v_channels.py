@@ -111,15 +111,27 @@ def main(args):
     out_dir.mkdir(parents=True, exist_ok=True)
     lo_label, hi_label = f"c={args.c_lo:g}", f"c={args.c_hi:g}"
 
-    # --- Fig 1: raw (v1, v2) scatter. Probes below are fit on (x1, v1, v2),
-    # so their boundary is a plane, not a fixed line in this 2D slice -- this
-    # panel is encoding-shape context only; see Fig 2 for actual separation.
+    # --- Fig 1: raw (v1, v2) scatter with decision boundaries. Probes fit
+    # on (x1, v1, v2), so boundaries are planes; we show their 2D projection
+    # at the mean x1 value (dashed/dotted lines indicate x1-dependence).
     fig, ax = plt.subplots(figsize=(6, 6))
     ax.scatter(*X_te[y_te == 0, 1:].T, s=4, alpha=0.25, label=lo_label)
     ax.scatter(*X_te[y_te == 1, 1:].T, s=4, alpha=0.25, label=hi_label)
+    v1g = np.linspace(X_te[:, 1].min(), X_te[:, 1].max(), 200)
+    x1_mean = X_te[:, 0].mean()
+    for w, b, style, name in [
+        (w_dom, b_dom, "k--", f"DoM (acc={dom_acc:.3f}, AUROC={dom_auroc:.3f})"),
+        (w_lr, b_lr, "r-", f"logreg (acc={logreg_acc:.3f}, AUROC={logreg_auroc:.3f})"),
+    ]:
+        if abs(w[2]) > 1e-9:
+            v2g = -(w[0] * x1_mean + w[1] * v1g + b) / w[2]
+            ax.plot(v1g, v2g, style, label=name, alpha=0.7)
     ax.set_xlabel("v1")
     ax.set_ylabel("v2")
-    ax.set_title(f"v1/v2 encoding, {lo_label} vs {hi_label}\n(probes also see x1)")
+    ax.set_title(
+        f"v1/v2 encoding, {lo_label} vs {hi_label}\n"
+        "(boundaries shown at mean x1; probes also see x1)"
+    )
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
