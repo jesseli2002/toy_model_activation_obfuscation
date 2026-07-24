@@ -1,3 +1,17 @@
+import datetime
+
+_SUNSET_DATE = datetime.date(
+    2026, 7, 31
+)  # promised 2026-07-24: archive if unused a week
+if datetime.date.today() >= _SUNSET_DATE:
+    raise SystemExit(
+        f"train_adversarial.py: sunset date {_SUNSET_DATE} passed. You promised "
+        "to archive this script if it went a week unused -- either use it (and "
+        "push this date out), or move it to archive/ and delete this guard."
+    )
+else:
+    raise SystemExit("Note above reminder")
+
 """Step 3 — adversarial training: model vs. difference-of-means (DoM) probe.
 
 We add a penalty that pressures the model to make c=1 and c=2 activations share
