@@ -14,6 +14,9 @@ import torch # and other heavy imports
 ```
 This is not a hard rule; if argument parsing necessarily relies on some heavy libraries, don't sacrifice code readability or command line ease-of-use for this one specific problem.
 - Indicate tensor/array shapes/sizes with jaxtyping on functions and methods
+- Write concise docs; avoid brittle docs.
+    - Docs should cover high level concepts, not implementation (which would be redundant and brittle to implementation changes).
+    - Docs shouldn't give unimportant history (contrast important history: examples of past pitfalls/bugs of a more obvious-seeming solution; even in these cases, keep it concise and link to external issue reasoning)
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
@@ -45,3 +48,4 @@ This environment is in a sandbox. Writes and sensitive reads outside this direct
 - Use the Github MCP servers to push features, instead of Bash git/gh commands.
     - There are two identified servers (github-readonly and github-write): One dedicated for reading (highly permissive), and one dedicated for writing (highly restricted). USE THE READONLY SERVER IF ONLY READING; OTHERWISE THE COMMAND MAY GET REJECTED
     - For git push, a custom git-push-broker MCP is used; the one from GitHub doesn't preserve commit history properly.
+- If you get this error or something like it on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs occasionally when the machine is updated. Stop what you're doing and tell the user; there's a known fix which needs user intervention

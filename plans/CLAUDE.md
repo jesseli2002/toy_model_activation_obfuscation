@@ -14,7 +14,7 @@ This directory contains plans for agents.
       training, so the model can no longer evade the probe by shrinking its c-encoding
       without bound. Touches model.py, config.py, and both train_adversarial*.py.
 - config_dataclass_dedup_plan.md
-    - (NOT STARTED) Extract the shared _LEGACY_DEFAULTS/to_dict/from_dict backfill idiom
+    - (COMPLETED) Extract the shared _LEGACY_DEFAULTS/to_dict/from_dict backfill idiom
       duplicated across ResidualMLPConfig/AdversarialConfig/LogregAdversarialConfig in
       config.py into one base class; folds in doc deduplication too.
 - train_adversarial_logreg_cleanup_plan.md
