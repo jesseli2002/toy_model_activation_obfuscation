@@ -38,6 +38,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jaxtyping import Float
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import roc_auc_score
 
 relu = lambda z: np.maximum(z, 0.0)
 
@@ -73,15 +74,24 @@ def main(args):
     X_te, y_te = make_split()
 
     w_dom, b_dom = dom_probe(X_tr, y_tr)
-    dom_acc = float(((X_te @ w_dom + b_dom > 0) == y_te).mean())
+    dom_scores = X_te @ w_dom + b_dom
+    dom_acc = float(((dom_scores > 0) == y_te).mean())
+    dom_auroc = float(roc_auc_score(y_te, dom_scores))
 
     clf = LogisticRegression().fit(X_tr, y_tr)
     logreg_acc = float(clf.score(X_te, y_te))
     w_lr, b_lr = clf.coef_[0], float(clf.intercept_[0])
+    logreg_auroc = float(roc_auc_score(y_te, X_te @ w_lr + b_lr))
 
     print(f"v1/v2 encoding, c={args.c_lo:g} vs c={args.c_hi:g} (n_test={2 * n})")
-    print(f"  DoM    accuracy: {dom_acc:.4f}   ||w||={np.linalg.norm(w_dom):.4f}")
-    print(f"  logreg accuracy: {logreg_acc:.4f}   ||w||={np.linalg.norm(w_lr):.4f}")
+    print(
+        f"  DoM    accuracy: {dom_acc:.4f}  AUROC: {dom_auroc:.4f}   "
+        f"||w||={np.linalg.norm(w_dom):.4f}"
+    )
+    print(
+        f"  logreg accuracy: {logreg_acc:.4f}  AUROC: {logreg_auroc:.4f}   "
+        f"||w||={np.linalg.norm(w_lr):.4f}"
+    )
 
     out_dir = pathlib.Path(args.out_dir or os.environ.get("TMPDIR", "."))
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -93,8 +103,8 @@ def main(args):
     ax.scatter(*X_te[y_te == 1].T, s=4, alpha=0.25, label=hi_label)
     v1g = np.linspace(X_te[:, 0].min(), X_te[:, 0].max(), 200)
     for w, b, style, name in [
-        (w_dom, b_dom, "k--", f"DoM (acc={dom_acc:.3f})"),
-        (w_lr, b_lr, "r-", f"logreg (acc={logreg_acc:.3f})"),
+        (w_dom, b_dom, "k--", f"DoM (acc={dom_acc:.3f}, AUROC={dom_auroc:.3f})"),
+        (w_lr, b_lr, "r-", f"logreg (acc={logreg_acc:.3f}, AUROC={logreg_auroc:.3f})"),
     ]:
         if abs(w[1]) > 1e-9:
             ax.plot(v1g, -(w[0] * v1g + b) / w[1], style, label=name)
@@ -110,9 +120,9 @@ def main(args):
 
     # --- Fig 2: histograms of each probe's 1D projection. ---
     fig, (ax_dom, ax_lr) = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True)
-    for ax, w, b, name, acc in [
-        (ax_dom, w_dom, b_dom, "difference of means", dom_acc),
-        (ax_lr, w_lr, b_lr, "logistic regression", logreg_acc),
+    for ax, w, b, name, acc, auroc in [
+        (ax_dom, w_dom, b_dom, "difference of means", dom_acc, dom_auroc),
+        (ax_lr, w_lr, b_lr, "logistic regression", logreg_acc, logreg_auroc),
     ]:
         proj_lo = X_te[y_te == 0] @ w + b
         proj_hi = X_te[y_te == 1] @ w + b
@@ -121,7 +131,7 @@ def main(args):
         ax.hist(proj_lo, bins=bins, alpha=0.5, label=lo_label)
         ax.hist(proj_hi, bins=bins, alpha=0.5, label=hi_label)
         ax.axvline(0.0, color="k", ls="--", lw=1)
-        ax.set_title(f"{name}\naccuracy={acc:.3f}")
+        ax.set_title(f"{name}\naccuracy={acc:.3f}, AUROC={auroc:.3f}")
         ax.set_xlabel("projection (boundary at 0)")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
