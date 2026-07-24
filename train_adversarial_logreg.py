@@ -340,7 +340,7 @@ class TrainRecord:
     """One completed training step, everything a caller needs to checkpoint,
     log, or resume from it."""
 
-    it: int
+    iter: int
     loss: float
     l_task: float | None
     l_probe: float | None
@@ -356,7 +356,6 @@ def _history_entry(record: TrainRecord, **extra) -> dict:
     sites, rather than two hand-built dicts drifting independently."""
     d = dataclasses.asdict(record)
     del d["affine"]  # tensors aren't JSON-serializable, not needed in history
-    d["iter"] = d.pop("it")  # adversarial_report.py reads history[...]["iter"]
     d.update(extra)
     return d
 
@@ -430,7 +429,7 @@ def train_steps(
         model_dt = fwd_dt + (time.time() - t_bwd0)
 
         yield TrainRecord(
-            it=it,
+            iter=it,
             loss=loss.item(),
             l_task=float(l_task.item()),
             l_probe=float(l_probe.item()),
@@ -471,7 +470,7 @@ def save_checkpoint(
     with _defer_keyboard_interrupt():
         model.save(
             path,
-            iter=record.it,
+            iter=record.iter,
             opt=opt.state_dict(),
             best_loss=best_loss,
             probe_w=w_eff.cpu(),
@@ -587,7 +586,7 @@ def main(args):
     # --resume past --max-iters: train_steps() then yields nothing, and the
     # final save/log below still needs a record to work with.
     record = TrainRecord(
-        it=start_iter,
+        iter=start_iter,
         loss=best_loss,
         l_task=None,
         l_probe=None,
@@ -617,31 +616,31 @@ def main(args):
                 best_loss = record.loss
                 save(best_path)
 
-            if record.it % args.log_interval == 0:
+            if record.iter % args.log_interval == 0:
                 me = eval_max_err(model, num_x, gen, device=device)
                 history.append(_history_entry(record, max_err=me))
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
-                rate = (record.it - start_iter + 1) / (time.time() - t0 + 1e-9)
+                rate = (record.iter - start_iter + 1) / (time.time() - t0 + 1e-9)
                 print(
-                    f"iter {record.it:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
+                    f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
                     f"probe {record.l_probe:.3e}  λ {record.lam_eff:.1e}  max_err {me:.3e}  "
                     f"probe_dt {record.probe_dt*1e3:.1f}ms  model_dt {record.model_dt*1e3:.1f}ms  "
                     f"{rate:.1f} it/s"
                 )
 
-            if record.it % args.ckpt_interval == 0 and record.it > start_iter:
+            if record.iter % args.ckpt_interval == 0 and record.iter > start_iter:
                 save(last_path)
 
             if (
                 args.save_every_n != 0  # i.e. not disabled
-                and record.it % args.save_every_n == 0
-                and record.it > start_iter
+                and record.iter % args.save_every_n == 0
+                and record.iter > start_iter
             ):
-                save(os.path.join(run_ckpt_dir, f"iter_{record.it}.pt"))
+                save(os.path.join(run_ckpt_dir, f"iter_{record.iter}.pt"))
     except KeyboardInterrupt:
         print(
-            f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.it}..."
+            f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.iter}..."
         )
         save(last_path)
         print(f"[interrupt] saved to {last_path}")
@@ -658,7 +657,7 @@ def main(args):
     with open(hist_path, "w") as f:
         json.dump(history, f)
     print(
-        f"[done] iter {record.it}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
+        f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
         f"elapsed {time.time()-t0:.1f}s"
     )
     print(f"[done] checkpoints in {run_ckpt_dir}, history in {hist_path}")

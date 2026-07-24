@@ -14,7 +14,7 @@ from train_adversarial_logreg import TrainRecord, _history_entry, _resolve_hidde
 
 def _make_record(**overrides):
     defaults = dict(
-        it=42,
+        iter=42,
         loss=1.0,
         l_task=0.5,
         l_probe=0.5,
@@ -32,12 +32,12 @@ class TestHistoryEntry:
         d = _history_entry(_make_record())
         assert "affine" not in d
 
-    def test_iter_key_preserved_for_adversarial_report(self):
-        # adversarial_report.py reads history[...]["iter"], not "it" (the
-        # TrainRecord field name) -- must not silently rename this key.
-        d = _history_entry(_make_record(it=7))
+    def test_iter_key_matches_adversarial_report_expectations(self):
+        # adversarial_report.py reads history[...]["iter"] -- TrainRecord's
+        # field is named `iter` (not `it`) precisely so asdict() lines up
+        # with this on-disk schema without any renaming.
+        d = _history_entry(_make_record(iter=7))
         assert d["iter"] == 7
-        assert "it" not in d
 
     def test_extra_adds_new_keys(self):
         d = _history_entry(_make_record(), max_err=1e-3)
