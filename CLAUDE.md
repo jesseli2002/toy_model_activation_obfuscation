@@ -17,7 +17,8 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
-- By default, do not set GitHub PRs as draft.
+- Don't use draft GitHub PRs unless told.
+- *.tmp.py files are throwaway scripts - don't worry about code quality when reading/writing them, and when the user asks for a throwaway script, use a .tmp.py suffix.
 
 ## Autonomous engineering
 - Due to machine resource limitations, realistically at most one agent should be running training code at a time. If tasking subagents to complete work, this should be considered for task allocation.
@@ -43,4 +44,4 @@ This environment is in a sandbox. Writes and sensitive reads outside this direct
 - If you run into permissions issues, prefer trying to solve the cause (and ask the user to help debug permissions), rather than working around the symptoms and trying a bunch of techniques to get past them.
 - Use the Github MCP servers to push features, instead of Bash git/gh commands.
     - There are two identified servers (github-readonly and github-write): One dedicated for reading (highly permissive), and one dedicated for writing (highly restricted). USE THE READONLY SERVER IF ONLY READING; OTHERWISE THE COMMAND MAY GET REJECTED
-    - MCP pushes (push_files/delete_file) create commits via GitHub's API, not real git push — the resulting SHA won't match local git, and local history can silently fork from GitHub's. A PostToolUse hook (scripts/git/reconcile_mcp_push.sh) auto-reconciles the local branch after such a push, but only resets when the fetched remote content is byte-identical to local HEAD.
+    - For git push, a custom git-push-broker MCP is used; the one from GitHub doesn't preserve commit history properly.
