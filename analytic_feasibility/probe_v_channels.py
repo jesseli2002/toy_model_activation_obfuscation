@@ -140,15 +140,35 @@ def main(args):
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
-    # --- Fig 1b: 3D scatter of (x1, v1, v2) for comparison. ---
+    # --- Fig 1b: 3D scatter of (x1, v1, v2) for comparison, with logreg hyperplane. ---
     fig = plt.figure(figsize=(8, 6))
     ax = fig.add_subplot(111, projection="3d")
     ax.scatter(*X_te[y_te == 0].T, s=4, alpha=0.25, label=lo_label, depthshade=False)
     ax.scatter(*X_te[y_te == 1].T, s=4, alpha=0.25, label=hi_label, depthshade=False)
+
+    # Add logreg hyperplane: w[0]*x1 + w[1]*v1 + w[2]*v2 + b = 0
+    # Solve for v2: v2 = -(w[0]*x1 + w[1]*v1 + b) / w[2]
+    if abs(w_lr[2]) > 1e-9:
+        x1_mesh = np.linspace(X_te[:, 0].min(), X_te[:, 0].max(), 30)
+        v1_mesh = np.linspace(X_te[:, 1].min(), X_te[:, 1].max(), 30)
+        x1_grid, v1_grid = np.meshgrid(x1_mesh, v1_mesh)
+        v2_grid = -(w_lr[0] * x1_grid + w_lr[1] * v1_grid + b_lr) / w_lr[2]
+        ax.plot_surface(
+            x1_grid,
+            v1_grid,
+            v2_grid,
+            alpha=0.2,
+            color="r",
+            label="logreg hyperplane",
+        )
+
     ax.set_xlabel("x1")
     ax.set_ylabel("v1")
     ax.set_zlabel("v2")
-    ax.set_title(f"(x1, v1, v2) encoding, {lo_label} vs {hi_label}")
+    ax.set_title(
+        f"(x1, v1, v2) encoding, {lo_label} vs {hi_label}\n"
+        f"(red surface = logreg decision boundary)"
+    )
     ax.legend(fontsize=8)
     fig.tight_layout()
     path = out_dir / "v_channels_3d.png"
