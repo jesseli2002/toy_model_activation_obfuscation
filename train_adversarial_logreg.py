@@ -12,6 +12,9 @@ torch reimplementation, selected via `--probe-backend` (see probe_backend.py).
 
 The training objective combines a probe-adversarial penalty with the task
 loss (see LogregAdversarialConfig for the weighting and probe hyperparameters).
+The probe (both its own fit and the differentiable penalty) is always
+evaluated against one fixed input batch sampled before the training loop
+starts -- the task loss, by contrast, resamples a fresh batch every step.
 
 The interesting science is the same as train_adversarial.py: not "can it hide
 c" but HOW -- does it hide c only at the probed threshold ("hidden"), or
@@ -333,6 +336,8 @@ def train_steps(
     hidden_layers: list[int],
     start_iter: int,
     affine: tuple[torch.Tensor, torch.Tensor],
+    probe_x: torch.Tensor,
+    probe_label: torch.Tensor,
     device,
 ):
     """Generator over training iterations, yielding one `TrainRecord` per
@@ -340,29 +345,28 @@ def train_steps(
     checkpointing/logging here -- that's the caller's job, done between
     yields. This also means a KeyboardInterrupt while the caller is
     consuming this generator always leaves the caller's for-loop variable
-    holding the last *fully completed* step, never a half-updated one."""
+    holding the last *fully completed* step, never a half-updated one.
+
+    probe_x/probe_label: the fixed probe dataset (sampled once by the
+    caller) -- reused for every probe fit and penalty this run, unlike the
+    task batch below which resamples fresh each iteration."""
     num_x = model.config.num_x
     for it in range(start_iter, args.max_iters):
         t_fwd0 = time.time()
-        x_full, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
+        x_task, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
 
         # task: noisy pass -- this is what forbids shrinking c's encoding
         # below the noise floor (see plans/resid_stream_noise_plan.md).
         y_pred_full = model.forward(
-            x_full, noise_std=args.resid_noise_std, generator=gen
+            x_task, noise_std=args.resid_noise_std, generator=gen
         )
         l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
 
-        # probe fit + penalty: clean pass, full resolution -- the probe stays
-        # exempt from the noise so it can still out-resolve the model.
-        _, caches = model.forward(x_full, return_cache=True)
+        # probe fit + penalty: clean pass over the FIXED probe set, full
+        # resolution -- the probe stays exempt from the noise so it can
+        # still out-resolve the model.
+        _, caches = model.forward(probe_x, return_cache=True)
         fwd_dt = time.time() - t_fwd0
-
-        label = x_full[:, num_x] >= args.class_threshold
-        assert label.any() and (~label).any(), (
-            "batch has only one probe class present -- check --class-threshold "
-            "against c's range."
-        )
 
         cat_live = concat_caches_torch(caches, hidden_layers)
 
@@ -371,18 +375,18 @@ def train_steps(
             X = cat_live.detach()
             if args.probe_subsample > 1:
                 X_fit = X[:: args.probe_subsample]
-                label_fit = label[:: args.probe_subsample]
+                label_fit = probe_label[:: args.probe_subsample]
                 assert label_fit.any() and (~label_fit).any(), (
                     "subsampled probe batch has only one class present -- lower "
                     "--probe-subsample or raise --batch-size."
                 )
             else:
-                X_fit, label_fit = X, label
+                X_fit, label_fit = X, probe_label
             fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
             affine = probe.get_affine(device)
         probe_dt = time.time() - t_probe0
 
-        l_probe = score_penalty(cat_live, affine, label, args.probe_loss_kind)
+        l_probe = score_penalty(cat_live, affine, probe_label, args.probe_loss_kind)
 
         if args.lam_warmup_iters > 0:
             lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
@@ -539,18 +543,20 @@ def main(args):
         # checkpoint -- resume re-inits them from the resumed model below,
         # same as a fresh run.
 
-    # --- init-fit a single probe over the concatenation of penalized layers ---
-    x_full, _ = sample_batch(args.batch_size, num_x, generator=gen, device=device)
-    with torch.no_grad():
-        _, init_caches = model.forward(x_full, return_cache=True)
-    init_label = x_full[:, num_x] >= args.class_threshold
-    assert init_label.any() and (~init_label).any(), (
-        "init batch has only one probe class present -- check --class-threshold "
+    # --- sample the fixed probe dataset (reused for every fit + penalty for
+    # the rest of the run -- see module docstring) and init-fit a probe over
+    # the concatenation of penalized layers ---
+    probe_x, _ = sample_batch(args.batch_size, num_x, generator=gen, device=device)
+    probe_label = probe_x[:, num_x] >= args.class_threshold
+    assert probe_label.any() and (~probe_label).any(), (
+        "fixed probe batch has only one class present -- check --class-threshold "
         "against c's range."
     )
+    with torch.no_grad():
+        _, init_caches = model.forward(probe_x, return_cache=True)
     cat_init = concat_caches_torch(init_caches, hidden_layers)
     probe = build_probe_pipeline(args.probe_C, args.probe_init_iters, probe_backend)
-    probe.fit(cat_init.detach(), init_label)
+    probe.fit(cat_init.detach(), probe_label)
     affine = probe.get_affine(device)
     print(
         f"[init] fit concatenated probe (backend={probe_backend}) over layers "
@@ -595,6 +601,8 @@ def main(args):
             hidden_layers,
             start_iter,
             affine,
+            probe_x,
+            probe_label,
             device,
         ):
             if record.loss < best_loss:
