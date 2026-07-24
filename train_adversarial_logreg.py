@@ -196,7 +196,7 @@ def parse_args():
         help="fit each per-step probe update on every Nth row of the batch "
         "instead of the full batch (e.g. 8 = 1/8 of the rows). Cuts sklearn "
         "fit cost roughly linearly; the model's own forward/backward still "
-        "uses the full batch. 1 = no subsampling.",
+        "uses the full batch. 1 = no subsampling. (see PR #36)",
     )
     g_probe.add_argument(
         "--probe-retrain-interval",
@@ -205,7 +205,7 @@ def parse_args():
         help="refit the probe (and re-extract its affine) only once every N "
         "training iterations; other iterations reuse the last extracted "
         "affine for the penalty. 1 = refit every iteration (default "
-        "behavior before this option existed).",
+        "behavior before this option existed). (see PR #36)",
     )
 
     g_opt = p.add_argument_group("optimization")
@@ -247,6 +247,10 @@ def parse_args():
 # parse_args early-exits on --help before the heavy imports below are reached.
 if __name__ == "__main__":
     args = parse_args()
+    # Cheap existence check, fired before run-dir setup (in main()) can delete
+    # an existing runs/<tag> out from under a bad --warmstart path.
+    if not args.no_warmstart and not os.path.exists(args.warmstart):
+        raise SystemExit(f"[error] --warmstart checkpoint not found: {args.warmstart}")
 
 import warnings
 
@@ -284,6 +288,27 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
                 f"[error] penalty layer {lyr} out of range [0, {num_blocks}]."
             )
     return layers
+
+
+def resolve_model(args, device):
+    """Warm-start from a train_adversarial.py checkpoint (default) or init
+    from scratch, per --warmstart/--no-warmstart. Assumes --warmstart's
+    existence has already been checked (Tier 2, in the __main__ guard)."""
+    if not args.no_warmstart:
+        model, _ = ResidualMLP.load(args.warmstart, map_location=device)
+        model = model.to(device)
+        model_config = model.config
+        print(f"[init] warm-started from {args.warmstart} (cfg={model_config})")
+    else:
+        model_config = ResidualMLPConfig(
+            num_x=args.num_x,
+            d_model=args.d_model,
+            d_mlp=args.d_mlp,
+            num_blocks=args.num_blocks,
+        )
+        model = ResidualMLP(model_config).to(device)
+        print(f"[init] scratch model cfg={model_config}")
+    return model, model_config
 
 
 def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.Tensor:
@@ -440,9 +465,8 @@ def _defer_keyboard_interrupt():
 def save_checkpoint(
     path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config
 ):
-    """Persist model + optimizer state, the probe's affine boundary at
-    `record`, and enough config to resume. A SIGINT arriving mid-write is
-    deferred until the write completes (see `_defer_keyboard_interrupt`)."""
+    """Save all training state needed to resume from disk, atomically (a
+    SIGINT can't corrupt the file)."""
     w_eff, b_eff = record.affine
     with _defer_keyboard_interrupt():
         model.save(
@@ -460,8 +484,6 @@ def save_checkpoint(
 def main(args):
     if args.save_every_n == -1:
         args.save_every_n = args.ckpt_interval
-    # ad-hoc band-aid for this script's own (sklearn-backend) probe fits;
-    # doesn't belong in probe_backend.py, which is meant to be reusable.
     warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     probe_backend = resolve_probe_backend(args.probe_backend, device)
@@ -482,25 +504,8 @@ def main(args):
 
     torch.manual_seed(args.seed)
 
-    # --- init the model: warm-start (default) or from scratch ---
-    if not args.no_warmstart:
-        if not os.path.exists(args.warmstart):
-            raise SystemExit(
-                f"[error] --warmstart checkpoint not found: {args.warmstart}"
-            )
-        model, _ = ResidualMLP.load(args.warmstart, map_location=device)
-        model = model.to(device)
-        model_config = model.config
-        num_x, num_blocks = model_config.num_x, model_config.num_blocks
-        print(f"[init] warm-started from {args.warmstart} (cfg={model_config})")
-    else:
-        num_x, num_blocks = args.num_x, args.num_blocks
-        model_config = ResidualMLPConfig(
-            num_x=num_x, d_model=args.d_model, d_mlp=args.d_mlp, num_blocks=num_blocks
-        )
-        model = ResidualMLP(model_config).to(device)
-        print(f"[init] scratch model cfg={model_config}")
-
+    model, model_config = resolve_model(args, device)
+    num_x, num_blocks = model_config.num_x, model_config.num_blocks
     hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
     if not hidden_layers:
         raise SystemExit(
