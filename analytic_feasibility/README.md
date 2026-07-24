@@ -138,6 +138,13 @@ If training with period-2/4 probes finds low-loss hidden solutions, look for:
 ## Files
 
 - `verify_feasibility.py` — numeric checks of every claim in section 1.
+- `probe_v_channels.py` — is the v1/v2 encoding detectable by a DoM or
+  logistic-regression probe (no trained network; closed-form v1/v2 only)?
+  DoM is at chance by construction; plain logreg is too, since it's still a
+  linear classifier and the c-signal here lives in variance/covariance, not
+  the mean — consistent with the "necessary but not sufficient" note above.
+  Writes a 2D (v1, v2) scatter + per-probe projection histograms to
+  `$TMPDIR` (or `--out-dir`).
 - `search_exact.py`, `search_results.json` — n=2/3 optimization search
   harness + outcomes (note the failed no-hide control before trusting floors).
 - `period2_decode.py` — sympy feasibility system for the one-layer decode.

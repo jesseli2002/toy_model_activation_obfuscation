@@ -1,0 +1,139 @@
+"""Can a difference-of-means / logistic-regression probe detect the v1/v2
+mean-constant c-encoding (README.md section 1, "v-channels")?
+
+v1, v2 are mean-constant in c by construction (E_x1[v] = 0 for every c), so a
+raw difference-of-means probe is at chance -- that's the whole point of the
+encoding. But mean-constancy says nothing about higher moments: std(v1),
+std(v2), and cov(v1, v2) all vary with c (checked numerically below), so a
+probe that can use curvature/covariance -- logistic regression on (v1, v2) --
+may still separate c_lo from c_hi well above chance. This script checks that
+directly, with no trained network involved: just the closed-form encoding
+from README.md, sampled and fed straight to DoM and logreg classifiers.
+"""
+
+import argparse
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description="DoM vs logreg detectability of the v1/v2 c-encoding.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--c-lo", type=float, default=1.0)
+    p.add_argument("--c-hi", type=float, default=2.0)
+    p.add_argument("--n", type=int, default=20_000, help="samples per class per split")
+    p.add_argument("--seed", type=int, default=0)
+    p.add_argument("--out-dir", type=str, default=None, help="default: $TMPDIR or .")
+    p.add_argument("--show", action="store_true")
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
+import os
+import pathlib
+
+import matplotlib.pyplot as plt
+import numpy as np
+from jaxtyping import Float
+from sklearn.linear_model import LogisticRegression
+
+relu = lambda z: np.maximum(z, 0.0)
+
+
+def sample_v(n: int, c: float, rng: np.random.Generator) -> Float[np.ndarray, "n 2"]:
+    """x1 ~ U[-3, 3]; v1, v2 per README.md's mean-constant encoding."""
+    x1 = rng.uniform(-3, 3, n)
+    v1 = -2 * relu(-x1 - c) + 2 * relu(x1 - 3 + c) - c + 1.5
+    v2 = -4 * relu(-x1 - c / 2) + 4 * relu(x1 + c / 2 - 3) - c + 3.0
+    return np.stack([v1, v2], axis=1)
+
+
+def dom_probe(
+    X: Float[np.ndarray, "n 2"], y: Float[np.ndarray, "n"]
+) -> tuple[Float[np.ndarray, "2"], float]:
+    """Difference-of-means direction/threshold, midpoint-of-means bias."""
+    mu0, mu1 = X[y == 0].mean(axis=0), X[y == 1].mean(axis=0)
+    w = mu1 - mu0
+    b = -0.5 * (mu0 + mu1) @ w
+    return w, b
+
+
+def main(args):
+    rng = np.random.default_rng(args.seed)
+    n = args.n
+
+    def make_split():
+        X = np.concatenate([sample_v(n, args.c_lo, rng), sample_v(n, args.c_hi, rng)])
+        y = np.concatenate([np.zeros(n), np.ones(n)])
+        return X, y
+
+    X_tr, y_tr = make_split()
+    X_te, y_te = make_split()
+
+    w_dom, b_dom = dom_probe(X_tr, y_tr)
+    dom_acc = float(((X_te @ w_dom + b_dom > 0) == y_te).mean())
+
+    clf = LogisticRegression().fit(X_tr, y_tr)
+    logreg_acc = float(clf.score(X_te, y_te))
+    w_lr, b_lr = clf.coef_[0], float(clf.intercept_[0])
+
+    print(f"v1/v2 encoding, c={args.c_lo:g} vs c={args.c_hi:g} (n_test={2 * n})")
+    print(f"  DoM    accuracy: {dom_acc:.4f}   ||w||={np.linalg.norm(w_dom):.4f}")
+    print(f"  logreg accuracy: {logreg_acc:.4f}   ||w||={np.linalg.norm(w_lr):.4f}")
+
+    out_dir = pathlib.Path(args.out_dir or os.environ.get("TMPDIR", "."))
+    out_dir.mkdir(parents=True, exist_ok=True)
+    lo_label, hi_label = f"c={args.c_lo:g}", f"c={args.c_hi:g}"
+
+    # --- Fig 1: raw (v1, v2) scatter with both decision boundaries. ---
+    fig, ax = plt.subplots(figsize=(6, 6))
+    ax.scatter(*X_te[y_te == 0].T, s=4, alpha=0.25, label=lo_label)
+    ax.scatter(*X_te[y_te == 1].T, s=4, alpha=0.25, label=hi_label)
+    v1g = np.linspace(X_te[:, 0].min(), X_te[:, 0].max(), 200)
+    for w, b, style, name in [
+        (w_dom, b_dom, "k--", f"DoM (acc={dom_acc:.3f})"),
+        (w_lr, b_lr, "r-", f"logreg (acc={logreg_acc:.3f})"),
+    ]:
+        if abs(w[1]) > 1e-9:
+            ax.plot(v1g, -(w[0] * v1g + b) / w[1], style, label=name)
+    ax.set_xlabel("v1")
+    ax.set_ylabel("v2")
+    ax.set_title(f"v1/v2 encoding, {lo_label} vs {hi_label}")
+    ax.legend(fontsize=8)
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    path = out_dir / "v_channels_2d.png"
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+    # --- Fig 2: histograms of each probe's 1D projection. ---
+    fig, (ax_dom, ax_lr) = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True)
+    for ax, w, b, name, acc in [
+        (ax_dom, w_dom, b_dom, "difference of means", dom_acc),
+        (ax_lr, w_lr, b_lr, "logistic regression", logreg_acc),
+    ]:
+        proj_lo = X_te[y_te == 0] @ w + b
+        proj_hi = X_te[y_te == 1] @ w + b
+        lo, hi = min(proj_lo.min(), proj_hi.min()), max(proj_lo.max(), proj_hi.max())
+        bins = np.linspace(lo, hi, 60)
+        ax.hist(proj_lo, bins=bins, alpha=0.5, label=lo_label)
+        ax.hist(proj_hi, bins=bins, alpha=0.5, label=hi_label)
+        ax.axvline(0.0, color="k", ls="--", lw=1)
+        ax.set_title(f"{name}\naccuracy={acc:.3f}")
+        ax.set_xlabel("projection (boundary at 0)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+    ax_dom.set_ylabel("count")
+    fig.tight_layout()
+    path = out_dir / "v_channels_hist.png"
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+    if args.show:
+        plt.show()
+
+
+if __name__ == "__main__":
+    main(args)
