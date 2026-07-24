@@ -118,8 +118,7 @@ def forward_steered(
     steer_vec: torch.Tensor | None,
 ) -> torch.Tensor:
     """Manual replay of ResidualMLP.forward, injecting steer_vec into the
-    residual stream at index steer_layer (0=embedding, i=after block i-1).
-    Public: reused by adversarial_report.py's steering-effectiveness plots."""
+    residual stream at index steer_layer (0=embedding, i=after block i-1)."""
     r = x_full @ model.W_E
     if steer_layer == 0 and steer_vec is not None:
         r = r + steer_vec

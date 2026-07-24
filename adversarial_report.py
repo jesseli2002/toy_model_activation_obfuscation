@@ -88,10 +88,8 @@ def parse_args():
     p.add_argument(
         "--detailed",
         action="store_true",
-        help="also compute the report-only statistics that feed no saved plot: "
-        "binary held-out c pairs (3b), plus the held-out-pair accuracy-gap bar "
-        "chart. Skipped by default since they're the most expensive part of "
-        "the script.",
+        help="also compute the binary held-out c-pair statistics (3b) and "
+        "plot their accuracy gap across layers.",
     )
     p.add_argument(
         "--steer",
