@@ -41,6 +41,7 @@ import os
 import pathlib
 
 import matplotlib.pyplot as plt
+from mpl_toolkits.mplot3d import Axes3D
 import numpy as np
 from jaxtyping import Float
 from sklearn.linear_model import LogisticRegression
@@ -136,6 +137,21 @@ def main(args):
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
     path = out_dir / "v_channels_2d.png"
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+    # --- Fig 1b: 3D scatter of (x1, v1, v2) for comparison. ---
+    fig = plt.figure(figsize=(8, 6))
+    ax = fig.add_subplot(111, projection="3d")
+    ax.scatter(*X_te[y_te == 0].T, s=4, alpha=0.25, label=lo_label, depthshade=False)
+    ax.scatter(*X_te[y_te == 1].T, s=4, alpha=0.25, label=hi_label, depthshade=False)
+    ax.set_xlabel("x1")
+    ax.set_ylabel("v1")
+    ax.set_zlabel("v2")
+    ax.set_title(f"(x1, v1, v2) encoding, {lo_label} vs {hi_label}")
+    ax.legend(fontsize=8)
+    fig.tight_layout()
+    path = out_dir / "v_channels_3d.png"
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
