@@ -15,6 +15,20 @@ only printed/written with --detailed.
 
 Optionally pass --baseline-path to run the same probes on the pre-adversarial
 model for a before/after contrast.
+
+Three optional deep-dive diagnostics, each opt-in since they cost extra compute:
+  --detailed        also plots the held-out-pair accuracy gap across layers
+                     (extends the table above into a bar chart).
+  --steer L1,L2,...  causal test: inject the DoM- and logreg-discovered c=1->c=2
+                     directions at each given layer and see whether the model's
+                     output actually moves toward the c=2 target -- a probe that
+                     merely correlates with c but isn't causally used would fail
+                     this even at high probe accuracy.
+  --linear-y-probe   fits a linear map residual[layer] -> model's own final y,
+                     for every layer. Tests whether y is already linearly
+                     recoverable well before the final unembed: if so, the
+                     remaining blocks don't need to keep carrying c information,
+                     they can just carry y forward through always-on neurons.
 """
 
 import argparse
@@ -33,6 +47,10 @@ def _parse_pairs(s: str) -> list[tuple[float, float]]:
         lo, hi = tok.split("-")
         pairs.append((float(lo), float(hi)))
     return pairs
+
+
+def _parse_int_list(s: str) -> list[int]:
+    return [int(v) for v in s.split(",") if v.strip() != ""]
 
 
 def parse_args():
@@ -71,8 +89,32 @@ def parse_args():
         "--detailed",
         action="store_true",
         help="also compute the report-only statistics that feed no saved plot: "
-        "binary held-out c pairs (3b). Skipped by default since they're the "
-        "most expensive part of the script.",
+        "binary held-out c pairs (3b), plus the held-out-pair accuracy-gap bar "
+        "chart. Skipped by default since they're the most expensive part of "
+        "the script.",
+    )
+    p.add_argument(
+        "--steer",
+        type=_parse_int_list,
+        default=None,
+        help="comma-separated hidden-layer indices to run the causal steering "
+        "test at (e.g. '3,6,9'). For each layer, injects the DoM- and "
+        "logreg-discovered c=1->c=2 directions (magnitude-matched) into c=1 "
+        "inputs and plots the resulting y(x). Must be a subset of the hidden "
+        "layers already probed at c in {1,2} (no extra forward passes needed).",
+    )
+    p.add_argument(
+        "--steer-scale",
+        type=float,
+        default=1.0,
+        help="multiple of the full c=1->c=2 shift magnitude to inject (1.0 = full).",
+    )
+    p.add_argument(
+        "--linear-y-probe",
+        action="store_true",
+        help="fit a linear map residual[layer] -> model's own final y at every "
+        "layer (0..num_blocks) and report/plot R^2. Tests whether y is already "
+        "linearly recoverable well before the final unembed.",
     )
     return p.parse_args()
 
@@ -88,16 +130,18 @@ import seaborn as sns
 import torch
 from matplotlib.collections import PolyCollection
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
 from tqdm import tqdm
 
-from data import sample_fixed_c
+from data import sample_batch, sample_fixed_c
 from model import ResidualMLP
 from paths import log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, resolve_probe_backend
 from train_model_plot import plot_learned_curves
-from train_probe import capture_layers_dict, load_model
+from train_probe import capture_layers_dict, forward_steered, load_model
 from train_probe import plot_probe as plot_probe_separation
 
 
@@ -310,6 +354,44 @@ def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     print(f"[plot] wrote {path}")
 
 
+def _plot_heldout_gap(
+    tag, hidden_layers, held_out_pairs, gap, heldout, plot_dir, metric="logreg"
+):
+    """Bar chart analogous to _plot_probe_gap, but grouped by c-pair instead of
+    by probe type -- one metric (logreg, the pass/fail gate used everywhere
+    else in this codebase) compared across the baseline {1,2} pair and every
+    --held-out-pairs entry, per layer."""
+    groups = [(1.0, 2.0, gap)] + [
+        (lo, hi, {lyr: heldout[(lo, hi, lyr)] for lyr in hidden_layers})
+        for lo, hi in held_out_pairs
+    ]
+    n = len(groups)
+    x = np.arange(len(hidden_layers))
+    width = 0.8 / n
+    offsets = (np.arange(n) - (n - 1) / 2) * width
+    fig, ax = plt.subplots(figsize=(max(7, 1.3 * len(hidden_layers)), 4.2))
+    for off, (lo, hi, m) in zip(offsets, groups):
+        ax.bar(
+            x + off,
+            [m[l][metric] for l in hidden_layers],
+            width,
+            label=f"c={lo:g}/{hi:g}",
+        )
+    ax.axhline(0.5, color="k", ls="--", lw=1, label="chance")
+    ax.set_ylim(0.4, 1.02)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"L{l}" for l in hidden_layers])
+    ax.set_ylabel(f"{metric} accuracy")
+    ax.set_title(f"held-out c-pair probe gap ({tag}, {metric})")
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(plot_dir, f"{tag}_heldout_gap.png")
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"[plot] wrote {path}")
+
+
 def _plot_layer_distributions(tag, c_lo, c_hi, layers, plot_inputs, plot_dir):
     """Per-layer, per-class signed-distance-to-boundary distributions (raw
     data units, boundary at 0, shared y-axis across layers -- so a collapse
@@ -418,6 +500,133 @@ def _plot_layer_distributions(tag, c_lo, c_hi, layers, plot_inputs, plot_dir):
     print(f"[plot] wrote {path}")
 
 
+def _steer_vectors(w_dom, w_probe, scale):
+    """DoM steer vector = scale * (mu_hi - mu_lo), raw units. Logreg steer
+    vector = scale * ||w_dom|| * unit(w_probe) -- normalized to the SAME
+    causal magnitude as the DoM shift, so a difference in downstream effect
+    reflects the direction the probe found, not an arbitrary scale (w_probe's
+    own norm is set by the regularization strength, not a meaningful shift
+    size)."""
+    w_dom_vec = scale * w_dom
+    w_probe_unit = w_probe / np.linalg.norm(w_probe)
+    w_logreg_vec = scale * np.linalg.norm(w_dom) * w_probe_unit
+    return w_dom_vec, w_logreg_vec
+
+
+@torch.no_grad()
+def _plot_steer_comparison(
+    tag, steer_layer, num_x, model, w_dom, w_probe, steer_scale, plot_dir, device
+):
+    """Causal steering test, DoM direction vs logreg direction side by side.
+    Only the steered curves are shown (not the unsteered/reference panels
+    train_probe.py's version has) -- each panel already carries both targets
+    (sat(x,1), sat(x,2)) so steering effectiveness reads directly off how far
+    the steered curve moved from the c=1 target toward the c=2 one."""
+    w_dom_vec, w_logreg_vec = _steer_vectors(w_dom, w_probe, steer_scale)
+    dtype = next(model.parameters()).dtype
+    vecs = {
+        "DoM": torch.tensor(w_dom_vec, dtype=dtype, device=device),
+        "logreg": torch.tensor(w_logreg_vec, dtype=dtype, device=device),
+    }
+    xs = torch.linspace(-3, 3, 400, device=device)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True)
+    for ax, (label, vec) in zip(axes, vecs.items()):
+        for j in range(num_x):
+            x = torch.zeros(len(xs), num_x, device=device)
+            x[:, j] = xs
+            x_full = torch.cat([x, torch.full((len(xs), 1), 1.0, device=device)], dim=1)
+            y = forward_steered(model, x_full, steer_layer, vec)[:, j]
+            ax.plot(
+                xs.cpu().numpy(),
+                y.cpu().numpy(),
+                color="steelblue",
+                alpha=0.3,
+                zorder=5,
+            )
+        for t, (ls, lbl) in {
+            1.0: ("k--", "target sat(x,1)"),
+            2.0: ("r--", "target sat(x,2)"),
+        }.items():
+            ax.plot(
+                xs.cpu().numpy(),
+                torch.clamp(xs, -t, t).cpu().numpy(),
+                ls,
+                lw=1.5,
+                label=lbl,
+                zorder=2,
+            )
+        ax.set_title(f"{label} direction")
+        ax.set_xlabel("x")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+    axes[0].set_ylabel("y (c=1 input, steered toward c=2)")
+    fig.suptitle(
+        f"steering effectiveness, DoM vs logreg direction ({tag}, layer {steer_layer})"
+    )
+    fig.tight_layout()
+    path = os.path.join(plot_dir, f"{tag}_L{steer_layer}_steer_cmp.png")
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"[plot] wrote {path}")
+
+
+@torch.no_grad()
+def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, device):
+    """Fit a linear map residual[layer] -> model's own final task output y,
+    for every residual-stream layer 0..num_blocks (embedding through the
+    final residual, inclusive). Layer num_blocks is a sanity anchor: y IS a
+    linear map of it (y = r_num_blocks @ W_U), so R^2 there should be ~1
+    regardless of anything else. Tests whether y is already linearly
+    recoverable well before that point -- if so, downstream blocks don't need
+    to keep encoding c, they can just carry y forward through always-on
+    neurons. Samples c ~ U[1,2] (the training distribution), not pinned pairs,
+    since this asks about the model's actual behavior, not a probe contrast."""
+    layers = list(range(0, num_blocks + 1))
+
+    def _sample(n):
+        x_full, _ = sample_batch(n, num_x, generator=g, device=device)
+        pred, caches = model.forward(x_full, return_cache=True)
+        y = pred[:, :num_x]
+        return {lyr: caches[lyr].cpu().numpy() for lyr in layers}, y.cpu().numpy()
+
+    train_caches, y_train = _sample(n_train)
+    test_caches, y_test = _sample(n_test)
+
+    r2 = {}
+    for lyr in tqdm(layers, desc="linear-y per layer", leave=False):
+        reg = LinearRegression().fit(train_caches[lyr], y_train)
+        pred_te = reg.predict(test_caches[lyr])
+        r2[lyr] = float(r2_score(y_test, pred_te))
+    return r2
+
+
+def _plot_linear_y_reconstruction(tag, r2, penalty_layers, plot_dir):
+    layers = sorted(r2)
+    x = np.arange(len(layers))
+    colors = ["crimson" if l in penalty_layers else "steelblue" for l in layers]
+    fig, ax = plt.subplots(figsize=(max(7, 1.3 * len(layers)), 4.2))
+    ax.bar(x, [r2[l] for l in layers], color=colors)
+    line_ref = ax.axhline(
+        1.0, color="k", ls="--", lw=1, label="perfect linear reconstruction"
+    )
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"L{l}" for l in layers])
+    ax.set_ylabel("R² (linear map -> model's y)")
+    ax.set_title(f"linear reconstruction of final y, per layer ({tag})")
+    handles = [
+        plt.Rectangle((0, 0), 1, 1, color="crimson", label="penalized layer"),
+        plt.Rectangle((0, 0), 1, 1, color="steelblue", label="unpenalized layer"),
+        line_ref,
+    ]
+    ax.legend(handles=handles, fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    path = os.path.join(plot_dir, f"{tag}_linear_y.png")
+    fig.savefig(path, dpi=120)
+    plt.close(fig)
+    print(f"[plot] wrote {path}")
+
+
 # ----------------------------------------------------------------------------
 def _build_report(
     args,
@@ -431,6 +640,7 @@ def _build_report(
     me_b,
     gap,
     heldout,
+    linear_y_r2,
 ):
     """Assemble the full report text from already-computed data. Returns the
     report as a list of lines; produces no side effects (no printing)."""
@@ -482,6 +692,16 @@ def _build_report(
                 )
         emit()
 
+    if linear_y_r2 is not None:
+        # --- 4. linear reconstruction of final y from each layer ---
+        emit("## 4. Linear reconstruction of final y (c ~ U[1,2], per layer)")
+        emit("layer | penalized | R²")
+        emit("------|-----------|-----")
+        for lyr in sorted(linear_y_r2):
+            pen = "yes" if lyr in penalty_layers else "no"
+            emit(f"  L{lyr}  |   {pen:>3s}     | {linear_y_r2[lyr]:.4f}")
+        emit()
+
     return lines
 
 
@@ -494,6 +714,13 @@ def main(args):
     num_blocks = model.num_blocks
     penalty_layers = ck.get("penalty_layers") or list(range(1, num_blocks))
     hidden_layers = list(range(1, num_blocks))
+
+    if args.steer:
+        for lyr in args.steer:
+            assert lyr in hidden_layers, (
+                f"--steer layer {lyr} must be one of the hidden layers already "
+                f"probed at c in {{1,2}}: {hidden_layers}"
+            )
 
     plot_dir = get_plot_dir(args.tag)
     os.makedirs(plot_dir, exist_ok=True)
@@ -540,6 +767,12 @@ def main(args):
             for lyr in hidden_layers:
                 heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
 
+    linear_y_r2 = None
+    if args.linear_y_probe:
+        linear_y_r2 = _linear_y_reconstruction(
+            model, num_x, num_blocks, args.n_train, args.n_test, g, device
+        )
+
     # --- phase 2: build + write the report ---
     lines = _build_report(
         args,
@@ -553,6 +786,7 @@ def main(args):
         me_b,
         gap,
         heldout,
+        linear_y_r2,
     )
     print("\n".join(lines))
 
@@ -589,6 +823,29 @@ def main(args):
     plot_learned_curves(model, args.tag, plot_dir)
     if base_model is not None:
         plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
+
+    if args.detailed:
+        _plot_heldout_gap(
+            args.tag, hidden_layers, args.held_out_pairs, gap, heldout, plot_dir
+        )
+
+    if args.steer:
+        for lyr in args.steer:
+            pi = gap_plot_inputs[lyr]
+            _plot_steer_comparison(
+                args.tag,
+                lyr,
+                num_x,
+                model,
+                pi["w_dom"],
+                pi["w_probe"],
+                args.steer_scale,
+                plot_dir,
+                device,
+            )
+
+    if linear_y_r2 is not None:
+        _plot_linear_y_reconstruction(args.tag, linear_y_r2, penalty_layers, plot_dir)
 
     if args.show:
         plt.show()
