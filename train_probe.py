@@ -111,7 +111,7 @@ def binary_dataset(model, num_x, n, c_lo, c_hi, layers, generator, device):
 
 
 @torch.no_grad()
-def _forward_steered(
+def forward_steered(
     model: ResidualMLP,
     x_full: torch.Tensor,
     steer_layer: int,
@@ -149,7 +149,7 @@ def _plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
             x = torch.zeros(len(xs), num_x)
             x[:, j] = xs
             x_full = torch.cat([x, torch.full((len(xs), 1), c_val)], dim=1)
-            y = _forward_steered(model, x_full, steer_layer, vec)[:, j]
+            y = forward_steered(model, x_full, steer_layer, vec)[:, j]
             ax.plot(
                 xs.cpu().numpy(),
                 y.cpu().numpy(),
