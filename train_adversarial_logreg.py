@@ -211,6 +211,27 @@ def parse_args():
         "behavior before this option existed). (see PR #36)",
     )
 
+    g_data = p.add_argument_group(
+        "task data sampling",
+        "How x is sampled for the task-loss batch (not the fixed probe set).",
+    )
+    g_data.add_argument(
+        "--x-p-outer",
+        type=float,
+        default=LogregAdversarialConfig.x_p_outer,
+        help="if set (0..1), oversample |x| >= --x-threshold with this "
+        "probability per coordinate instead of plain U[X_LOW,X_HIGH] -- the "
+        "sat(x,-c,c) kink falls somewhere in [c_low,c_high], so this gives "
+        "more gradient signal from the nonlinear region. None (default) = "
+        "unbiased.",
+    )
+    g_data.add_argument(
+        "--x-threshold",
+        type=float,
+        default=LogregAdversarialConfig.x_threshold,
+        help="inner/outer split point for --x-p-outer (only used when set).",
+    )
+
     g_opt = p.add_argument_group("optimization")
     g_opt.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
     g_opt.add_argument("--lr", type=float, default=config.LR)
@@ -389,7 +410,14 @@ def train_steps(
     num_x = model.config.num_x
     for it in range(start_iter, args.max_iters):
         t_fwd0 = time.time()
-        x_task, y = sample_batch(args.batch_size, num_x, generator=gen, device=device)
+        x_task, y = sample_batch(
+            args.batch_size,
+            num_x,
+            generator=gen,
+            device=device,
+            x_p_outer=args.x_p_outer,
+            x_threshold=args.x_threshold,
+        )
 
         # task: noisy pass -- this is what forbids shrinking c's encoding
         # below the noise floor (see plans/resid_stream_noise_plan.md).
@@ -530,6 +558,8 @@ def main(args):
         probe_subsample=args.probe_subsample,
         probe_retrain_interval=args.probe_retrain_interval,
         resid_noise_std=args.resid_noise_std,
+        x_p_outer=args.x_p_outer,
+        x_threshold=args.x_threshold,
     )
 
     opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
