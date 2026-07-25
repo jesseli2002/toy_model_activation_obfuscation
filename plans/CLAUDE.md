@@ -23,8 +23,8 @@ This directory contains plans for agents.
       placement, history-dict helper, validation/provisioning split, doc fixes).
       Deliberately excludes train_adversarial.py, which may be sunset soon.
 - rare_flags_config_plan.md
-    - (NOT STARTED, SCOPED) Move most train_adversarial_logreg.py hyperparameters into a
+    - (COMPLETED) Move most train_adversarial_logreg.py hyperparameters into a
       required --config JSON file persisted as runs/<tag>/config.json; adds a new
       --fork-from <tag> flag (branch a new experiment off an existing run's checkpoint
       with freshly-specified hyperparameters, vs. --resume which now strictly continues
-      the same experiment unchanged). Design is fully settled; ready to implement.
+      the same experiment unchanged).

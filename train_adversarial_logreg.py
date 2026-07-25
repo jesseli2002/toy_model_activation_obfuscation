@@ -30,6 +30,24 @@ checkpoint (`--warmstart PATH`). `--no-warmstart` inits a fresh model from
 `--num-x`/`--d-model`/`--d-mlp`/`--num-blocks` instead, conflating "learn the
 task" with "hide c from a probe that's learning simultaneously" -- a
 confound, so only use it to intentionally study that confound.
+
+Three run modes (see plans/rare_flags_config_plan.md for the full design):
+  - fresh run: hyperparameters are freshly resolved from `--config`'s JSON
+    file plus `--lam`/`--penalty-layers`. Writes `runs/<tag>/config.json`
+    once.
+  - `--resume <tag>`: strictly continues the same experiment. All
+    hyperparameters (CLI-common and config-file) are restored from the
+    checkpoint, never re-read from `--config` or CLI. `runs/<tag>/config.json`
+    is read once for a sanity check against the restored config (a mismatch
+    warns but never rewrites the file) -- not for resolving hyperparameters.
+  - `--fork-from <source_tag>` (with `--tag <new_tag>`): branches a new
+    experiment off `source_tag`'s checkpoint (weights/optimizer/iter), but
+    hyperparameters are freshly resolved exactly like a fresh run --
+    `runs/<new_tag>/config.json` additionally records `forked_from`.
+
+`runs/<tag>/config.json` is write-once and read-only thereafter for the
+lifetime of that tag: hand-editing it after creation has no effect except
+tripping the mismatch warning on a later `--resume`.
 """
 
 import argparse
@@ -44,6 +62,7 @@ from dataclasses import dataclass
 
 import config
 from config import LogregAdversarialConfig, ResidualMLPConfig
+from paths import ckpt_dir, log_dir, run_dir
 
 # Per-step warm-started solver iterations for the probe update (small: the
 # solver resumes from last step's coefficients, so a handful of lbfgs steps
@@ -112,9 +131,10 @@ def parse_args():
     )
 
     g_adv = p.add_argument_group(
-        "adversarial objective",
-        "How much weight to put on hiding c from the probe, and where in the "
-        "model that penalty is applied.",
+        "adversarial objective (CLI-common)",
+        "Touched often enough to stay CLI flags; every other hyperparameter "
+        "(probe/data/optimizer) lives in --config's JSON file instead -- see "
+        "LogregAdversarialConfig.",
     )
     g_adv.add_argument(
         "--lam",
@@ -125,57 +145,44 @@ def parse_args():
         "plain task training.",
     )
     g_adv.add_argument(
-        "--lam-warmup-iters",
-        type=int,
-        default=LogregAdversarialConfig.lam_warmup_iters,
-        help="linearly ramp the penalty weight 0 -> lam over this many iters "
-        "(task weight ramps 1 -> 1-lam correspondingly). 0 = no ramp.",
-    )
-    g_adv.add_argument(
         "--penalty-layers",
         type=_parse_penalty_layers,
         default="all",
         help="'all' = every hidden layer (1..num_blocks-1), or a comma-separated "
         "subset e.g. '1,2,3'.",
     )
-    g_adv.add_argument(
-        "--class-threshold",
-        type=float,
-        default=LogregAdversarialConfig.class_threshold,
-        help="probe class split: label = (c >= threshold). c ~ U[1,2], so 1.5 "
-        "gives an ~even split.",
-    )
-    g_adv.add_argument(
-        "--resid-noise-std",
-        type=float,
-        default=LogregAdversarialConfig.resid_noise_std,
-        help="absolute Gaussian noise std added to the residual stream after "
-        "every hidden layer (caches 1..num_blocks-1) on the task-loss forward "
-        "pass only. 0 = no noise (pre-noise behavior).",
-    )
 
-    g_probe = p.add_argument_group(
-        "probe (adversary) configuration",
-        "The LogisticRegression probe's own hyperparameters and how "
-        "aggressively it's refit each step.",
+    g_book = p.add_argument_group("bookkeeping")
+    g_book.add_argument(
+        "--config",
+        type=str,
+        default=None,
+        metavar="PATH",
+        help="JSON file with the config-file-only hyperparameters (see "
+        "LogregAdversarialConfig's fields without a default). Required "
+        "for a fresh run or --fork-from; under --resume it's never read -- "
+        "hyperparameters instead come from the checkpoint.",
     )
-    g_probe.add_argument(
-        "--probe-C",
-        type=float,
-        default=LogregAdversarialConfig.probe_C,
-        help="inverse L2 regularization strength for each layer's "
-        "LogisticRegression probe (sklearn's C; smaller = more regularization).",
+    g_book.add_argument("--tag", type=str, default="adv-logreg")
+    g_book.add_argument("--resume", action="store_true")
+    g_book.add_argument(
+        "--fork-from",
+        type=str,
+        default=None,
+        metavar="SOURCE_TAG",
+        help="branch a new --tag off SOURCE_TAG's latest checkpoint (weights, "
+        "optimizer state, iteration count, and history -- continued for "
+        "continuous loss curves). Unlike --resume, hyperparameters are "
+        "freshly resolved from this invocation's --config/--lam/"
+        "--penalty-layers, not inherited from SOURCE_TAG. Mutually exclusive "
+        "with --resume.",
     )
-    g_probe.add_argument(
-        "--probe-init-iters",
-        type=int,
-        default=LogregAdversarialConfig.probe_init_iters,
-        help="max_iter for the one-time init fit (before the training loop), "
-        "which starts each probe from scratch. Per-step updates during "
-        f"training instead use a fixed max_iter={PROBE_STEP_MAX_ITER} "
-        "(warm-started, so a few iters is enough).",
+    g_book.add_argument(
+        "--tag-force",
+        action="store_true",
+        help="delete an existing runs/<tag> directory before a fresh run.",
     )
-    g_probe.add_argument(
+    g_book.add_argument(
         "--probe-backend",
         choices=config.PROBE_BACKEND_CHOICES,
         default="auto",
@@ -183,75 +190,6 @@ def parse_args():
         "available, else sklearn. 'sklearn'/'torch' force a backend "
         "regardless of device -- e.g. to smoke-test the torch backend on a "
         "CPU-only machine.",
-    )
-    g_probe.add_argument(
-        "--probe-loss-kind",
-        choices=config.PROBE_LOGREG_LOSS_CHOICES,
-        default=LogregAdversarialConfig.probe_loss_kind,
-        help="'meandiff-relu' (default): relu(mean(s|label=1) - mean(s|label=0)) "
-        "along the probe's current learned direction s. 'meandiff': same but "
-        "without the relu cap.",
-    )
-    g_probe.add_argument(
-        "--probe-subsample",
-        type=int,
-        default=LogregAdversarialConfig.probe_subsample,
-        help="fit each per-step probe update on every Nth row of the batch "
-        "instead of the full batch (e.g. 8 = 1/8 of the rows). Cuts sklearn "
-        "fit cost roughly linearly; the model's own forward/backward still "
-        "uses the full batch. 1 = no subsampling. (see PR #36)",
-    )
-    g_probe.add_argument(
-        "--probe-retrain-interval",
-        type=int,
-        default=LogregAdversarialConfig.probe_retrain_interval,
-        help="refit the probe (and re-extract its affine) only once every N "
-        "training iterations; other iterations reuse the last extracted "
-        "affine for the penalty. 1 = refit every iteration (default "
-        "behavior before this option existed). (see PR #36)",
-    )
-
-    g_data = p.add_argument_group(
-        "task data sampling",
-        "How x is sampled for the task-loss batch (not the fixed probe set).",
-    )
-    g_data.add_argument(
-        "--x-p-outer",
-        type=float,
-        default=LogregAdversarialConfig.x_p_outer,
-        help="if set (0..1), oversample |x| >= --x-threshold with this "
-        "probability per coordinate instead of plain U[X_LOW,X_HIGH] -- the "
-        "sat(x,-c,c) kink falls somewhere in [c_low,c_high], so this gives "
-        "more gradient signal from the nonlinear region. None (default) = "
-        "unbiased.",
-    )
-    g_data.add_argument(
-        "--x-threshold",
-        type=float,
-        default=LogregAdversarialConfig.x_threshold,
-        help="inner/outer split point for --x-p-outer (only used when set).",
-    )
-
-    g_opt = p.add_argument_group("optimization")
-    g_opt.add_argument("--batch-size", type=int, default=config.BATCH_SIZE)
-    g_opt.add_argument("--lr", type=float, default=config.LR)
-    g_opt.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
-    g_opt.add_argument("--seed", type=int, default=LogregAdversarialConfig.seed)
-    g_opt.add_argument(
-        "--grad-clip",
-        type=float,
-        default=LogregAdversarialConfig.grad_clip,
-        help="clip the model's gradient norm to this value before each "
-        "optimizer step. 0 = no clipping.",
-    )
-
-    g_book = p.add_argument_group("bookkeeping")
-    g_book.add_argument("--tag", type=str, default="adv-logreg")
-    g_book.add_argument("--resume", action="store_true")
-    g_book.add_argument(
-        "--tag-force",
-        action="store_true",
-        help="delete an existing runs/<tag> directory before a fresh run.",
     )
     g_book.add_argument("--log-interval", type=int, default=100)
     g_book.add_argument("--ckpt-interval", type=int, default=200)
@@ -266,22 +204,39 @@ def parse_args():
             "(-1 = --ckpt-interval, 0 = disable)"
         ),
     )
+    g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
 
     args = p.parse_args()
     if args.warmstart is not None and args.no_warmstart:
         p.error("--warmstart and --no-warmstart are mutually exclusive.")
     if args.warmstart is None and not args.no_warmstart:
         p.error("specify --warmstart PATH or --no-warmstart.")
+    if args.resume and args.fork_from is not None:
+        p.error("--resume and --fork-from are mutually exclusive.")
+    if not args.resume and args.config is None:
+        p.error("--config PATH is required (unless --resume).")
     return args
 
 
 # parse_args early-exits on --help before the heavy imports below are reached.
 if __name__ == "__main__":
     args = parse_args()
-    # Cheap existence check, fired before run-dir setup (in main()) can delete
-    # an existing runs/<tag> out from under a bad --warmstart path.
+    # Cheap existence checks, fired before run-dir setup (in main()) can delete
+    # an existing runs/<tag> or start restoring from a nonexistent checkpoint.
     if not args.no_warmstart and not os.path.exists(args.warmstart):
         raise SystemExit(f"[error] --warmstart checkpoint not found: {args.warmstart}")
+    if args.fork_from is not None:
+        source_ckpt = os.path.join(ckpt_dir(args.fork_from), "last.pt")
+        if not os.path.exists(source_ckpt):
+            raise SystemExit(
+                f"[error] --fork-from source checkpoint not found: {source_ckpt}"
+            )
+    if args.resume:
+        resume_ckpt = os.path.join(ckpt_dir(args.tag), "last.pt")
+        if not os.path.exists(resume_ckpt):
+            raise SystemExit(
+                f"[error] --resume: no checkpoint at {resume_ckpt} to resume from."
+            )
 
 import warnings
 
@@ -290,7 +245,6 @@ from sklearn.exceptions import ConvergenceWarning
 
 from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
-from paths import ckpt_dir, log_dir, run_dir
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, fit_probe, resolve_probe_backend
 
@@ -340,6 +294,113 @@ def resolve_model(args, device):
         model = ResidualMLP(model_config).to(device)
         print(f"[init] scratch model cfg={model_config}")
     return model, model_config
+
+
+def _read_config_file(path: str) -> dict:
+    """Read --config's JSON file. Required-key validation happens later, in
+    load_run_config, once lam/penalty_layers are known too."""
+    try:
+        with open(path) as f:
+            return json.load(f)
+    except FileNotFoundError:
+        raise SystemExit(f"[error] --config file not found: {path}")
+    except json.JSONDecodeError as e:
+        raise SystemExit(f"[error] --config {path} is not valid JSON: {e}")
+
+
+def load_run_config(
+    file_fields: dict, *, lam: float, penalty_layers: list[int], config_path: str
+) -> LogregAdversarialConfig:
+    """Merge --config's file_fields with this invocation's CLI-common
+    hyperparameters (lam, resolved penalty_layers) into one
+    LogregAdversarialConfig. A missing required key in the file surfaces as
+    the dataclass constructor's TypeError; re-raised here as a SystemExit
+    naming the specific key(s), per this module's [error] convention."""
+    try:
+        return LogregAdversarialConfig(
+            lam=lam, penalty_layers=penalty_layers, **file_fields
+        )
+    except TypeError:
+        required = {
+            f.name
+            for f in dataclasses.fields(LogregAdversarialConfig)
+            if f.default is dataclasses.MISSING
+        }
+        missing = sorted(required - file_fields.keys())
+        if missing:
+            raise SystemExit(
+                f"[error] --config {config_path} missing required key(s): {missing}"
+            )
+        raise
+
+
+def _config_json_path(tag: str) -> str:
+    return os.path.join(run_dir(tag), "config.json")
+
+
+def _write_config_json(
+    tag: str, adv_config: LogregAdversarialConfig, forked_from: dict | None = None
+) -> None:
+    """Write runs/<tag>/config.json once, at tag-creation time (fresh run or
+    --fork-from). Write-once, read-only thereafter -- see module docstring;
+    --resume never calls this."""
+    d = adv_config.to_dict()
+    if forked_from is not None:
+        d["forked_from"] = forked_from
+    path = _config_json_path(tag)
+    with open(path, "w") as f:
+        json.dump(d, f, indent=2)
+    print(
+        f"[config] wrote {path} (write-once -- hand-edits after this point "
+        f"are only detected, as a warning, on a later --resume; never applied)"
+    )
+
+
+def _check_config_json(tag: str, adv_config: LogregAdversarialConfig) -> None:
+    """--resume sanity check: compare runs/<tag>/config.json (written once at
+    tag-creation) against the checkpoint-restored config. A mismatch means
+    someone hand-edited the file since -- warn and proceed on the
+    checkpoint's values; the file itself is left untouched either way."""
+    path = _config_json_path(tag)
+    if not os.path.exists(path):
+        return  # predates this feature -- nothing to check against
+    with open(path) as f:
+        on_disk = json.load(f)
+    on_disk.pop("forked_from", None)
+    if LogregAdversarialConfig(**on_disk) != adv_config:
+        print(
+            f"[warn] {path} does not match the checkpoint's config -- was it "
+            f"hand-edited after {tag} was created? Proceeding with the "
+            f"checkpoint's values; {path} is left as-is."
+        )
+
+
+def _restore_checkpoint(ckpt_path: str, model, opt, device):
+    """Load weights + optimizer state + iteration count from `ckpt_path` in
+    place onto `model`/`opt` -- shared by --resume (source: args.tag) and
+    --fork-from (source: args.fork_from). The two differ only in WHICH tag's
+    checkpoint/config feeds this, not in what gets restored here. Returns
+    (start_iter, best_loss, rck) so callers can pull any other checkpoint
+    field they need (e.g. --resume rebuilds adv_config from rck)."""
+    rck = torch.load(ckpt_path, map_location=device)
+    model.load_state_dict(rck["model"])
+    opt.load_state_dict(rck["opt"])
+    start_iter = rck["iter"]
+    best_loss = rck.get("best_loss", float("inf"))
+    return start_iter, best_loss, rck
+
+
+def _forked_history(source_tag: str, fork_iter: int) -> list[dict]:
+    """The new tag's history.json seed: source_tag's own history entries up
+    to (inclusive of) the fork point, so loss curves stay continuous across
+    the fork boundary for plotting -- new entries append after this as the
+    new tag trains."""
+    source_hist_path = os.path.join(log_dir(source_tag), "history.json")
+    if not os.path.exists(source_hist_path):
+        return []
+    with open(source_hist_path) as f:
+        source_history = json.load(f)
+    return [h for h in source_history if h["iter"] <= fork_iter]
 
 
 def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.Tensor:
@@ -396,7 +457,8 @@ def train_steps(
     opt,
     gen,
     probe,
-    args,
+    adv_config: LogregAdversarialConfig,
+    max_iters: int,
     hidden_layers: list[int],
     start_iter: int,
     affine: tuple[torch.Tensor, torch.Tensor],
@@ -415,21 +477,21 @@ def train_steps(
     caller) -- reused for every probe fit and penalty this run, unlike the
     task batch below which resamples fresh each iteration."""
     num_x = model.config.num_x
-    for it in range(start_iter, args.max_iters):
+    for it in range(start_iter, max_iters):
         t_fwd0 = time.time()
         x_task, y = sample_batch(
-            args.batch_size,
+            adv_config.batch_size,
             num_x,
             generator=gen,
             device=device,
-            x_p_outer=args.x_p_outer,
-            x_threshold=args.x_threshold,
+            x_p_outer=adv_config.x_p_outer,
+            x_threshold=adv_config.x_threshold,
         )
 
         # task: noisy pass -- this is what forbids shrinking c's encoding
         # below the noise floor (see plans/resid_stream_noise_plan.md).
         y_pred_full = model.forward(
-            x_task, noise_std=args.resid_noise_std, generator=gen
+            x_task, noise_std=adv_config.resid_noise_std, generator=gen
         )
         l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
 
@@ -442,10 +504,10 @@ def train_steps(
         cat_live = concat_caches_torch(caches, hidden_layers)
 
         t_probe0 = time.time()
-        if it % args.probe_retrain_interval == 0:
+        if it % adv_config.probe_retrain_interval == 0:
             X = cat_live.detach()
-            X_fit = X[:: args.probe_subsample]  # no-op slice at 1
-            label_fit = probe_label[:: args.probe_subsample]
+            X_fit = X[:: adv_config.probe_subsample]  # no-op slice at 1
+            label_fit = probe_label[:: adv_config.probe_subsample]
             assert label_fit.any() and (~label_fit).any(), (
                 "subsampled probe batch has only one class present -- lower "
                 "--probe-subsample or raise --batch-size."
@@ -454,19 +516,21 @@ def train_steps(
             affine = probe.get_affine(device)
         probe_dt = time.time() - t_probe0
 
-        l_probe = score_penalty(cat_live, affine, probe_label, args.probe_loss_kind)
+        l_probe = score_penalty(
+            cat_live, affine, probe_label, adv_config.probe_loss_kind
+        )
 
-        if args.lam_warmup_iters > 0:
-            lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
+        if adv_config.lam_warmup_iters > 0:
+            lam_eff = adv_config.lam * min(1.0, it / adv_config.lam_warmup_iters)
         else:
-            lam_eff = args.lam
+            lam_eff = adv_config.lam
         loss = lam_eff * l_probe + (1 - lam_eff) * l_task
 
         t_bwd0 = time.time()
         opt.zero_grad(set_to_none=True)
         loss.backward()
-        if args.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+        if adv_config.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), adv_config.grad_clip)
         opt.step()
         model_dt = fwd_dt + (time.time() - t_bwd0)
 
@@ -543,7 +607,16 @@ def main(args):
     os.makedirs(run_ckpt_dir, exist_ok=True)
     os.makedirs(run_log_dir, exist_ok=True)
 
-    torch.manual_seed(args.seed)
+    # Fresh/fork: hyperparameters are freshly resolved from --config + CLI.
+    # Resume: hyperparameters instead come from the checkpoint below, so
+    # --config is never read for them here.
+    file_fields = None if args.resume else _read_config_file(args.config)
+    if file_fields is not None and "seed" in file_fields:
+        # Needed before resolve_model() below for --no-warmstart's scratch
+        # init to be reproducible. (Under --resume/--fork-from the model
+        # built here is fully overwritten by the restored checkpoint, so the
+        # seed in effect at this point doesn't matter there.)
+        torch.manual_seed(file_fields["seed"])
 
     model, model_config = resolve_model(args, device)
     num_x, num_blocks = model_config.num_x, model_config.num_blocks
@@ -554,53 +627,62 @@ def main(args):
             f"layers). Nothing to hide against."
         )
 
-    adv_config = LogregAdversarialConfig(
-        lam=args.lam,
-        lam_warmup_iters=args.lam_warmup_iters,
-        penalty_layers=hidden_layers,
-        warmstart_path=args.warmstart if not args.no_warmstart else None,
-        seed=args.seed,
-        probe_C=args.probe_C,
-        probe_init_iters=args.probe_init_iters,
-        class_threshold=args.class_threshold,
-        probe_loss_kind=args.probe_loss_kind,
-        probe_subsample=args.probe_subsample,
-        probe_retrain_interval=args.probe_retrain_interval,
-        resid_noise_std=args.resid_noise_std,
-        grad_clip=args.grad_clip,
-        x_p_outer=args.x_p_outer,
-        x_threshold=args.x_threshold,
-    )
-
-    opt = torch.optim.AdamW(model.parameters(), lr=args.lr)
-    gen = torch.Generator(device=device).manual_seed(args.seed + 1)
-
-    start_iter = 0
-    history = []  # list of dicts
-    best_loss = float("inf")
     last_path = os.path.join(run_ckpt_dir, "last.pt")
     best_path = os.path.join(run_ckpt_dir, "best.pt")
     hist_path = os.path.join(run_log_dir, "history.json")
+    history = []  # list of dicts
 
-    if args.resume and os.path.exists(last_path):
-        rck = torch.load(last_path, map_location=device)
-        model.load_state_dict(rck["model"])
-        opt.load_state_dict(rck["opt"])
-        start_iter = rck["iter"]
-        best_loss = rck.get("best_loss", float("inf"))
+    if args.resume:
+        opt = torch.optim.AdamW(model.parameters(), lr=1.0)  # lr restored below
+        start_iter, best_loss, rck = _restore_checkpoint(last_path, model, opt, device)
+        adv_config = LogregAdversarialConfig.from_dict(rck)
         if os.path.exists(hist_path):
             with open(hist_path) as f:
                 history = json.load(f)
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
-        # Note: probes are stateful sklearn objects, not part of the
-        # checkpoint -- resume re-inits them from the resumed model below,
-        # same as a fresh run.
+        _check_config_json(args.tag, adv_config)
+    else:
+        adv_config = load_run_config(
+            file_fields,
+            lam=args.lam,
+            penalty_layers=hidden_layers,
+            config_path=args.config,
+        )
+        opt = torch.optim.AdamW(model.parameters(), lr=adv_config.lr)
+        if args.fork_from is not None:
+            source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
+            start_iter, best_loss, rck = _restore_checkpoint(
+                source_ckpt_path, model, opt, device
+            )
+            history = _forked_history(args.fork_from, start_iter)
+            forked_from = {"tag": args.fork_from, "iter": start_iter}
+            print(
+                f"[fork] from {args.fork_from} @ iter {start_iter}, "
+                f"best_loss={best_loss:.3e}"
+            )
+        else:
+            start_iter = 0
+            best_loss = float("inf")
+            forked_from = None
+        _write_config_json(args.tag, adv_config, forked_from=forked_from)
+
+    # --resume/--fork-from restore the optimizer's own state_dict, which
+    # includes the SOURCE run's lr -- override with this invocation's
+    # adv_config.lr, the only case where that differs (--fork-from with a new
+    # --config). A no-op for a fresh run (opt was already built with it).
+    for pg in opt.param_groups:
+        pg["lr"] = adv_config.lr
+    torch.manual_seed(adv_config.seed)
+
+    gen = torch.Generator(device=device).manual_seed(adv_config.seed + 1)
 
     # --- sample the fixed probe dataset (reused for every fit + penalty for
     # the rest of the run -- see module docstring) and init-fit a probe over
     # the concatenation of penalized layers ---
-    probe_x, _ = sample_batch(args.batch_size, num_x, generator=gen, device=device)
-    probe_label = probe_x[:, num_x] >= args.class_threshold
+    probe_x, _ = sample_batch(
+        adv_config.batch_size, num_x, generator=gen, device=device
+    )
+    probe_label = probe_x[:, num_x] >= adv_config.class_threshold
     assert probe_label.any() and (~probe_label).any(), (
         "fixed probe batch has only one class present -- check --class-threshold "
         "against c's range."
@@ -608,26 +690,27 @@ def main(args):
     with torch.no_grad():
         _, init_caches = model.forward(probe_x, return_cache=True)
     cat_init = concat_caches_torch(init_caches, hidden_layers)
-    probe = build_probe_pipeline(args.probe_C, args.probe_init_iters, probe_backend)
+    probe = build_probe_pipeline(
+        adv_config.probe_C, adv_config.probe_init_iters, probe_backend
+    )
     probe.fit(cat_init.detach(), probe_label)
     affine = probe.get_affine(device)
     print(
         f"[init] fit concatenated probe (backend={probe_backend}) over layers "
-        f"{hidden_layers}, init_iters={args.probe_init_iters}, C={args.probe_C}"
+        f"{hidden_layers}, init_iters={adv_config.probe_init_iters}, "
+        f"C={adv_config.probe_C}"
     )
 
     print(
-        f"[adv] tag={args.tag} lam={args.lam} penalty_layers={hidden_layers} "
-        f"num_blocks={num_blocks} bs={args.batch_size} "
-        f"class_threshold={args.class_threshold} probe_loss_kind={args.probe_loss_kind} "
-        f"probe_backend={probe_backend} probe_subsample={args.probe_subsample} "
-        f"probe_retrain_interval={args.probe_retrain_interval} "
-        f"resid_noise_std={args.resid_noise_std} grad_clip={args.grad_clip} "
-        f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
+        f"[adv] tag={args.tag} lam={adv_config.lam} penalty_layers={hidden_layers} "
+        f"num_blocks={num_blocks} bs={adv_config.batch_size} "
+        f"class_threshold={adv_config.class_threshold} "
+        f"probe_loss_kind={adv_config.probe_loss_kind} "
+        f"probe_backend={probe_backend} probe_subsample={adv_config.probe_subsample} "
+        f"probe_retrain_interval={adv_config.probe_retrain_interval} "
+        f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
+        f"lr={adv_config.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
-
-    for pg in opt.param_groups:
-        pg["lr"] = args.lr
 
     # Placeholder record for the (edge-case) zero-iteration run, e.g.
     # --resume past --max-iters: train_steps() then yields nothing, and the
@@ -653,7 +736,8 @@ def main(args):
             opt,
             gen,
             probe,
-            args,
+            adv_config,
+            args.max_iters,
             hidden_layers,
             start_iter,
             affine,
