@@ -1,77 +1,185 @@
-# Move rarely-used CLI flags to a config file
+# Move rarely-used CLI flags to a config file (+ `--fork-from`)
 
 ## Context
 
-`train_adversarial_logreg.py` has 27 flags across 6 argument groups. A
-handful are exercised nearly every run (`--warmstart`, `--tag`, `--lam`,
-`--max-iters`); most of the rest (probe hyperparameters, subsampling/retrain
-cadence, class threshold, etc.) are rarely touched run-to-run. The user wants
-to move the rarely-touched ones out of the CLI into a config file, which
-should also be persisted into the run's own directory (`runs/<tag>/...`) for
-reproducibility -- similar in spirit to how `LogregAdversarialConfig` is
-already embedded in every checkpoint, but as a plain, human-readable file
-rather than something you have to load a checkpoint to inspect.
+`train_adversarial_logreg.py` had 27 flags across 6 argument groups. Most of
+the probe/data/optimizer hyperparameters were rarely touched run-to-run,
+bloating the CLI. Scoping conversation with the user (see below) settled on
+moving most of them into a required `--config PATH` JSON file, and along the
+way surfaced a second, related need: a clean way to change hyperparameters
+mid-lineage without losing training progress, which became `--fork-from`.
 
-The user explicitly does **not** want to decide which flags move as part of
-scoping this plan -- that decision, and several design choices below, are
-left for whoever executes this plan to raise with the user first.
+This plan is the settled result of that conversation -- it supersedes the
+"ask the user" scaffolding of the original version of this file wholesale.
 
-`--warmstart`/`--no-warmstart` specifically stays a CLI flag regardless of
-the rest of this plan -- the user has said they prefer that construction as
-CLI, independent of "is this a rarely-used flag."
+## Settled design decisions
 
-## Before writing an implementation section: ask the user
+**File format:** JSON. `config.py` dataclasses already round-trip through
+`to_dict`/`from_dict` (dataclass <-> dict <-> JSON), no new dependency.
 
-This plan is intentionally left unfinished past this point. The executing
-agent's first step should be a conversation with the user (not a unilateral
-decision) covering:
+**Three-way flag split** (replaces the old CLI/config precedence question --
+there is no overlap, so no precedence merge is needed):
 
-1. **Which flags move.** A concrete list, going group-by-group through the
-   current CLI (`g_init`, `g_adv`, `g_probe`, `g_opt`, `g_book` in
-   `parse_args`), each flagged as "stays CLI" / "moves to config file" /
-   "arguable, ask." `--warmstart`/`--no-warmstart` is pre-decided (stays).
-2. **File format.** JSON is the path of least resistance -- `config.py`'s
-   dataclasses already round-trip through `to_dict`/`from_dict` (see
-   `config_dataclass_dedup_plan.md`) which is exactly dataclass <-> dict <->
-   JSON, no new dependency. TOML/YAML would need a new library dependency
-   (stdlib `tomllib` only reads, doesn't write) for not-obviously-better
-   ergonomics here. Recommend JSON, but confirm with the user before
-   building around it.
-3. **Precedence.** If a value is set in both the config file and on the CLI,
-   which wins? (Recommend: CLI explicit override wins, config file fills in
-   the rest, dataclass field default is the last resort -- but confirm.)
-4. **Where the persisted copy lives, and what it's a copy of.** The
-   `LogregAdversarialConfig` dict is already saved inside every checkpoint
-   via `save_checkpoint`. Does "also get saved to the corresponding run
-   directory" mean: (a) that's already satisfied and nothing new is needed,
-   or (b) the user wants a standalone `runs/<tag>/config.json` (or similar)
-   readable without loading a torch checkpoint? If (b), decide the exact
-   path/filename and whether it's written once at run start or refreshed
-   each checkpoint.
-5. **`--resume` interaction.** On `--resume`, should the config file be
-   re-read, or should the checkpoint's already-restorable
-   `LogregAdversarialConfig.from_dict` be treated as authoritative (current
-   behavior for everything else on resume)? These can disagree if the config
-   file was hand-edited between runs.
+1. **Bookkeeping** -- run-control, never part of the saved experiment
+   config, never frozen on `--resume`, always a CLI flag: `--tag`,
+   `--resume`, `--fork-from`, `--tag-force`, `--log-interval`,
+   `--ckpt-interval`, `--save-every-n`, `--max-iters`, `--probe-backend`,
+   `--warmstart`/`--no-warmstart`, `--num-x`/`--d-model`/`--d-mlp`/
+   `--num-blocks`. None of these get recorded for reproducibility (user's
+   call: not worth it -- architecture is already separately saved via
+   `ResidualMLPConfig` in the checkpoint, and `--warmstart` is moot once
+   `train_adversarial.py` is sunset and superseded by `--fork-from`).
+2. **CLI-common hyperparameters** -- part of the saved `LogregAdversarialConfig`,
+   frozen on `--resume`, stay as CLI flags because they're touched often:
+   `--lam`, `--penalty-layers`.
+3. **Config-file-only hyperparameters** -- part of the saved
+   `LogregAdversarialConfig`, frozen on `--resume`, no CLI flag at all,
+   *required* keys in the `--config` JSON file (missing key = fail loudly,
+   not a silent default): `--lam-warmup-iters`, `--class-threshold`,
+   `--resid-noise-std`, `--probe-C`, `--probe-init-iters`,
+   `--probe-loss-kind`, `--probe-subsample`, `--probe-retrain-interval`,
+   `--x-p-outer`, `--x-threshold`, `--grad-clip`, `--batch-size`, `--lr`,
+   `--seed`.
 
-## Once scope is settled
+**"Fail loudly on missing key" mechanism:** give config-file-only fields on
+`LogregAdversarialConfig` no Python-level default (`@dataclass(kw_only=True)`
+lets required and defaulted fields coexist regardless of declaration order,
+available since Python 3.10; repo runs 3.14). Constructing
+`LogregAdversarialConfig(**cli_common_kwargs, **config_file_dict)` then raises
+naturally if the file is missing a required key -- catch that `TypeError` and
+re-raise as a `SystemExit` naming the missing key(s), matching this file's
+existing `[error] ...` convention. This is orthogonal to the existing
+`_LEGACY_DEFAULTS` backfill mechanism (`config.py`'s `_CheckpointConfigMixin`),
+which stays untouched -- it protects genuinely old checkpoints predating this
+feature, not something this plan needs to preserve compatibility with itself
+(user confirmed no backward-compat requirement for this specific feature).
 
-Come back and fill in: a settled-design-decisions table (answers to the 5
-questions above), an implementation steps section (likely: a
-`load_run_config(path) -> dict` helper, argparse wiring so config-file-eligible
-flags default to a sentinel rather than their current hardcoded default so the
-merge step can tell "explicitly passed on CLI" from "using the default"),
-and a verification section (round-trip test for the config file loader;
-smoke test that a config-file-driven run and an equivalent all-CLI-flags run
-produce the same `LogregAdversarialConfig`).
+**Persisted copy:** every run that resolves a *new* `LogregAdversarialConfig`
+(a fresh run or a `--fork-from`) writes `runs/<tag>/config.json` = the full
+resolved config (`adv_config.to_dict()`, CLI-common + config-file fields
+together) once, at tag-creation time. This is a new artifact -- today's
+checkpoint-embedded copy requires loading a torch checkpoint to inspect;
+`config.json` doesn't. **It is write-once and read-only thereafter** for the
+lifetime of that tag: subsequent `--resume` calls never rewrite it (see
+below), so hand-editing it post-hoc has no effect except tripping the
+mismatch warning on the next resume. This "inert after creation" rule should
+be stated in the module docstring and printed at startup, per the original
+plan's own risk about silent-precedence support burden.
 
-## Risks / caveats (preliminary, revisit once scoped)
+**`--resume <tag>` (existing flag, narrowed meaning):** continues the *same*
+experiment. Model weights, optimizer state, and iteration count restore from
+`runs/<tag>/checkpoints/last.pt`, exactly as today. All hyperparameters
+(CLI-common and config-file) are restored from the checkpoint's embedded
+`LogregAdversarialConfig` (`from_dict`) -- **not** re-read from CLI or the
+config file; no hyperparameter-changing flags are accepted in this mode.
+Only bookkeeping flags (e.g. a bigger `--max-iters` to keep training past
+where it stopped) may differ across resume invocations. `runs/<tag>/config.json`
+is read once for a sanity check -- compare (`==`, free via the dataclass) its
+fields against the checkpoint's restored config; if they differ (someone
+hand-edited the file since it was written), print a warning and proceed with
+the checkpoint's values, **leaving the disk file untouched** -- do not
+overwrite it either to "fix" the mismatch or to reflect current values.
 
-- Splitting configuration across two sources (CLI + file) is itself a
-  complexity cost -- make sure the "which flags move" list in question 1
-  actually reduces total cognitive load rather than just relocating it (e.g.
-  don't migrate a flag that's almost always overridden anyway).
-- Whatever precedence rule is chosen (question 3) needs to be discoverable
-  at the CLI (e.g. in `--help` text or an early startup print), or debugging
-  "why did my run use C=1.0 instead of the C=2.0 in my config file" becomes
-  its own support burden.
+**`--fork-from <source_tag>` (new flag, combined with `--tag <new_tag>`):**
+branches a new experiment off an existing run's progress. Requires `--tag` to
+name a *new* tag (same collision guard as a fresh run: refuses to clobber an
+existing `runs/<new_tag>` without `--tag-force` -- no code change needed
+here, the existing `if run_dir(args.tag) exists and not args.resume` check
+already covers it since `--fork-from` is a distinct flag from `--resume`).
+Model weights + optimizer state + iteration count load from
+`runs/<source_tag>/checkpoints/last.pt` (same restore mechanics as
+`--resume`, just reading from `source_tag`'s directory instead of the
+current tag's). `history.json` for the new tag starts as `source_tag`'s
+history truncated to the fork point, concatenated with the new tag's own
+entries going forward -- so loss curves stay continuous for plotting.
+Unlike `--resume`, hyperparameters are **freshly resolved** from this
+invocation's CLI-common flags + `--config` file (exactly like a fresh run),
+not inherited from the source tag. The new tag's `config.json` additionally
+records `forked_from: {tag: <source_tag>, iter: N}` for provenance --
+recoverable both explicitly (this field) and implicitly (the history's
+iteration numbers jump from the inherited portion to the new tag's own,
+continuing monotonically from N).
+
+**`--warmstart`/`--no-warmstart`:** unchanged, stays CLI (pre-decided,
+independent of "rarely used"). Note it's vestigial under `--resume` and
+`--fork-from` -- still required by argparse's mutual-exclusion check, but its
+loaded weights are immediately overwritten by the restored checkpoint. Not
+worth special-casing given `--warmstart` itself is expected to be superseded
+by `--fork-from`-style lineage once `train_adversarial.py` is sunset.
+
+## Implementation steps
+
+1. **`config.py`:** split `LogregAdversarialConfig` fields per the three-way
+   list above. Config-file-only fields lose their Python default (use
+   `@dataclass(kw_only=True)`); CLI-common fields (`lam`, `penalty_layers`)
+   keep theirs (argparse still references them as flag defaults). Leave
+   `_LEGACY_DEFAULTS`/`to_dict`/`from_dict` behavior unchanged.
+2. **`load_run_config` helper** (new, likely in `train_adversarial_logreg.py`
+   or `config.py`): reads the `--config` JSON file, merges with CLI-common
+   args into one `LogregAdversarialConfig`, converts a missing-key
+   `TypeError` into a `SystemExit` naming the specific missing key(s).
+3. **`parse_args()`:** remove the 14 config-file-only flags. Add `--config
+   PATH` (required unless `--resume`) and `--fork-from TAG` (mutually
+   exclusive with `--resume`). Keep `--lam`, `--penalty-layers`, and all
+   bookkeeping flags as-is.
+4. **Tier-2 validation** (`__main__` guard, alongside the existing
+   `--warmstart`-exists check): `--resume`/`--fork-from` mutual exclusion;
+   `--config` required unless `--resume`; if `--fork-from`, check
+   `runs/<source_tag>/checkpoints/last.pt` exists early, before mutating
+   `runs/<tag>`.
+5. **`main()`:** branch fresh / resume / fork.
+   - Extract the current inline "restore model+optimizer+iter+history from a
+     checkpoint" block (today gated on `args.resume`) into a small helper
+     parameterized by *which tag's directory* to restore from, since resume
+     and fork now share it (resume: `args.tag`; fork: `args.fork_from`).
+   - Fresh/fork: build `adv_config` via `load_run_config`; write
+     `runs/<tag>/config.json` once.
+   - Resume: build `adv_config` via `LogregAdversarialConfig.from_dict` off
+     the restored checkpoint; read-and-diff (not rewrite)
+     `runs/<tag>/config.json` against it, warning on mismatch.
+   - Fork: also seed `history` from `runs/<source_tag>/log/history.json`
+     truncated to the restored iteration, and add `forked_from` to the
+     written `config.json`.
+6. **Docstring** update: describe the three run modes (fresh /
+   `--resume` / `--fork-from`) and that `config.json` is write-once,
+   read-only-thereafter.
+
+## Verification
+
+- Unit test: `LogregAdversarialConfig` -> JSON -> back reproduces the
+  original (dataclass `__eq__`); a config file missing a required key raises
+  a clear, key-naming error.
+- Smoke test: fresh run with `--config` + `--lam`/`--penalty-layers` on the
+  CLI; confirm `runs/<tag>/config.json` matches the checkpoint-embedded
+  config exactly.
+- Smoke test: `--resume` with a different `--max-iters` continues training
+  past the original stop point; confirm `runs/<tag>/config.json` is
+  byte-identical before/after (untouched).
+- Smoke test: hand-edit `runs/<tag>/config.json` after a fresh run, then
+  `--resume`; confirm a warning prints, training proceeds on the checkpoint's
+  values, and the hand-edited file is left as-is (not overwritten in either
+  direction).
+- Smoke test: `--fork-from <source_tag> --tag <new_tag>` with a different
+  `--config`/`--lam`; confirm the new tag's `config.json` differs from the
+  source's as expected, includes `forked_from`, and `history.json`'s
+  iteration numbers increase monotonically across the fork boundary.
+- Regression check: a colliding `--tag` under `--fork-from` without
+  `--tag-force` still errors, same as a fresh run would.
+
+## Risks / caveats
+
+- Splitting hyperparameters across CLI + config file remains a complexity
+  cost in principle, but the resulting CLI is now genuinely small (2
+  hyperparameter flags -- `--lam`, `--penalty-layers` -- plus bookkeeping/init
+  flags), so this should net-declutter rather than just relocate complexity.
+- `--fork-from` reuses most of `--resume`'s restore-from-checkpoint code path;
+  refactor carefully so the two can't silently diverge in *what* they
+  restore (weights/optimizer/iter should be identical between them -- only
+  the hyperparameter-config source differs).
+- The "`config.json` is write-once, read-only-diff-after" rule needs to be
+  discoverable (module docstring + startup print), or a hand-edit that
+  silently does nothing becomes exactly the kind of "why didn't my change
+  take effect" support burden the original plan's risk section warned about.
+- `_LEGACY_DEFAULTS` must stay untouched -- it's an unrelated, pre-existing
+  concern (old-checkpoint compatibility), not something this plan's
+  "no backward compat needed" scoping applies to.
