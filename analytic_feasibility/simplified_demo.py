@@ -49,7 +49,7 @@ if __name__ == "__main__":
 
 import os
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -127,21 +127,11 @@ class ResidualMLP(nn.Module):
 
 
 # --------------------------------------------------------------------------
-# 1. Encoding: the mean-constant v-channels
+# 1. Decode: three ReLUs that add no new kinks
 # --------------------------------------------------------------------------
-def v1f(x1, c):
-    """Kinks at x1 = -c and x1 = 3-c. E_x1[v1] = 0 for every c."""
-    return -2 * torch.relu(-x1 - c) + 2 * torch.relu(x1 + c - 3) - c + 1.5
-
-
-def v2f(x1, c):
-    """Kinks at x1 = -c/2 and x1 = 3-c/2. E_x1[v2] = 0 for every c."""
-    return -4 * torch.relu(-x1 - c / 2) + 4 * torch.relu(x1 + c / 2 - 3) - c + 3.0
-
-
-# --------------------------------------------------------------------------
-# 2. Decode: three ReLUs that add no new kinks
-# --------------------------------------------------------------------------
+# (v1, v2, the encoding channels from block 0 below, are built directly as
+# weights -- there is no standalone Python function for them, since nothing
+# here needs to evaluate them outside the network itself.)
 # Each P_i = a0 + a1*x1 + a2*v1 + a3*v2 is built to vanish identically along
 # one kink curve, so relu(P_i) is one-sided there and introduces no kink of
 # its own. Only two of the four kink curves admit such a P; see the blog post
@@ -160,7 +150,7 @@ DECODE_W = torch.tensor([3.0, 4.0, -4.0, 1.0, -2.0, 4.0, 2.0])
 
 
 # --------------------------------------------------------------------------
-# 3. Building the literal network
+# 2. Building the literal network
 # --------------------------------------------------------------------------
 # Residual layout: [x_0 .. x_{n-1}] [c] [v1] [v2] [R_0 R_1 R_2]
 ERASE_BIG = 10.0  # always-on offset: relu(z + ERASE_BIG) = z + ERASE_BIG
@@ -182,9 +172,7 @@ class Schedule:
     d_mlp: int
     first_batch: int
     per_period: int
-    coord_order: list[int]
     num_blocks: int
-    dims: dict[str, int] = field(default_factory=dict)
 
     def is_probed(self, layer: int) -> bool:
         """Probed layers are the even ones (r_0 holds c by construction)."""
@@ -216,9 +204,7 @@ def build_network(num_x: int) -> tuple[ResidualMLP, Schedule]:
         d_mlp=d_mlp,
         first_batch=first_batch,
         per_period=per_period,
-        coord_order=coord_order,
         num_blocks=2 + 2 * len(batches),
-        dims=dict(c=C, v1=V1, v2=V2, r0=R0),
     )
     net = ResidualMLP(num_x, d_model, d_mlp, sched.num_blocks)
     blocks = iter(net.blocks)
@@ -279,9 +265,11 @@ def build_network(num_x: int) -> tuple[ResidualMLP, Schedule]:
 
 
 # --------------------------------------------------------------------------
-# 4. Exactness checks
+# 3. Exactness check
 # --------------------------------------------------------------------------
 def check_network(net: ResidualMLP, sched: Schedule, gen, n_samples: int = 50_000):
+    """Verify the network computes sat(x, -c, c) exactly. (Whether `c` is
+    detectable at each layer is what the probes below are for.)"""
     max_used = max(b.neurons_used() for b in net.blocks)
     print(
         f"network: num_x={sched.num_x}, d_mlp={sched.d_mlp} (= num_x/2), "
@@ -290,26 +278,10 @@ def check_network(net: ResidualMLP, sched: Schedule, gen, n_samples: int = 50_00
     )
     x = uniform((n_samples, sched.num_x), X_LO, X_HI, gen)
     for c_val in (C_LO, 1.37, 1.5, 2.0):
-        rs = net.residuals(x, torch.full((n_samples,), c_val))
-        target = x.clamp(-c_val, c_val)
-        task_err = float((rs[-1][:, : sched.num_x] - target).abs().max())
-        # every probed layer must hold [sat-done x, pending x, 0, v1, v2, 0]
-        content_err = 0.0
-        for layer, r in enumerate(rs):
-            if not sched.is_probed(layer):
-                continue
-            done = sched.coord_order[: sched.n_finished(layer)]
-            exp = torch.zeros_like(r)
-            exp[:, : sched.num_x] = x
-            exp[:, done] = target[:, done]
-            exp[:, sched.dims["v1"]] = v1f(x[:, 0], c_val)
-            exp[:, sched.dims["v2"]] = v2f(x[:, 0], c_val)
-            content_err = max(content_err, float((r - exp).abs().max()))
-        print(
-            f"  c={c_val:<5g} task max err = {task_err:.2e}   "
-            f"probed-layer content err = {content_err:.2e}"
-        )
-        assert task_err < 1e-9 and content_err < 1e-9
+        y = net.task_output(x, torch.full((n_samples,), c_val))
+        task_err = float((y - x.clamp(-c_val, c_val)).abs().max())
+        print(f"  c={c_val:<5g} task max err = {task_err:.2e}")
+        assert task_err < 1e-9
 
 
 def uniform(shape, lo, hi, gen) -> Tensor:
@@ -317,7 +289,7 @@ def uniform(shape, lo, hi, gen) -> Tensor:
 
 
 # --------------------------------------------------------------------------
-# 5. Probes (numpy/sklearn: these are meant to be the obvious, boring baseline)
+# 4. Probes (numpy/sklearn: these are meant to be the obvious, boring baseline)
 # --------------------------------------------------------------------------
 def dom_probe(
     X: Float[np.ndarray, "b d"], y: Float[np.ndarray, " b"]
@@ -388,7 +360,7 @@ def run_probes(net: ResidualMLP, sched: Schedule, args, gen) -> dict[int, dict]:
 
 
 # --------------------------------------------------------------------------
-# 6. Plots
+# 5. Plots
 # --------------------------------------------------------------------------
 PROBE_NAMES = ["difference of means", "logistic regression"]
 
