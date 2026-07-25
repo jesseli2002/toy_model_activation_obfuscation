@@ -12,3 +12,4 @@ plot
 
 # Per-run checkpoints & logs (ephemeral)
 runs
+runs_tmp*

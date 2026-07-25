@@ -51,6 +51,7 @@ tripping the mismatch warning on a later `--resume`.
 """
 
 import argparse
+import copy
 import dataclasses
 import json
 import os
@@ -440,6 +441,11 @@ class TrainRecord:
     affine: tuple[torch.Tensor, torch.Tensor]
     probe_dt: float
     model_dt: float
+    # Cumulative count of --explode-detected-and-corrected steps so far THIS
+    # process invocation (see adv_config.explode_factor) -- resets to 0 on
+    # --resume/--fork-from rather than continuing the source run's count,
+    # same as e.g. the it/s rate below.
+    n_exploded: int = 0
 
 
 def _history_entry(record: TrainRecord, **extra) -> dict:
@@ -477,6 +483,7 @@ def train_steps(
     caller) -- reused for every probe fit and penalty this run, unlike the
     task batch below which resamples fresh each iteration."""
     num_x = model.config.num_x
+    n_exploded = 0
     for it in range(start_iter, max_iters):
         t_fwd0 = time.time()
         x_task, y = sample_batch(
@@ -488,6 +495,12 @@ def train_steps(
             x_threshold=adv_config.x_threshold,
         )
 
+        # Snapshotted right before the noise draw below, so a detected
+        # explosion (below) can replay the IDENTICAL noise on the
+        # check/redo forwards by resetting to this state first, instead of
+        # consuming extra draws from `gen` that would desync every later
+        # iteration's noise from a run with --explode-factor disabled.
+        noise_gen_state = gen.get_state()
         # task: noisy pass -- this is what forbids shrinking c's encoding
         # below the noise floor (see plans/resid_stream_noise_plan.md).
         y_pred_full = model.forward(
@@ -526,12 +539,78 @@ def train_steps(
             lam_eff = adv_config.lam
         loss = lam_eff * l_probe + (1 - lam_eff) * l_task
 
+        loss_before_step = loss.item()
         t_bwd0 = time.time()
+
+        # Snapshot BEFORE the step, so a detected explosion (below) can
+        # revert to it. TODO(perf): every-iteration deepcopy + re-forward
+        # just to catch a rare event -- a cheaper retroactive alternative
+        # exists, see PR #77's revert-and-retry discussion (not the
+        # StableAdamW note below).
+        if adv_config.explode_factor > 0:
+            pre_model_state = copy.deepcopy(model.state_dict())
+            pre_opt_state = copy.deepcopy(opt.state_dict())
+
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if adv_config.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), adv_config.grad_clip)
+            # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
+            for block in model.blocks:
+                torch.nn.utils.clip_grad_norm_(block.parameters(), adv_config.grad_clip)
+        # TODO(perf/quality): grad_clip/adam_eps/adam_beta2 are band-aids
+        # for instability; StableAdamW (update clipping) might be a
+        # cleaner fix -- see PR #77.
         opt.step()
+
+        if adv_config.explode_factor > 0:
+            gen.set_state(noise_gen_state)  # replay the same noise as above
+            with torch.no_grad():
+                y_pred_after = model.forward(
+                    x_task, noise_std=adv_config.resid_noise_std, generator=gen
+                )
+                l_task_after = torch.mean((y_pred_after[:, :num_x] - y) ** 2)
+                _, caches_after = model.forward(probe_x, return_cache=True)
+                cat_after = concat_caches_torch(caches_after, hidden_layers)
+                l_probe_after = score_penalty(
+                    cat_after, affine, probe_label, adv_config.probe_loss_kind
+                )
+                loss_after_step = (
+                    lam_eff * l_probe_after + (1 - lam_eff) * l_task_after
+                ).item()
+
+            if loss_after_step > adv_config.explode_factor * loss_before_step:
+                n_exploded += 1
+                print(
+                    f"[explode] iter={it} loss {loss_before_step:.3e} -> "
+                    f"{loss_after_step:.3e} ({loss_after_step / loss_before_step:.1f}x)"
+                    f" -- reverting and redoing with a tighter clip"
+                )
+                model.load_state_dict(pre_model_state)
+                opt.load_state_dict(pre_opt_state)
+                gen.set_state(noise_gen_state)  # redo must see the same noise too
+
+                # Fresh forward: the previous graph was freed by backward()
+                # above, and this is otherwise numerically the same
+                # pre-step state already used for l_task/l_probe/loss.
+                y_pred_full = model.forward(
+                    x_task, noise_std=adv_config.resid_noise_std, generator=gen
+                )
+                l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
+                _, caches = model.forward(probe_x, return_cache=True)
+                cat_live = concat_caches_torch(caches, hidden_layers)
+                l_probe = score_penalty(
+                    cat_live, affine, probe_label, adv_config.probe_loss_kind
+                )
+                loss = lam_eff * l_probe + (1 - lam_eff) * l_task
+
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                if adv_config.grad_clip > 0:
+                    tight_clip = adv_config.grad_clip / adv_config.explode_clip_divisor
+                    for block in model.blocks:
+                        torch.nn.utils.clip_grad_norm_(block.parameters(), tight_clip)
+                opt.step()
+
         model_dt = fwd_dt + (time.time() - t_bwd0)
 
         yield TrainRecord(
@@ -543,6 +622,7 @@ def train_steps(
             affine=affine,
             probe_dt=probe_dt,
             model_dt=model_dt,
+            n_exploded=n_exploded,
         )
 
 
@@ -648,7 +728,12 @@ def main(args):
             penalty_layers=hidden_layers,
             config_path=args.config,
         )
-        opt = torch.optim.AdamW(model.parameters(), lr=adv_config.lr)
+        opt = torch.optim.AdamW(
+            model.parameters(),
+            lr=adv_config.lr,
+            eps=adv_config.adam_eps,
+            betas=(0.9, adv_config.adam_beta2),
+        )
         if args.fork_from is not None:
             source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
             start_iter, best_loss, rck = _restore_checkpoint(
@@ -667,11 +752,15 @@ def main(args):
         _write_config_json(args.tag, adv_config, forked_from=forked_from)
 
     # --resume/--fork-from restore the optimizer's own state_dict, which
-    # includes the SOURCE run's lr -- override with this invocation's
-    # adv_config.lr, the only case where that differs (--fork-from with a new
-    # --config). A no-op for a fresh run (opt was already built with it).
+    # includes the SOURCE run's lr/eps/betas -- override with this
+    # invocation's adv_config, the only case where these differ (--fork-from
+    # with a new --config). A no-op for a fresh run (opt was already built
+    # with them) and for --resume (adv_config comes from this same
+    # checkpoint, so the values are identical either way).
     for pg in opt.param_groups:
         pg["lr"] = adv_config.lr
+        pg["eps"] = adv_config.adam_eps
+        pg["betas"] = (0.9, adv_config.adam_beta2)
     torch.manual_seed(adv_config.seed)
 
     gen = torch.Generator(device=device).manual_seed(adv_config.seed + 1)
@@ -709,7 +798,10 @@ def main(args):
         f"probe_backend={probe_backend} probe_subsample={adv_config.probe_subsample} "
         f"probe_retrain_interval={adv_config.probe_retrain_interval} "
         f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
-        f"lr={adv_config.lr} device={device} iters {start_iter}->{args.max_iters}"
+        f"lr={adv_config.lr} adam_eps={adv_config.adam_eps} "
+        f"adam_beta2={adv_config.adam_beta2} explode_factor={adv_config.explode_factor} "
+        f"explode_clip_divisor={adv_config.explode_clip_divisor} "
+        f"device={device} iters {start_iter}->{args.max_iters}"
     )
 
     # Placeholder record for the (edge-case) zero-iteration run, e.g.
@@ -759,7 +851,7 @@ def main(args):
                     f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
                     f"probe {record.l_probe:.3e}  λ {record.lam_eff:.1e}  max_err {me:.3e}  "
                     f"probe_dt {record.probe_dt*1e3:.1f}ms  model_dt {record.model_dt*1e3:.1f}ms  "
-                    f"{rate:.1f} it/s"
+                    f"n_exploded {record.n_exploded}  {rate:.1f} it/s"
                 )
 
             if record.iter % args.ckpt_interval == 0 and record.iter > start_iter:

@@ -162,11 +162,42 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     probe_subsample: int
     probe_retrain_interval: int
     resid_noise_std: float
+    # Clipped per-block, not whole-model: a global L2 norm sums correlated
+    # per-block gradient contributions (every block shares the same backprop
+    # signal) under one sqrt, so its natural scale grows with num_blocks even
+    # though nothing about per-block gradients themselves changed with depth.
+    # A 16-arch sweep found per-block grad_norm's p99 stays ~0.2-0.4 regardless
+    # of depth/width (vs. whole-model medians spanning ~9x with a clear depth
+    # trend) -- so a single fixed threshold generalizes without
+    # recalibration; 0.5 is a reasonable value (comfortably above that p99
+    # ceiling, well below collapse-triggering spikes). 0 = no clipping.
     grad_clip: float
     x_p_outer: float | None
     x_threshold: float
     batch_size: int
     lr: float
+    # AdamW's eps/beta2 (PyTorch defaults: 1e-8, 0.999). A parameter whose
+    # gradient has been near-zero for a while (small running exp_avg_sq)
+    # can take a disproportionately large adaptive step the moment its
+    # gradient becomes non-trivial again, since exp_avg_sq hasn't caught up
+    # yet -- a source of loss spikes grad_clip above can't touch, since
+    # clipping acts on the raw gradient, not AdamW's per-parameter adaptive
+    # step (see xbias_experiment.tmp.py's investigation). Raising eps and/or
+    # lowering beta2 both mitigate this; empirically, lowering beta2 (e.g.
+    # 0.99) converged faster with fewer residual spikes than raising eps
+    # (e.g. 1e-5) alone.
+    adam_eps: float
+    adam_beta2: float
+    # Same-iteration revert-and-retry: after each step, re-check the loss on
+    # the same batch, and if it jumped by more than explode_factor x, undo
+    # the step (model + optimizer state) and redo it with grad_clip divided
+    # by explode_clip_divisor. This only catches genuine large-gradient-norm
+    # events -- adam_eps/adam_beta2 above are the fix for the small-gradient
+    # -norm spikes this retry can't affect (confirmed empirically: redoing
+    # with a tighter clip is a no-op when the original gradient norm was
+    # already below the tighter threshold). 0 = disabled.
+    explode_factor: float
+    explode_clip_divisor: float
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
@@ -185,4 +216,8 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "x_threshold": 1.0,
         "batch_size": 4096 * 4,  # legacy runs took this from a CLI default
         "lr": 3e-3,  # legacy runs took this from a CLI default
+        "adam_eps": 1e-8,  # legacy runs used AdamW's plain default
+        "adam_beta2": 0.999,  # legacy runs used AdamW's plain default
+        "explode_factor": 0.0,  # legacy runs had no explode-detection
+        "explode_clip_divisor": 5.0,  # inert when explode_factor is 0
     }
