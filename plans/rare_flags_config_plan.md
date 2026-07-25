@@ -24,14 +24,13 @@ there is no overlap, so no precedence merge is needed):
    config, never frozen on `--resume`, always a CLI flag: `--tag`,
    `--resume`, `--fork-from`, `--tag-force`, `--log-interval`,
    `--ckpt-interval`, `--save-every-n`, `--max-iters`, `--probe-backend`,
-   `--warmstart`/`--no-warmstart`, `--num-x`/`--d-model`/`--d-mlp`/
-   `--num-blocks`. None of these get recorded for reproducibility (user's
+   `--warmstart`/`--no-warmstart`. None of these get recorded for reproducibility (user's
    call: not worth it -- architecture is already separately saved via
    `ResidualMLPConfig` in the checkpoint, and `--warmstart` is moot once
    `train_adversarial.py` is sunset and superseded by `--fork-from`).
 2. **CLI-common hyperparameters** -- part of the saved `LogregAdversarialConfig`,
    frozen on `--resume`, stay as CLI flags because they're touched often:
-   `--lam`, `--penalty-layers`.
+   `--lam`, `--penalty-layers`, `--num-x`/`--d-model`/`--d-mlp`/`--num-blocks`.
 3. **Config-file-only hyperparameters** -- part of the saved
    `LogregAdversarialConfig`, frozen on `--resume`, no CLI flag at all,
    *required* keys in the `--config` JSON file (missing key = fail loudly,

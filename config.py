@@ -133,32 +133,45 @@ class AdversarialConfig(_CheckpointConfigMixin):
     }
 
 
-@dataclass
+@dataclass(kw_only=True)
 class LogregAdversarialConfig(_CheckpointConfigMixin):
     """Training-hyperparameter metadata for train_adversarial_logreg.py,
-    stored verbatim (as a dict) alongside the model's own ResidualMLPConfig."""
+    stored verbatim (as a dict) alongside the model's own ResidualMLPConfig.
 
+    Fields split two ways (see plans/rare_flags_config_plan.md): `lam` and
+    `penalty_layers` are touched often enough to stay CLI flags, so they keep
+    ordinary defaults here. Everything else has NO default -- it's a required
+    key in the --config JSON file, so omitting it fails loudly (a TypeError
+    from this constructor) instead of silently taking on a value.
+    `warmstart_path` used to live here but is bookkeeping now
+    (--warmstart/--no-warmstart are never part of the saved config -- see the
+    plan).
+    """
+
+    # CLI-common: touched often, so exposed as flags with defaults here.
     lam: float = 0.5
-    lam_warmup_iters: int = 0
     penalty_layers: list | None = None
-    warmstart_path: str | None = None
-    seed: int = SEED
-    probe_C: float = 1.0
-    probe_init_iters: int = 1000
-    class_threshold: float = 1.5
-    probe_loss_kind: str = "meandiff-relu"
-    probe_subsample: int = 8
-    probe_retrain_interval: int = 16
-    resid_noise_std: float = 0.1
-    grad_clip: float = 0.5
-    x_p_outer: float | None = None
-    x_threshold: float = 1.0
+
+    # Config-file-only: no default -- required key in --config JSON.
+    lam_warmup_iters: int
+    seed: int
+    probe_C: float
+    probe_init_iters: int
+    class_threshold: float
+    probe_loss_kind: str
+    probe_subsample: int
+    probe_retrain_interval: int
+    resid_noise_std: float
+    grad_clip: float
+    x_p_outer: float | None
+    x_threshold: float
+    batch_size: int
+    lr: float
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
         "lam_warmup_iters": 0,
         "penalty_layers": None,
-        "warmstart_path": None,
         "seed": 913768,
         "probe_C": 1.0,
         "probe_init_iters": 1000,
@@ -170,4 +183,6 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "grad_clip": 0.0,  # legacy runs trained with no gradient clipping
         "x_p_outer": None,  # legacy runs sampled x plain-uniform, unbiased
         "x_threshold": 1.0,
+        "batch_size": 4096 * 4,  # legacy runs took this from a CLI default
+        "lr": 3e-3,  # legacy runs took this from a CLI default
     }
