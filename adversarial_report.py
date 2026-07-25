@@ -32,6 +32,7 @@ Three optional deep-dive diagnostics, each opt-in since they cost extra compute:
 """
 
 import argparse
+import glob
 import json
 import os
 
@@ -129,17 +130,17 @@ import torch
 from matplotlib.collections import PolyCollection
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, roc_auc_score
 from tqdm import tqdm
 
 from data import sample_batch, sample_fixed_c
 from model import ResidualMLP
-from paths import log_dir
+from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, resolve_probe_backend
 from train_model_plot import plot_learned_curves
-from train_probe import capture_layers_dict, forward_steered, load_model
+from train_probe import capture_layers, capture_layers_dict, forward_steered, load_model
 from train_probe import plot_probe as plot_probe_separation
 
 
@@ -280,12 +281,57 @@ def _binary_probe_metrics_all_layers(
 # ----------------------------------------------------------------------------
 # Plots
 # ----------------------------------------------------------------------------
-def _plot_training_traces(tag, history, hidden_layers, plot_dir):
+def _auroc_snapshots(tag, device, n_snapshots=1000, eval_n=4096, seed=0):
+    """Probe AUROC over the course of training, computed here (not logged
+    during training) from the numbered checkpoint snapshots
+    train_adversarial_logreg.py already writes every --save-every-n iters
+    (default = --ckpt-interval) -- each carries the probe's affine
+    (probe_w/probe_b/probe_layers) alongside the model weights.
+
+    Snapshots are approximately-uniformly strided down to ~n_snapshots (a
+    simple stride, not an exact pick) since loading + a forward pass per
+    snapshot is the expensive part. All snapshots are scored against the
+    same freshly-sampled eval batch, for a trace that's comparable point to
+    point (this is a fresh generalization check, not the training run's own
+    fixed probe set)."""
+    paths = sorted(
+        glob.glob(os.path.join(ckpt_dir(tag), "iter_*.pt")),
+        key=lambda p: int(os.path.basename(p)[len("iter_") : -len(".pt")]),
+    )
+    stride = max(1, len(paths) // n_snapshots)
+    paths = paths[::stride]
+
+    gen = torch.Generator(device=device).manual_seed(seed)
+    eval_x = eval_label = None
+    out = []
+    for path in paths:
+        model, ck = ResidualMLP.load(path, map_location=device)
+        if "probe_w" not in ck:
+            continue  # not a train_adversarial_logreg.py checkpoint
+        model = model.to(device).eval()
+        if eval_x is None:
+            class_threshold = ck.get("class_threshold", 1.5)
+            eval_x, _ = sample_batch(
+                eval_n, model.config.num_x, generator=gen, device=device
+            )
+            eval_label = (
+                (eval_x[:, model.config.num_x] >= class_threshold).cpu().numpy()
+            )
+        w = ck["probe_w"].to(device)
+        b = ck["probe_b"].to(device)
+        with torch.no_grad():
+            feats = capture_layers(model, eval_x, ck["probe_layers"])
+            s = (feats @ w + b).cpu().numpy()
+        out.append((ck["iter"], roc_auc_score(eval_label, s)))
+    return out
+
+
+def _plot_training_traces(tag, history, plot_dir, device):
     pts = [h for h in history if h.get("l_task") is not None]
     if not pts:
         return
     its = [h["iter"] for h in pts]
-    fig, (ax_err, ax_dom, ax_loss) = plt.subplots(1, 3, figsize=(16, 4.2))
+    fig, (ax_err, ax_auroc, ax_loss) = plt.subplots(1, 3, figsize=(16, 4.2))
 
     ax_err.semilogy(its, [h["max_err"] for h in pts], color="crimson")
     ax_err.set_title("task fidelity (price of hiding)")
@@ -293,25 +339,27 @@ def _plot_training_traces(tag, history, hidden_layers, plot_dir):
     ax_err.set_ylabel("max abs error")
     ax_err.grid(True, alpha=0.3)
 
-    if any("delta_norms" in h for h in pts):
-        for lyr in hidden_layers:
-            key = str(lyr)
-            ys = [h.get("delta_norms", {}).get(key, float("nan")) for h in pts]
-            ax_dom.semilogy(its, ys, label=f"layer {lyr}")
-        ax_dom.legend(fontsize=8)
+    snapshots = _auroc_snapshots(tag, device)
+    if snapshots:
+        auroc_its = [it for it, _ in snapshots]
+        auroc_ys = [y for _, y in snapshots]
+        ax_auroc.plot(auroc_its, auroc_ys, color="tab:purple", label="probe AUROC")
+        ax_auroc.axhline(0.5, color="k", ls="--", lw=1, label="chance")
+        ax_auroc.set_ylim(0.45, 1.02)
+        ax_auroc.legend(fontsize=8)
     else:
-        ax_dom.text(
+        ax_auroc.text(
             0.5,
             0.5,
-            "no delta_norms in history",
+            "no checkpoint snapshots (iter_*.pt) found",
             ha="center",
             va="center",
-            transform=ax_dom.transAxes,
+            transform=ax_auroc.transAxes,
         )
-    ax_dom.set_title("penalized DoM  ||Δμ||  per hidden layer")
-    ax_dom.set_xlabel("iter")
-    ax_dom.set_ylabel("||mean(c=2) - mean(c=1)||")
-    ax_dom.grid(True, alpha=0.3)
+    ax_auroc.set_title("probe AUROC (adversary strength)")
+    ax_auroc.set_xlabel("iter")
+    ax_auroc.set_ylabel("AUROC")
+    ax_auroc.grid(True, alpha=0.3)
 
     ax_loss.semilogy(its, [h["l_task"] for h in pts], label="L_task")
     ax_loss.semilogy(its, [max(h["l_probe"], 1e-30) for h in pts], label="L_probe")
@@ -809,7 +857,7 @@ def main(args):
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             history = json.load(f)
-        _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
+        _plot_training_traces(args.tag, history, plot_dir, device)
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
     _plot_layer_distributions(
         args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir
