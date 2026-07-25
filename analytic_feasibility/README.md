@@ -218,7 +218,10 @@ Concretely (verified exact to ~4e-15 in `simplified_demo.py`):
 ## Files
 
 - `simplified_demo.py` — **start here.** Self-contained demo of the section-3
-  construction: builds the literal network (`d_mlp = num_x/2`), verifies task
+  construction. Carries its own trimmed copy of the repo's `model.py`
+  (ReLU only, no layernorm/gelu/noise, weights set analytically at float64),
+  so it depends on nothing else in the repo: builds the literal network
+  (`d_mlp = num_x/2`), verifies task
   exactness and probed-layer content to ~1e-15, then fits difference-of-means
   and sklearn `LogisticRegression` probes at *every* residual layer and plots
   per-layer histograms + AUROCs, the encoding channels, and the learned `y(x)`
