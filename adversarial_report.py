@@ -129,7 +129,7 @@ import torch
 from matplotlib.collections import PolyCollection
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
+from sklearn.metrics import r2_score, roc_auc_score
 from tqdm import tqdm
 
 from data import sample_batch, sample_fixed_c
@@ -293,15 +293,19 @@ def _plot_training_traces(tag, history, plot_dir):
     ax_err.set_ylabel("max abs error")
     ax_err.grid(True, alpha=0.3)
 
-    if any("auroc" in h for h in pts):
-        # history already logs auroc at most once per --log-interval (see
-        # train_adversarial_logreg.py), but subsample further so a dense
+    if any("probe_scores" in h for h in pts):
+        # history logs (subsampled) raw probe scores + labels at most once
+        # per --log-interval (see train_adversarial_logreg.py); AUROC itself
+        # is computed here, at plot time, and further subsampled so a dense
         # history (small --log-interval) still plots quickly.
-        auroc_pts = [h for h in pts if "auroc" in h]
-        idx = np.linspace(0, len(auroc_pts) - 1, min(len(auroc_pts), 1000)).astype(int)
+        score_pts = [h for h in pts if "probe_scores" in h]
+        idx = np.linspace(0, len(score_pts) - 1, min(len(score_pts), 1000)).astype(int)
         idx = sorted(set(idx))
-        auroc_its = [auroc_pts[i]["iter"] for i in idx]
-        auroc_ys = [auroc_pts[i]["auroc"] for i in idx]
+        auroc_its = [score_pts[i]["iter"] for i in idx]
+        auroc_ys = [
+            roc_auc_score(score_pts[i]["probe_label"], score_pts[i]["probe_scores"])
+            for i in idx
+        ]
         ax_dom.plot(auroc_its, auroc_ys, color="tab:purple", label="probe AUROC")
         ax_dom.axhline(0.5, color="k", ls="--", lw=1, label="chance")
         ax_dom.set_ylim(0.45, 1.02)
@@ -310,7 +314,7 @@ def _plot_training_traces(tag, history, plot_dir):
         ax_dom.text(
             0.5,
             0.5,
-            "no auroc in history",
+            "no probe scores in history",
             ha="center",
             va="center",
             transform=ax_dom.transAxes,

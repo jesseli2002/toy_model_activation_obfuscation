@@ -259,7 +259,6 @@ import warnings
 
 import torch
 from sklearn.exceptions import ConvergenceWarning
-from sklearn.metrics import roc_auc_score
 
 from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
@@ -319,34 +318,30 @@ def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.
     return torch.cat([caches[lyr] for lyr in layers], dim=1)
 
 
-@torch.no_grad()
-def probe_auroc(
-    model,
-    probe_x: torch.Tensor,
-    probe_label: torch.Tensor,
-    hidden_layers: list[int],
-    affine: tuple[torch.Tensor, torch.Tensor],
-) -> float:
-    """AUROC of the current probe's affine score on the fixed probe set --
-    logged (not training-hot-path) only, alongside max_err, so the extra
-    forward pass here costs one per --log-interval, not one per iteration."""
-    w_eff, b_eff = affine
-    _, caches = model.forward(probe_x, return_cache=True)
-    s = concat_caches_torch(caches, hidden_layers) @ w_eff + b_eff
-    return float(roc_auc_score(probe_label.cpu().numpy(), s.cpu().numpy()))
+# Cap on how many (score, label) rows get subsampled into each history entry
+# -- AUROC itself is computed later, at report/plot time (see
+# adversarial_report.py), from these logged rows, so no extra forward pass or
+# roc_auc_score call happens on the training hot path.
+PROBE_SCORE_LOG_N = 2000
+
+
+def _subsample_for_log(t: torch.Tensor, n: int) -> list:
+    """Evenly subsample up to n rows of a 1D tensor into a plain list, for
+    compact JSON logging."""
+    if t.numel() <= n:
+        idx = torch.arange(t.numel())
+    else:
+        idx = torch.linspace(0, t.numel() - 1, n).long()
+    return t[idx].cpu().tolist()
 
 
 def score_penalty(
-    cat_live: torch.Tensor,
-    affine: tuple[torch.Tensor, torch.Tensor],
+    s: torch.Tensor,
     label: torch.Tensor,
     kind: str,
 ) -> torch.Tensor:
-    """Differentiable adversarial penalty: project the live (grad-carrying),
-    concatenated-across-layers activations onto the probe's current learned
-    direction and push the two classes' mean scores together."""
-    w_eff, b_eff = affine
-    s = cat_live @ w_eff + b_eff
+    """Differentiable adversarial penalty: push the two classes' mean scores
+    (the live, grad-carrying probe projection `s`) together."""
     gap = s[label].mean() - s[~label].mean()
     if kind == "meandiff-relu":
         return torch.relu(gap)
@@ -367,6 +362,7 @@ class TrainRecord:
     l_probe: float | None
     lam_eff: float | None
     affine: tuple[torch.Tensor, torch.Tensor]
+    probe_scores: torch.Tensor  # raw affine score per probe_x row, this step
     probe_dt: float
     model_dt: float
 
@@ -377,6 +373,7 @@ def _history_entry(record: TrainRecord, **extra) -> dict:
     sites, rather than two hand-built dicts drifting independently."""
     d = dataclasses.asdict(record)
     del d["affine"]  # tensors aren't JSON-serializable, not needed in history
+    del d["probe_scores"]  # tensor -- subsampled into `extra` by the caller
     d.update(extra)
     return d
 
@@ -437,7 +434,9 @@ def train_steps(
             affine = probe.get_affine(device)
         probe_dt = time.time() - t_probe0
 
-        l_probe = score_penalty(cat_live, affine, probe_label, args.probe_loss_kind)
+        w_eff, b_eff = affine
+        s = cat_live @ w_eff + b_eff
+        l_probe = score_penalty(s, probe_label, args.probe_loss_kind)
 
         if args.lam_warmup_iters > 0:
             lam_eff = args.lam * min(1.0, it / args.lam_warmup_iters)
@@ -458,6 +457,7 @@ def train_steps(
             l_probe=float(l_probe.item()),
             lam_eff=lam_eff,
             affine=affine,
+            probe_scores=s.detach(),
             probe_dt=probe_dt,
             model_dt=model_dt,
         )
@@ -589,6 +589,9 @@ def main(args):
     probe = build_probe_pipeline(args.probe_C, args.probe_init_iters, probe_backend)
     probe.fit(cat_init.detach(), probe_label)
     affine = probe.get_affine(device)
+    with torch.no_grad():
+        w_eff, b_eff = affine
+        init_scores = cat_init @ w_eff + b_eff
     print(
         f"[init] fit concatenated probe (backend={probe_backend}) over layers "
         f"{hidden_layers}, init_iters={args.probe_init_iters}, C={args.probe_C}"
@@ -617,6 +620,7 @@ def main(args):
         l_probe=None,
         lam_eff=None,
         affine=affine,
+        probe_scores=init_scores,
         probe_dt=0.0,
         model_dt=0.0,
     )
@@ -645,10 +649,18 @@ def main(args):
 
             if record.iter % args.log_interval == 0:
                 me = eval_max_err(model, num_x, gen, device=device)
-                auroc = probe_auroc(
-                    model, probe_x, probe_label, hidden_layers, record.affine
+                history.append(
+                    _history_entry(
+                        record,
+                        max_err=me,
+                        probe_scores=_subsample_for_log(
+                            record.probe_scores, PROBE_SCORE_LOG_N
+                        ),
+                        probe_label=_subsample_for_log(
+                            probe_label.float(), PROBE_SCORE_LOG_N
+                        ),
+                    )
                 )
-                history.append(_history_entry(record, max_err=me, auroc=auroc))
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
                 rate = (record.iter - start_iter + 1) / (time.time() - t0 + 1e-9)
@@ -679,7 +691,6 @@ def main(args):
     # final logging + save
     save(last_path)
     me = eval_max_err(model, num_x, gen, device=device)
-    auroc = probe_auroc(model, probe_x, probe_label, hidden_layers, record.affine)
     history.append(
         _history_entry(
             record,
@@ -687,7 +698,8 @@ def main(args):
             l_task=None,
             l_probe=None,
             max_err=me,
-            auroc=auroc,
+            probe_scores=_subsample_for_log(record.probe_scores, PROBE_SCORE_LOG_N),
+            probe_label=_subsample_for_log(probe_label.float(), PROBE_SCORE_LOG_N),
             final=True,
         )
     )
