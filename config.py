@@ -162,6 +162,15 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     probe_subsample: int
     probe_retrain_interval: int
     resid_noise_std: float
+    # Clipped per-block, not whole-model: a global L2 norm sums correlated
+    # per-block gradient contributions (every block shares the same backprop
+    # signal) under one sqrt, so its natural scale grows with num_blocks even
+    # though nothing about per-block gradients themselves changed with depth.
+    # A 16-arch sweep found per-block grad_norm's p99 stays ~0.2-0.4 regardless
+    # of depth/width (vs. whole-model medians spanning ~9x with a clear depth
+    # trend) -- so a single fixed threshold generalizes without
+    # recalibration; 0.5 is a reasonable value (comfortably above that p99
+    # ceiling, well below collapse-triggering spikes). 0 = no clipping.
     grad_clip: float
     x_p_outer: float | None
     x_threshold: float

@@ -530,7 +530,9 @@ def train_steps(
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if adv_config.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), adv_config.grad_clip)
+            # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
+            for block in model.blocks:
+                torch.nn.utils.clip_grad_norm_(block.parameters(), adv_config.grad_clip)
         opt.step()
         model_dt = fwd_dt + (time.time() - t_bwd0)
 
