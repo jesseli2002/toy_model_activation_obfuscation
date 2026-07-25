@@ -125,6 +125,10 @@ def _file_fields(**overrides) -> dict:
         x_threshold=1.0,
         batch_size=4096,
         lr=3e-3,
+        adam_eps=1e-8,
+        adam_beta2=0.999,
+        explode_factor=0.0,
+        explode_clip_divisor=5.0,
     )
     d.update(overrides)
     return d
