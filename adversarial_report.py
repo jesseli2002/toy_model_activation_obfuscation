@@ -280,7 +280,7 @@ def _binary_probe_metrics_all_layers(
 # ----------------------------------------------------------------------------
 # Plots
 # ----------------------------------------------------------------------------
-def _plot_training_traces(tag, history, hidden_layers, plot_dir):
+def _plot_training_traces(tag, history, plot_dir):
     pts = [h for h in history if h.get("l_task") is not None]
     if not pts:
         return
@@ -293,24 +293,31 @@ def _plot_training_traces(tag, history, hidden_layers, plot_dir):
     ax_err.set_ylabel("max abs error")
     ax_err.grid(True, alpha=0.3)
 
-    if any("delta_norms" in h for h in pts):
-        for lyr in hidden_layers:
-            key = str(lyr)
-            ys = [h.get("delta_norms", {}).get(key, float("nan")) for h in pts]
-            ax_dom.semilogy(its, ys, label=f"layer {lyr}")
+    if any("auroc" in h for h in pts):
+        # history already logs auroc at most once per --log-interval (see
+        # train_adversarial_logreg.py), but subsample further so a dense
+        # history (small --log-interval) still plots quickly.
+        auroc_pts = [h for h in pts if "auroc" in h]
+        idx = np.linspace(0, len(auroc_pts) - 1, min(len(auroc_pts), 1000)).astype(int)
+        idx = sorted(set(idx))
+        auroc_its = [auroc_pts[i]["iter"] for i in idx]
+        auroc_ys = [auroc_pts[i]["auroc"] for i in idx]
+        ax_dom.plot(auroc_its, auroc_ys, color="tab:purple", label="probe AUROC")
+        ax_dom.axhline(0.5, color="k", ls="--", lw=1, label="chance")
+        ax_dom.set_ylim(0.45, 1.02)
         ax_dom.legend(fontsize=8)
     else:
         ax_dom.text(
             0.5,
             0.5,
-            "no delta_norms in history",
+            "no auroc in history",
             ha="center",
             va="center",
             transform=ax_dom.transAxes,
         )
-    ax_dom.set_title("penalized DoM  ||Δμ||  per hidden layer")
+    ax_dom.set_title("probe AUROC (adversary strength)")
     ax_dom.set_xlabel("iter")
-    ax_dom.set_ylabel("||mean(c=2) - mean(c=1)||")
+    ax_dom.set_ylabel("AUROC")
     ax_dom.grid(True, alpha=0.3)
 
     ax_loss.semilogy(its, [h["l_task"] for h in pts], label="L_task")
@@ -809,7 +816,7 @@ def main(args):
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             history = json.load(f)
-        _plot_training_traces(args.tag, history, hidden_layers, plot_dir)
+        _plot_training_traces(args.tag, history, plot_dir)
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
     _plot_layer_distributions(
         args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir

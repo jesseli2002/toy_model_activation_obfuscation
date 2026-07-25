@@ -259,6 +259,7 @@ import warnings
 
 import torch
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.metrics import roc_auc_score
 
 from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
@@ -316,6 +317,23 @@ def resolve_model(args, device):
 
 def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.Tensor:
     return torch.cat([caches[lyr] for lyr in layers], dim=1)
+
+
+@torch.no_grad()
+def probe_auroc(
+    model,
+    probe_x: torch.Tensor,
+    probe_label: torch.Tensor,
+    hidden_layers: list[int],
+    affine: tuple[torch.Tensor, torch.Tensor],
+) -> float:
+    """AUROC of the current probe's affine score on the fixed probe set --
+    logged (not training-hot-path) only, alongside max_err, so the extra
+    forward pass here costs one per --log-interval, not one per iteration."""
+    w_eff, b_eff = affine
+    _, caches = model.forward(probe_x, return_cache=True)
+    s = concat_caches_torch(caches, hidden_layers) @ w_eff + b_eff
+    return float(roc_auc_score(probe_label.cpu().numpy(), s.cpu().numpy()))
 
 
 def score_penalty(
@@ -627,7 +645,10 @@ def main(args):
 
             if record.iter % args.log_interval == 0:
                 me = eval_max_err(model, num_x, gen, device=device)
-                history.append(_history_entry(record, max_err=me))
+                auroc = probe_auroc(
+                    model, probe_x, probe_label, hidden_layers, record.affine
+                )
+                history.append(_history_entry(record, max_err=me, auroc=auroc))
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
                 rate = (record.iter - start_iter + 1) / (time.time() - t0 + 1e-9)
@@ -658,9 +679,16 @@ def main(args):
     # final logging + save
     save(last_path)
     me = eval_max_err(model, num_x, gen, device=device)
+    auroc = probe_auroc(model, probe_x, probe_label, hidden_layers, record.affine)
     history.append(
         _history_entry(
-            record, loss=best_loss, l_task=None, l_probe=None, max_err=me, final=True
+            record,
+            loss=best_loss,
+            l_task=None,
+            l_probe=None,
+            max_err=me,
+            auroc=auroc,
+            final=True,
         )
     )
     with open(hist_path, "w") as f:
