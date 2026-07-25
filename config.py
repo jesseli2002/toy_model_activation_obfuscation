@@ -150,6 +150,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     probe_subsample: int = 8
     probe_retrain_interval: int = 16
     resid_noise_std: float = 0.1
+    grad_clip: float = 1.0
     x_p_outer: float | None = None
     x_threshold: float = 1.0
 
@@ -166,6 +167,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "probe_subsample": 1,  # legacy runs fit on the full batch every step
         "probe_retrain_interval": 1,  # legacy runs refit every iteration
         "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
+        "grad_clip": 0.0,  # legacy runs trained with no gradient clipping
         "x_p_outer": None,  # legacy runs sampled x plain-uniform, unbiased
         "x_threshold": 1.0,
     }

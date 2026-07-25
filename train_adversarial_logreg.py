@@ -237,6 +237,13 @@ def parse_args():
     g_opt.add_argument("--lr", type=float, default=config.LR)
     g_opt.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
     g_opt.add_argument("--seed", type=int, default=LogregAdversarialConfig.seed)
+    g_opt.add_argument(
+        "--grad-clip",
+        type=float,
+        default=LogregAdversarialConfig.grad_clip,
+        help="clip the model's gradient norm to this value before each "
+        "optimizer step. 0 = no clipping.",
+    )
 
     g_book = p.add_argument_group("bookkeeping")
     g_book.add_argument("--tag", type=str, default="adv-logreg")
@@ -458,6 +465,8 @@ def train_steps(
         t_bwd0 = time.time()
         opt.zero_grad(set_to_none=True)
         loss.backward()
+        if args.grad_clip > 0:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
         opt.step()
         model_dt = fwd_dt + (time.time() - t_bwd0)
 
@@ -558,6 +567,7 @@ def main(args):
         probe_subsample=args.probe_subsample,
         probe_retrain_interval=args.probe_retrain_interval,
         resid_noise_std=args.resid_noise_std,
+        grad_clip=args.grad_clip,
         x_p_outer=args.x_p_outer,
         x_threshold=args.x_threshold,
     )
@@ -612,7 +622,7 @@ def main(args):
         f"class_threshold={args.class_threshold} probe_loss_kind={args.probe_loss_kind} "
         f"probe_backend={probe_backend} probe_subsample={args.probe_subsample} "
         f"probe_retrain_interval={args.probe_retrain_interval} "
-        f"resid_noise_std={args.resid_noise_std} "
+        f"resid_noise_std={args.resid_noise_std} grad_clip={args.grad_clip} "
         f"lr={args.lr} device={device} iters {start_iter}->{args.max_iters}"
     )
 
