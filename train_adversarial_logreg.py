@@ -543,16 +543,10 @@ def train_steps(
         t_bwd0 = time.time()
 
         # Snapshot BEFORE the step, so a detected explosion (below) can
-        # revert to it. TODO(perf): this deepcopies model+optimizer state
-        # every iteration, and the post-step re-forward below runs every
-        # iteration too, just to catch the rare iteration that actually
-        # explodes. A retroactive version -- cache (state_dict, batch) from
-        # one iteration ago and only look back+redo if the NEXT iteration's
-        # already-computed loss reveals an explosion -- would avoid both
-        # costs, at the price of a one-iteration detection lag. Not
-        # implemented: this same-iteration version was validated first (see
-        # xbias_experiment.tmp.py's investigation); worth switching if
-        # profiling shows the overhead matters for a real run.
+        # revert to it. TODO(perf): every-iteration deepcopy + re-forward
+        # just to catch a rare event -- a cheaper retroactive alternative
+        # exists, see PR #77's revert-and-retry discussion (not the
+        # StableAdamW note below).
         if adv_config.explode_factor > 0:
             pre_model_state = copy.deepcopy(model.state_dict())
             pre_opt_state = copy.deepcopy(opt.state_dict())
@@ -563,18 +557,9 @@ def train_steps(
             # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
             for block in model.blocks:
                 torch.nn.utils.clip_grad_norm_(block.parameters(), adv_config.grad_clip)
-        # TODO(perf/quality): grad_clip and adam_eps/adam_beta2 are two
-        # band-aids for the same root cause (see PR #77 for the full
-        # investigation history): AdamW's per-parameter adaptive step can
-        # overshoot when exp_avg_sq is stale, and that overshoot is
-        # invisible to grad_clip since it clips the raw gradient, not the
-        # resulting update. Both patch around this rather than bounding the
-        # thing that actually explodes -- the update itself. StableAdamW
-        # (https://optimi.benjaminwarner.dev/optimizers/stableadamw/) clips
-        # the update's RMS directly and may be a cleaner fix, but needs a
-        # custom optimizer step -- torch.optim.AdamW has no such option --
-        # so it's a bigger lift than the constructor kwargs here. Worth
-        # trying if eps/beta2 tuning still leaves residual spikes.
+        # TODO(perf/quality): grad_clip/adam_eps/adam_beta2 are band-aids
+        # for instability; StableAdamW (update clipping) might be a
+        # cleaner fix -- see PR #77.
         opt.step()
 
         if adv_config.explode_factor > 0:
