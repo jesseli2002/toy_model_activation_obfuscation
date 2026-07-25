@@ -140,7 +140,7 @@ If training with period-2/4 probes finds low-loss hidden solutions, look for:
 Section 2 is kept above for historical context: it is the derivation that first
 established feasibility, and it is correct, but the decode it produces is
 larger than necessary. The simplified version below is the one to build on
-(write-up: `blog_post.md`, demo: `simplified_demo.py`).
+(demo: `simplified_demo.py`).
 
 Everything about the *encoding* is unchanged — same `v1`, `v2`, same
 mean-constancy argument, same 5 bands. What shrinks is the *decode*.
@@ -224,8 +224,6 @@ Concretely (verified exact to ~4e-15 in `simplified_demo.py`):
   per-layer histograms + AUROCs, the encoding channels, and the learned `y(x)`
   curves (same format as repo-level `adversarial_report.py`'s `*_curves.png`).
   Writes `simplified_*.png` to `$TMPDIR` (or `--out-dir`).
-- `blog_post.md` — the write-up of the section-3 construction, with interactive
-  plots for the `v`-channels and for exploring the space of atoms `P(theta)`.
 - `verify_feasibility.py` — numeric checks of every claim in section 1.
 - `probe_v_channels.py` — is the v1/v2 encoding detectable by a DoM or
   logistic-regression probe (no trained network; closed-form v1/v2 only)?
