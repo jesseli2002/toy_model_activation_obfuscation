@@ -18,7 +18,7 @@ This directory contains plans for agents.
       duplicated across ResidualMLPConfig/AdversarialConfig/LogregAdversarialConfig in
       config.py into one base class; folds in doc deduplication too.
 - train_adversarial_logreg_cleanup_plan.md
-    - (NOT STARTED) Complexity/separation-of-concerns/docs cleanup scoped to
+    - (COMPLETED) Complexity/separation-of-concerns/docs cleanup scoped to
       train_adversarial_logreg.py only (checkpoint-save closure, pre-call assert
       placement, history-dict helper, validation/provisioning split, doc fixes).
       Deliberately excludes train_adversarial.py, which may be sunset soon.

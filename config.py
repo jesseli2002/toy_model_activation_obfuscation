@@ -183,6 +183,6 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "grad_clip": 0.0,  # legacy runs trained with no gradient clipping
         "x_p_outer": None,  # legacy runs sampled x plain-uniform, unbiased
         "x_threshold": 1.0,
-        "batch_size": BATCH_SIZE,  # legacy runs took this from a CLI default
-        "lr": LR,  # legacy runs took this from a CLI default
+        "batch_size": 4096 * 4,  # legacy runs took this from a CLI default
+        "lr": 3e-3,  # legacy runs took this from a CLI default
     }
