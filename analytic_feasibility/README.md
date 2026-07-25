@@ -135,8 +135,97 @@ If training with period-2/4 probes finds low-loss hidden solutions, look for:
   must instead use regional kinks + multi-block cancellation — a concrete
   interp signature to test on adversarially trained checkpoints.
 
+## 3. Simplified period-2 construction (supersedes section 2's decode)
+
+Section 2 is kept above for historical context: it is the derivation that first
+established feasibility, and it is correct, but the decode it produces is
+larger than necessary. The simplified version below is the one to build on
+(write-up: `blog_post.md`, demo: `simplified_demo.py`).
+
+Everything about the *encoding* is unchanged — same `v1`, `v2`, same
+mean-constancy argument, same 5 bands. What shrinks is the *decode*.
+
+### Only two of the four kink curves are usable
+
+An atom is an affine `P = a0 + a1*x1 + a2*v1 + a3*v2` required to vanish
+identically along one kink curve, so that `relu(P)` adds no kink of its own.
+Substituting the on-curve values of `v1`, `v2` makes `P` a linear polynomial in
+`c`; killing both coefficients pins `(a0, a1)` and leaves `(a2, a3)` free — one
+real degree of freedom after scaling, parameterized by
+`theta = atan2(a3, a2)`:
+
+    curve x1 = -c/2   : v1 = 3/2 - c, v2 = 3 - c
+                        -> a1 = -2*a2 - 2*a3,  a0 = -1.5*a2 - 3*a3
+    curve x1 = 3-c/2  : v1 = 3/2,     v2 = 3 - c
+                        -> a1 = -2*a3,         a0 = 3*a3 - 1.5*a2
+
+`P` must also be one-sided about its curve (else `relu(P)` is affine and adds
+nothing). Scanning `theta` numerically: `x1 = -c` and `x1 = 3-c` are creases and
+admit no one-sided atom at any `theta`; all usable atoms live on `x1 = -c/2` and
+`x1 = 3-c/2`. (Section 2 found the same thing the long way round.)
+
+### Three atoms suffice, not eight
+
+Counting instead of solving: piecewise-linear functions that are affine in
+`(x1, c)` on each of the 5 bands span `5*3 = 15` dimensions, minus `4*2 = 8`
+continuity constraints at the four kinks, leaves **7**. Section 2's 15-equation
+system is therefore 8 equations redundant. Of those 7 basis directions,
+`{1, x1, v1, v2}` are already reachable — the residual stream carries `x1`,
+`v1`, `v2` and the next block has a bias — and crucially they need no neurons of
+their own, because the *next* block's input matrix can read them straight from
+the residual. So only `7 - 4 = 3` ReLU atoms are needed.
+
+Concretely (verified exact to ~4e-15 in `simplified_demo.py`):
+
+    P_A =  2*x1 - 2*v1 + v2      (vanishes on x1 = -c/2)
+    P_B = -2*x1 +   v1 - 3/2     (vanishes on x1 = -c/2)
+    P_C =           v1 - 3/2     (vanishes on x1 = 3-c/2)
+
+    c = 3 + 4*x1 - 4*v1 + v2 - 2*relu(P_A) + 4*relu(P_B) + 2*relu(P_C)
+
+### Consequences
+
+- **Neuron budget per period drops from `2k + 8` to `2k + 3`.** At `d_mlp = n/2`
+  the decode block uses 3 neurons instead of 8, and the use+clear block clears 3
+  dims instead of 8. At `n = 24` (section 2's setting) that is 4 coordinates
+  finished per period instead of 2 — half the depth for the same task.
+- **`d_model` drops** by 5 (three `R` dims instead of eight `Q` dims).
+- **No change to the hiding claim.** Probed layers still hold exactly
+  `[sat-done x, pending x, 0, v1, v2, 0]`, which is mean-constant in `c`.
+- **The hiding is layer-selective, and the demo shows it.** At probed (even)
+  layers both probes sit at chance (AUROC ~ 0.50). At unprobed (odd) layers the
+  `R_j` dims are live and logistic regression hits AUROC 1.00 — the construction
+  hides `c` from the probe schedule, not from an analyst who looks anywhere.
+  Note also that difference-of-means only reaches ~0.55 even at those unprobed
+  layers: its direction is diluted by the 16 noisy `x` dims, so it badly
+  understates what a fitted linear probe can do.
+
+### Status of the section-2 scripts
+
+- `period2_decode.py` — **keep as-is, historical.** It is the sympy feasibility
+  proof over all 4 curves x 2 sides x 5 cells that first showed a one-hidden-layer
+  decode exists. Nothing in it is wrong; the dimension count above just reaches
+  the same conclusion in one line, and the one-sidedness scan reaches the
+  "only two curves work" conclusion directly. No update needed.
+- `period2_net.py` — **superseded by `simplified_demo.py`.** It still verifies
+  end-to-end (n=24, 1e-14), so it is left in place as the record of the original
+  8-atom network, but it should not be the starting point for new work: it
+  re-derives the 8 atoms by an angular scan at import time, spends 8 neurons per
+  decode block, and finishes half as many coordinates per period.
+  `simplified_demo.py` is the newer version — same schedule, 3 closed-form
+  atoms, any even `num_x`, plus probes and plots.
+
 ## Files
 
+- `simplified_demo.py` — **start here.** Self-contained demo of the section-3
+  construction: builds the literal network (`d_mlp = num_x/2`), verifies task
+  exactness and probed-layer content to ~1e-15, then fits difference-of-means
+  and sklearn `LogisticRegression` probes at *every* residual layer and plots
+  per-layer histograms + AUROCs, the encoding channels, and the learned `y(x)`
+  curves (same format as repo-level `adversarial_report.py`'s `*_curves.png`).
+  Writes `simplified_*.png` to `$TMPDIR` (or `--out-dir`).
+- `blog_post.md` — the write-up of the section-3 construction, with interactive
+  plots for the `v`-channels and for exploring the space of atoms `P(theta)`.
 - `verify_feasibility.py` — numeric checks of every claim in section 1.
 - `probe_v_channels.py` — is the v1/v2 encoding detectable by a DoM or
   logistic-regression probe (no trained network; closed-form v1/v2 only)?
@@ -147,14 +236,11 @@ If training with period-2/4 probes finds low-loss hidden solutions, look for:
   `$TMPDIR` (or `--out-dir`).
 - `search_exact.py`, `search_results.json` — n=2/3 optimization search
   harness + outcomes (note the failed no-hide control before trusting floors).
-- `period2_decode.py` — sympy feasibility system for the one-layer decode.
-- `period2_net.py` — self-contained period-2 exact-obfuscation demo
+- `period2_decode.py` — sympy feasibility system for the one-layer decode
+  (historical; see section 3).
+- `period2_net.py` — original 8-atom period-2 exact-obfuscation demo
   (re-derives atoms, builds the literal network, verifies to 1e-14).
-- `period2_decode_walkthrough.ipynb` — interactive (ipywidgets slider) notebook
-  walking through how the period-2 decode formula works, step by step: the
-  `v1`/`v2` encoding, the easy-but-ungateable 5-window decode, the
-  curve-vanishing ReLU atoms that remove the gating, and the final
-  `c = affine + Σ w_j·relu(atom_j)` decomposition.
+  Superseded by `simplified_demo.py`; see section 3.
 
 Scripts were written to run from a scratch dir; `search_exact.py` writes
 outputs to `$TMPDIR`.

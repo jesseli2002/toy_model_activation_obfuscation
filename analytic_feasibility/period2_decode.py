@@ -5,6 +5,10 @@ Structure: G = A(x1,v1,v2) + sum_j [one-sided affine additions along the 4
 v-kink curves], where each addition comes from the 2-dim family of affines
 vanishing on that curve. Solve the cell-wise linear system G === c, then try
 to realize additions as relu atoms (sign check), then verify numerically.
+
+Historical: this is the original feasibility proof. README.md section 3 reaches
+the same conclusion by dimension counting (the 15-equation system is 8
+equations redundant), which is what `simplified_demo.py` uses.
 """
 
 import numpy as np

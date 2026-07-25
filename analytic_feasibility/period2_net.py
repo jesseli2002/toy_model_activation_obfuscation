@@ -6,6 +6,10 @@ Schedule:
   block 1: anchor-finish first batch of coords using linear c, erase c -> r2 clean
   block 2k: decode-basis (8 atoms Q_j) -> r_{2k+1} dirty (unprobed)
   block 2k+1: finish 2 coords via c_hat linear read, clear Q dims -> clean
+
+Superseded by `simplified_demo.py`, which does the same thing with 3 decode
+atoms instead of 8 (README.md section 3) and adds probes. Kept as the record of
+the original construction.
 """
 
 import numpy as np
