@@ -1,0 +1,20 @@
+{
+  "lam_warmup_iters": 0,
+  "seed": 913768,
+  "probe_C": 1.0,
+  "probe_init_iters": 1000,
+  "class_threshold": 1.5,
+  "probe_loss_kind": "meandiff",
+  "probe_subsample": 4,
+  "probe_retrain_interval": 2,
+  "resid_noise_std": 0.1,
+  "grad_clip": 1.0,
+  "x_p_outer": null,
+  "x_threshold": 1.0,
+  "batch_size": 32768,
+  "lr": 0.003,
+  "adam_eps": 1e-5,
+  "adam_beta2": 0.99,
+  "explode_factor": 3.0,
+  "explode_clip_divisor": 20
+}
