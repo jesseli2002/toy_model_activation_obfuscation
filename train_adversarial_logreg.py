@@ -64,6 +64,7 @@ from dataclasses import dataclass
 import config
 from config import LogregAdversarialConfig, ResidualMLPConfig
 from paths import ckpt_dir, log_dir, run_dir
+from rate_meter import EMARateMeter
 
 # Per-step warm-started solver iterations for the probe update (small: the
 # solver resumes from last step's coefficients, so a handful of lbfgs steps
@@ -822,6 +823,8 @@ def main(args):
         save_checkpoint(path, record, model, opt, best_loss, hidden_layers, adv_config)
 
     t0 = time.time()
+    rate_meter = EMARateMeter()
+    rate_meter.update(start_iter, now=t0)
     try:
         for record in train_steps(
             model,
@@ -846,7 +849,7 @@ def main(args):
                 history.append(_history_entry(record, max_err=me))
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
-                rate = (record.iter - start_iter + 1) / (time.time() - t0 + 1e-9)
+                rate = rate_meter.update(record.iter)
                 print(
                     f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
                     f"probe {record.l_probe:.3e}  λ {record.lam_eff:.1e}  max_err {me:.3e}  "

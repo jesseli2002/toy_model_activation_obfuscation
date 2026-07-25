@@ -60,6 +60,7 @@ import time
 
 import config
 from config import AdversarialConfig, ResidualMLPConfig
+from rate_meter import EMARateMeter
 
 
 def _parse_penalty_layers(s: str) -> str | list[int]:
@@ -475,6 +476,8 @@ def main(args):
     )
 
     t0 = time.time()
+    rate_meter = EMARateMeter()
+    rate_meter.update(start_iter, now=t0)
     it = start_iter
     for it in range(start_iter, args.max_iters):
         lr = _cosine_lr(it, args.max_iters, args.lr, args.lr_final)
@@ -537,7 +540,7 @@ def main(args):
             )
             with open(hist_path, "w") as f:
                 json.dump(history, f)
-            rate = (it - start_iter + 1) / (time.time() - t0 + 1e-9)
+            rate = rate_meter.update(it)
             dn_str = " ".join(f"L{k}:{v:.2e}" for k, v in dn.items())
             print(
                 f"iter {it:>6d}  loss {lv:.3e}  task {l_task.item():.3e}  "
