@@ -563,6 +563,18 @@ def train_steps(
             # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
             for block in model.blocks:
                 torch.nn.utils.clip_grad_norm_(block.parameters(), adv_config.grad_clip)
+        # TODO(perf/quality): grad_clip and adam_eps/adam_beta2 are two
+        # band-aids for the same root cause (see PR #77 for the full
+        # investigation history): AdamW's per-parameter adaptive step can
+        # overshoot when exp_avg_sq is stale, and that overshoot is
+        # invisible to grad_clip since it clips the raw gradient, not the
+        # resulting update. Both patch around this rather than bounding the
+        # thing that actually explodes -- the update itself. StableAdamW
+        # (https://optimi.benjaminwarner.dev/optimizers/stableadamw/) clips
+        # the update's RMS directly and may be a cleaner fix, but needs a
+        # custom optimizer step -- torch.optim.AdamW has no such option --
+        # so it's a bigger lift than the constructor kwargs here. Worth
+        # trying if eps/beta2 tuning still leaves residual spikes.
         opt.step()
 
         if adv_config.explode_factor > 0:
