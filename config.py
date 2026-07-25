@@ -150,7 +150,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     probe_subsample: int = 8
     probe_retrain_interval: int = 16
     resid_noise_std: float = 0.1
-    grad_clip: float = 1.0
+    grad_clip: float = 0.5
     x_p_outer: float | None = None
     x_threshold: float = 1.0
 

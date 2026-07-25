@@ -241,8 +241,14 @@ def parse_args():
         "--grad-clip",
         type=float,
         default=LogregAdversarialConfig.grad_clip,
-        help="clip the model's gradient norm to this value before each "
-        "optimizer step. 0 = no clipping.",
+        help="clip each residual block's own gradient norm (not a single "
+        "whole-model norm) to this value before each optimizer step. "
+        "Per-block because a global norm sums correlated per-block gradient "
+        "contributions under one sqrt, so its natural scale grows with "
+        "num_blocks even though nothing about per-block gradients changed "
+        "with depth -- a 16-arch sweep found per-block grad_norm's p99 stays "
+        "in ~0.2-0.4 regardless of depth/width, vs. whole-model medians "
+        "spanning ~9x with a clear depth trend. 0 = no clipping.",
     )
 
     g_book = p.add_argument_group("bookkeeping")
@@ -466,7 +472,9 @@ def train_steps(
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if args.grad_clip > 0:
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.grad_clip)
+            # Per-block, not whole-model -- see --grad-clip help for why.
+            for block in model.blocks:
+                torch.nn.utils.clip_grad_norm_(block.parameters(), args.grad_clip)
         opt.step()
         model_dt = fwd_dt + (time.time() - t_bwd0)
 
