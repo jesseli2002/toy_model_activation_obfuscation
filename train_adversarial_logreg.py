@@ -25,17 +25,9 @@ so this is a stress test of whatever hiding the DoM/LDA runs found.
 This is NOT gated. The deliverable is the trained checkpoint + diagnostics;
 run once, then stop and review.
 
-A fresh run always inits the model from scratch, so it conflates "learn the
-task" with "hide c from a probe that's learning simultaneously" from
-iteration 0 -- there's no warmstart-from-a-pretrained-checkpoint path
-anymore (train_adversarial.py, the source of such checkpoints, is
-sunsetted). To instead start from a state where the task is already
-learned, `--fork-from` an existing adv-logreg run's checkpoint rather than
-warm-starting.
-
 Three run modes (see plans/rare_flags_config_plan.md for the full design):
   - fresh run: hyperparameters are freshly resolved from `--config`'s JSON
-    file plus `--lam`. Writes `runs/<tag>/config.json` once.
+    file plus CLI-common flags. Writes `runs/<tag>/config.json` once.
   - `--resume <tag>`: strictly continues the same experiment. All
     hyperparameters (CLI-common and config-file) are restored from the
     checkpoint, never re-read from `--config` or CLI. `runs/<tag>/config.json`
@@ -94,9 +86,8 @@ def parse_args():
 
     g_adv = p.add_argument_group(
         "adversarial objective (CLI-common)",
-        "Touched often enough to stay a CLI flag; every other hyperparameter "
-        "(including penalty_layers, probe/data/optimizer) lives in --config's "
-        "JSON file instead -- see LogregAdversarialConfig.",
+        "Touched often enough to stay CLI flags; every other hyperparameter "
+        "lives in --config's JSON file instead -- see LogregAdversarialConfig.",
     )
     g_adv.add_argument(
         "--lam",
