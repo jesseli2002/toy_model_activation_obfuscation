@@ -823,8 +823,7 @@ def main(args):
         save_checkpoint(path, record, model, opt, best_loss, hidden_layers, adv_config)
 
     t0 = time.time()
-    rate_meter = EMARateMeter()
-    rate_meter.update(start_iter, now=t0)
+    rate_meter = EMARateMeter(start_iter)
     try:
         for record in train_steps(
             model,

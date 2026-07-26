@@ -476,8 +476,7 @@ def main(args):
     )
 
     t0 = time.time()
-    rate_meter = EMARateMeter()
-    rate_meter.update(start_iter, now=t0)
+    rate_meter = EMARateMeter(start_iter)
     it = start_iter
     for it in range(start_iter, args.max_iters):
         lr = _cosine_lr(it, args.max_iters, args.lr, args.lr_final)

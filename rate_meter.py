@@ -12,22 +12,15 @@ class EMARateMeter:
     results whether you log every iteration or every N iterations.
     """
 
-    def __init__(self, window: float = 200.0):
+    def __init__(self, start_iter: int, window: float = 200.0):
         self.window = window
         self._ema: float | None = None
-        self._last_time: float | None = None
-        self._last_iter: int | None = None
+        self._last_time = time.time()
+        self._last_iter = start_iter
 
-    def update(self, iter: int, now: float | None = None) -> float:
-        """Record that `iter` was reached at time `now` (default: time.time()), return the current EMA rate."""
-        if now is None:
-            now = time.time()
-
-        if self._last_time is None:
-            self._last_time = now
-            self._last_iter = iter
-            return 0.0
-
+    def update(self, iter: int) -> float:
+        """Record that `iter` was just reached, return the current EMA rate."""
+        now = time.time()
         delta_iter = iter - self._last_iter
         dt = now - self._last_time
         if delta_iter > 0 and dt > 0:
