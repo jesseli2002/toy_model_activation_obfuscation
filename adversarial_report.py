@@ -606,6 +606,7 @@ def _plot_steer_comparison(
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper left", fontsize=8)
     axes[0].set_ylabel("y (c=1 input, steered toward c=2)")
+    axes[0].set_ylim([-2.8, 2.8])
     fig.suptitle(
         f"steering effectiveness, DoM vs logreg direction ({tag}, layer {steer_layer})"
     )

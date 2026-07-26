@@ -39,7 +39,9 @@ def parse_args():
     p.add_argument("--c-hi", type=float, default=2.0, help="probe positive class")
     p.add_argument("--n", type=int, default=20_000, help="samples per class per split")
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--out-dir", type=str, default=None, help="default: $TMPDIR or .")
+    p.add_argument(
+        "--out-dir", type=str, default=".", help="Directory where plots are saved to"
+    )
     p.add_argument("--show", action="store_true")
     return p.parse_args()
 
@@ -289,24 +291,20 @@ def uniform(shape, lo, hi, gen) -> Tensor:
 
 
 # --------------------------------------------------------------------------
-# 4. Probes (numpy/sklearn: these are meant to be the obvious, boring baseline)
+# 4. Linear probes (difference of means & logistic regression)
 # --------------------------------------------------------------------------
-def dom_probe(
-    X: Float[np.ndarray, "b d"], y: Float[np.ndarray, " b"]
-) -> tuple[Float[np.ndarray, " d"], float]:
-    """Difference-of-means direction with a midpoint-of-means threshold."""
-    mu0, mu1 = X[y == 0].mean(0), X[y == 1].mean(0)
-    w = mu1 - mu0
-    return w, float(-0.5 * (mu0 + mu1) @ w)
 
 
 def probe_layer(train, test) -> dict:
     """Fit both probes on one layer's residuals; score on the held-out split."""
-    X_tr, y_tr = train
+    X_tr, y_tr = train  # X shape (batch, d_model); y shape (d_model)
     X_te, y_te = test
     out = {}
 
-    w, b = dom_probe(X_tr, y_tr)
+    # Compute difference-of-means
+    mu0, mu1 = X_tr[y_tr == 0].mean(0), X_tr[y_tr == 1].mean(0)
+    w = mu1 - mu0
+    b = float(-0.5 * (mu0 + mu1) @ w)
     s = X_te @ w + b
     out["difference of means"] = dict(
         scores=s,
@@ -483,7 +481,7 @@ def plot_learned_curves(net, out_dir, c_values=(1.0, 1.333, 1.667, 2.0)):
 @torch.no_grad()
 def main(args):
     gen = torch.Generator().manual_seed(args.seed)
-    out_dir = pathlib.Path(args.out_dir or os.environ.get("TMPDIR", "."))
+    out_dir = pathlib.Path(args.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
     print("== network exactness ==")
