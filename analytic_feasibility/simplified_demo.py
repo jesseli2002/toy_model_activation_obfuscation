@@ -1,34 +1,29 @@
-"""Self-contained demo of the simplified analytic probe-hiding construction.
-
-A residual MLP with `d_mlp = num_x / 2` computes `y = sat(x, -c, +c)` exactly,
-while every *probed* residual layer is mean-constant in `c`. `c` itself is
-erased from the residual after the second block; it survives only inside a pair
-of nonlinear, mean-zero "v-channels" that no affine probe can read.
-
-The three moving parts:
+"""Self-contained, minimal demo of an analytic construction where a residual
+MLP computes `y = sat(x, -c, +c)` exactly while every *probed* layer stays
+mean-constant in `c` -- so no affine (difference-of-means or logistic
+regression) probe can recover `c`, even though the model needs it to compute
+`y`. See the accompanying blog post for the derivation; this script just
+builds the network, checks it is exact, and probes it.
 
 1. **Encode** (block 0). Two channels `v1(x1, c)`, `v2(x1, c)` built from four
-   ReLUs. Both satisfy `E_x1[v] = 0` for every `c`, so they carry `c` without
-   moving any residual mean. Their four kinks cut `x1` into 5 bands whose
-   left-to-right order is fixed over `c in [1, 2]`.
+   ReLUs, with `E_x1[v] = 0` for every `c` -- so they carry `c` without moving
+   any residual mean. Their four kinks cut `x1` into 5 bands whose
+   left-to-right order is fixed over `c in [1, 2]`. `c` is then erased from
+   the residual.
 2. **Decode** (unprobed block). Inside a band, `c` is an affine function of
    `(x1, v1, v2)` -- but we cannot tell which band we are in without `c`. The
-   fix: three ReLU atoms `R_j = relu(P_j(x1, v1, v2))` whose `P_j` vanish
-   identically along an existing kink curve, so they add no new kinks. Together
-   with `{1, x1, v1, v2}` they span the full 7-dimensional space of piecewise
+   fix: three ReLUs `R_i = relu(P_i(x1, v1, v2))` whose `P_i` vanish
+   identically along an existing kink curve, so they add no new kinks.
+   Together with `{1, x1, v1, v2}` they span the full space of piecewise
    linear functions on the 5 bands, so `c` is an exact *affine* read-out of
    `(x1, v1, v2, R_1, R_2, R_3)`.
 3. **Use + clear** (probed block). The next block reads `c` as a pre-activation
-   (folding the affine read-out into its input matrix), finishes two `x`
-   coordinates, and zeroes the `R_j` dims -- so the probed residual is back to
-   `[sat-done x, pending x, 0, v1, v2, 0]`.
-
-This is the simplified version of `period2_net.py`: 3 decode atoms instead of
-8, because `{1, x1, v1, v2}` are already reachable from the residual and do not
-need their own always-on neurons. See README.md section 3.
+   (folding the affine read-out into its input matrix), finishes some `x`
+   coordinates, and zeroes the `R_i` dims -- so the probed residual is back to
+   holding only `[sat-done x, pending x, 0, v1, v2, 0]`.
 
 Outputs: exactness checks, per-layer difference-of-means / logistic-regression
-probe AUROCs, and plots (`simplified_*.png`).
+probe AUROCs, and plots.
 """
 
 import argparse
@@ -54,7 +49,7 @@ if __name__ == "__main__":
 
 import os
 import pathlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -74,9 +69,8 @@ C_LO, C_HI = 1.0, 2.0  # c ~ U[C_LO, C_HI]
 
 
 # --------------------------------------------------------------------------
-# 0. The architecture (a pared-down copy of the repo's model.py: ReLU only, no
-#    layernorm / gelu / residual noise / checkpointing, and weights are set
-#    analytically rather than trained, so they are buffers, not Parameters.)
+# 0. The architecture: a plain ReLU residual MLP. Weights are set analytically
+#    below rather than trained, so they are buffers, not Parameters.
 # --------------------------------------------------------------------------
 class ResidualMLPBlock(nn.Module):
     """r <- r + relu(r @ W_in + b_in) @ W_out + b_out"""
@@ -133,108 +127,30 @@ class ResidualMLP(nn.Module):
 
 
 # --------------------------------------------------------------------------
-# 1. Encoding: the mean-constant v-channels
+# 1. Decode: three ReLUs that add no new kinks
 # --------------------------------------------------------------------------
-def v1f(x1, c):
-    """Kinks at x1 = -c and x1 = 3-c. E_x1[v1] = 0 for every c."""
-    return -2 * torch.relu(-x1 - c) + 2 * torch.relu(x1 + c - 3) - c + 1.5
-
-
-def v2f(x1, c):
-    """Kinks at x1 = -c/2 and x1 = 3-c/2. E_x1[v2] = 0 for every c."""
-    return -4 * torch.relu(-x1 - c / 2) + 4 * torch.relu(x1 + c / 2 - 3) - c + 3.0
-
-
-# --------------------------------------------------------------------------
-# 2. Decode: ReLU atoms that vanish along an existing kink curve
-# --------------------------------------------------------------------------
-# An atom is P = a0 + a1*x1 + a2*v1 + a3*v2 required to vanish identically along
-# one kink curve. Substituting the on-curve values of v1, v2 turns P into a
-# linear polynomial in c; killing both of its coefficients pins (a0, a1) and
-# leaves (a2, a3) free (one real degree of freedom after scaling).
-#
-#   curve x1 = -c/2   : v1 = 3/2 - c, v2 = 3 - c
-#                       -> a1 = -2*a2 - 2*a3,  a0 = -1.5*a2 - 3*a3
-#   curve x1 = 3-c/2  : v1 = 3/2,     v2 = 3 - c
-#                       -> a1 = -2*a3,         a0 = 3*a3 - 1.5*a2
-#
-# The other two curves (x1 = -c and x1 = 3-c) are creases: no choice of
-# (a2, a3) makes P one-sided there, so they yield no usable atoms.
-CURVES = {
-    "-c/2": lambda c: -c / 2,
-    "3-c/2": lambda c: 3 - c / 2,
-}
-
-
-def atom_coeffs(curve: str, a2: float, a3: float) -> tuple[float, float, float, float]:
-    """(a0, a1, a2, a3) for the affine vanishing along `curve`."""
-    if curve == "-c/2":
-        return (-1.5 * a2 - 3 * a3, -2 * a2 - 2 * a3, a2, a3)
-    return (3 * a3 - 1.5 * a2, -2 * a3, a2, a3)
-
-
-def eval_atom(coeffs, x1, v1, v2):
-    a0, a1, a2, a3 = coeffs
-    return a0 + a1 * x1 + a2 * v1 + a3 * v2
-
-
-# The three chosen atoms. Each `P_j` is one-sided about its curve (verified
-# below), so `relu(P_j)` introduces no kink of its own.
-#   A: P = 2*x1 - 2*v1 + v2          (curve x1 = -c/2)
-#   B: P = -2*x1 + v1 - 3/2          (curve x1 = -c/2)
-#   C: P = v1 - 3/2                  (curve x1 = 3-c/2)
-ATOMS = [
-    atom_coeffs("-c/2", -2, 1),
-    atom_coeffs("-c/2", 1, 0),
-    atom_coeffs("3-c/2", 1, 0),
+# (v1, v2, the encoding channels from block 0 below, are built directly as
+# weights -- there is no standalone Python function for them, since nothing
+# here needs to evaluate them outside the network itself.)
+# Each P_i = a0 + a1*x1 + a2*v1 + a3*v2 is built to vanish identically along
+# one kink curve, so relu(P_i) is one-sided there and introduces no kink of
+# its own. Only two of the four kink curves admit such a P; see the blog post
+# for the derivation. The three chosen P_i:
+#   P_1 = 2*x1 - 2*v1 + v2   (vanishes at x1 = -c/2)
+#   P_2 = -2*x1 + v1 - 1.5   (vanishes at x1 = -c/2)
+#   P_3 = v1 - 1.5           (vanishes at x1 = 3-c/2)
+P_COEFFS = [  # each (a0, a1, a2, a3)
+    (0.0, 2.0, -2.0, 1.0),
+    (-1.5, -2.0, 1.0, 0.0),
+    (-1.5, 0.0, 1.0, 0.0),
 ]
-ATOM_CURVES = ["-c/2", "-c/2", "3-c/2"]
 
-# c = w . [1, x1, v1, v2, relu(P_A), relu(P_B), relu(P_C)], exactly.
+# c = w . [1, x1, v1, v2, relu(P_1), relu(P_2), relu(P_3)], exactly.
 DECODE_W = torch.tensor([3.0, 4.0, -4.0, 1.0, -2.0, 4.0, 2.0])
 
 
-def decode_features(x1, v1, v2) -> Float[Tensor, "... 7"]:
-    """Feature stack the decode read-out is affine in."""
-    return torch.stack(
-        [torch.ones_like(x1), x1, v1, v2]
-        + [torch.relu(eval_atom(a, x1, v1, v2)) for a in ATOMS],
-        dim=-1,
-    )
-
-
-def check_decode(verbose: bool = True) -> float:
-    """Verify the one-sidedness of each atom and the exactness of DECODE_W."""
-    xs = torch.linspace(X_LO, X_HI, 1201)
-    cs = torch.linspace(C_LO, C_HI, 101)
-    Xg, Cg = torch.meshgrid(xs, cs, indexing="ij")
-    V1g, V2g = v1f(Xg, Cg), v2f(Xg, Cg)
-
-    for coeffs, curve in zip(ATOMS, ATOM_CURVES):
-        P = eval_atom(coeffs, Xg, V1g, V2g)
-        kink = CURVES[curve](Cg)
-        right = (P[Xg > kink + 1e-6] > 1e-9).double().mean()
-        left = (P[Xg < kink - 1e-6] > 1e-9).double().mean()
-        one_sided = (right > 1 - 1e-9 and left < 1e-9) or (
-            left > 1 - 1e-9 and right < 1e-9
-        )
-        assert one_sided, f"atom {coeffs} is not one-sided about x1 = {curve}"
-
-    feats = decode_features(Xg, V1g, V2g)
-    err = float((feats @ DECODE_W - Cg).abs().max())
-    # Independent re-derivation: least squares on the same feature stack must
-    # land on DECODE_W, i.e. the atoms really do span what is needed.
-    w_fit = torch.linalg.lstsq(
-        feats.reshape(-1, feats.shape[-1]), Cg.reshape(-1)
-    ).solution
-    assert (w_fit - DECODE_W).abs().max() < 1e-6, w_fit
-    if verbose:
-        print(f"decode: 3 atoms, max |c_hat - c| over (x1, c) grid = {err:.2e}")
-    return err
-
-
 # --------------------------------------------------------------------------
-# 3. Building the literal network
+# 2. Building the literal network
 # --------------------------------------------------------------------------
 # Residual layout: [x_0 .. x_{n-1}] [c] [v1] [v2] [R_0 R_1 R_2]
 ERASE_BIG = 10.0  # always-on offset: relu(z + ERASE_BIG) = z + ERASE_BIG
@@ -247,18 +163,16 @@ class Schedule:
     block 0     -> r1  unprobed: write v1, v2 (c still linear here)
     block 1     -> r2  probed:   finish `first_batch` coords with linear c,
                                  erase c
-    block 2k    -> r_{2k+1} unprobed: write the 3 decode atoms
+    block 2k    -> r_{2k+1} unprobed: write the 3 decode ReLUs R_1..R_3
     block 2k+1  -> r_{2k+2} probed:   finish `per_period` coords via the
-                                      affine c read-out, clear the atom dims
+                                      affine c read-out, clear the R_i dims
     """
 
     num_x: int
     d_mlp: int
     first_batch: int
     per_period: int
-    coord_order: list[int]
     num_blocks: int
-    dims: dict[str, int] = field(default_factory=dict)
 
     def is_probed(self, layer: int) -> bool:
         """Probed layers are the even ones (r_0 holds c by construction)."""
@@ -290,9 +204,7 @@ def build_network(num_x: int) -> tuple[ResidualMLP, Schedule]:
         d_mlp=d_mlp,
         first_batch=first_batch,
         per_period=per_period,
-        coord_order=coord_order,
         num_blocks=2 + 2 * len(batches),
-        dims=dict(c=C, v1=V1, v2=V2, r0=R0),
     )
     net = ResidualMLP(num_x, d_model, d_mlp, sched.num_blocks)
     blocks = iter(net.blocks)
@@ -321,15 +233,15 @@ def build_network(num_x: int) -> tuple[ResidualMLP, Schedule]:
 
     # --- periodic blocks ---
     # c_hat is an affine read of the residual, so relu(x_i - c_hat) is a legal
-    # pre-activation for the block right after the atoms are written.
+    # pre-activation for the block right after R_1..R_3 are written.
     chat_vec = torch.zeros(d_model)
     chat_vec[0], chat_vec[V1], chat_vec[V2] = DECODE_W[1], DECODE_W[2], DECODE_W[3]
     chat_vec[R0 : R0 + 3] = DECODE_W[4:]
     chat_const = DECODE_W[0]
     for batch in batches:
-        # decode block: R_j = relu(P_j(x1, v1, v2))  (3 neurons)
+        # decode block: R_i = relu(P_i(x1, v1, v2))  (3 neurons)
         blk = next(blocks)
-        for j, (a0, a1, a2, a3) in enumerate(ATOMS):
+        for j, (a0, a1, a2, a3) in enumerate(P_COEFFS):
             blk.W_in[0, j], blk.W_in[V1, j], blk.W_in[V2, j] = a1, a2, a3
             blk.b_in[j] = a0
             blk.W_out[j, R0 + j] = 1
@@ -353,9 +265,11 @@ def build_network(num_x: int) -> tuple[ResidualMLP, Schedule]:
 
 
 # --------------------------------------------------------------------------
-# 4. Exactness checks
+# 3. Exactness check
 # --------------------------------------------------------------------------
 def check_network(net: ResidualMLP, sched: Schedule, gen, n_samples: int = 50_000):
+    """Verify the network computes sat(x, -c, c) exactly. (Whether `c` is
+    detectable at each layer is what the probes below are for.)"""
     max_used = max(b.neurons_used() for b in net.blocks)
     print(
         f"network: num_x={sched.num_x}, d_mlp={sched.d_mlp} (= num_x/2), "
@@ -364,26 +278,10 @@ def check_network(net: ResidualMLP, sched: Schedule, gen, n_samples: int = 50_00
     )
     x = uniform((n_samples, sched.num_x), X_LO, X_HI, gen)
     for c_val in (C_LO, 1.37, 1.5, 2.0):
-        rs = net.residuals(x, torch.full((n_samples,), c_val))
-        target = x.clamp(-c_val, c_val)
-        task_err = float((rs[-1][:, : sched.num_x] - target).abs().max())
-        # every probed layer must hold [sat-done x, pending x, 0, v1, v2, 0]
-        content_err = 0.0
-        for layer, r in enumerate(rs):
-            if not sched.is_probed(layer):
-                continue
-            done = sched.coord_order[: sched.n_finished(layer)]
-            exp = torch.zeros_like(r)
-            exp[:, : sched.num_x] = x
-            exp[:, done] = target[:, done]
-            exp[:, sched.dims["v1"]] = v1f(x[:, 0], c_val)
-            exp[:, sched.dims["v2"]] = v2f(x[:, 0], c_val)
-            content_err = max(content_err, float((r - exp).abs().max()))
-        print(
-            f"  c={c_val:<5g} task max err = {task_err:.2e}   "
-            f"probed-layer content err = {content_err:.2e}"
-        )
-        assert task_err < 1e-9 and content_err < 1e-9
+        y = net.task_output(x, torch.full((n_samples,), c_val))
+        task_err = float((y - x.clamp(-c_val, c_val)).abs().max())
+        print(f"  c={c_val:<5g} task max err = {task_err:.2e}")
+        assert task_err < 1e-9
 
 
 def uniform(shape, lo, hi, gen) -> Tensor:
@@ -391,7 +289,7 @@ def uniform(shape, lo, hi, gen) -> Tensor:
 
 
 # --------------------------------------------------------------------------
-# 5. Probes (numpy/sklearn: these are meant to be the obvious, boring baseline)
+# 4. Probes (numpy/sklearn: these are meant to be the obvious, boring baseline)
 # --------------------------------------------------------------------------
 def dom_probe(
     X: Float[np.ndarray, "b d"], y: Float[np.ndarray, " b"]
@@ -462,7 +360,7 @@ def run_probes(net: ResidualMLP, sched: Schedule, args, gen) -> dict[int, dict]:
 
 
 # --------------------------------------------------------------------------
-# 6. Plots
+# 5. Plots
 # --------------------------------------------------------------------------
 PROBE_NAMES = ["difference of means", "logistic regression"]
 
@@ -544,8 +442,8 @@ def plot_auroc_by_layer(results, out_dir) -> pathlib.Path:
 
 
 def plot_learned_curves(net, out_dir, c_values=(1.0, 1.333, 1.667, 2.0)):
-    """y(x) per coordinate at fixed c (mirrors adversarial_report.py's
-    `*_curves.png`), showing the network really does compute the task."""
+    """y(x) per coordinate at fixed c, showing the network exactly reproduces
+    sat(x, -c, c)."""
     xs = torch.linspace(X_LO, X_HI, 400)
     fig, axes = plt.subplots(
         1, len(c_values), figsize=(4 * len(c_values), 4), sharey=True
@@ -581,29 +479,6 @@ def plot_learned_curves(net, out_dir, c_values=(1.0, 1.333, 1.667, 2.0)):
     return path
 
 
-def plot_encoding(out_dir, c_values=(1.0, 1.5, 2.0)) -> pathlib.Path:
-    """The v-channels themselves: mean-zero for every c, kinks that move."""
-    xs = torch.linspace(X_LO, X_HI, 1000)
-    xs_fine = torch.linspace(X_LO, X_HI, 200_001)  # accurate quadrature for E_x1[v]
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.2), sharey=True)
-    for ax, (name, f) in zip(axes, [("v1", v1f), ("v2", v2f)]):
-        for c in c_values:
-            mean = torch.trapezoid(f(xs_fine, c), xs_fine) / (X_HI - X_LO)
-            ax.plot(xs.numpy(), f(xs, c).numpy(), label=f"c={c:g} (E[v]={mean:+.1e})")
-        ax.axhline(0.0, color="k", lw=1, alpha=0.4)
-        ax.set_title(f"{name}(x1, c)")
-        ax.set_xlabel("x1")
-        ax.grid(True, alpha=0.3)
-        ax.legend(fontsize=8)
-    axes[0].set_ylabel("channel value")
-    fig.suptitle("encoding channels: E_x1[v] = 0 for every c, so no mean moves")
-    fig.tight_layout()
-    path = out_dir / "simplified_encoding.png"
-    fig.savefig(path, dpi=120)
-    print(f"[plot] wrote {path}")
-    return path
-
-
 # --------------------------------------------------------------------------
 @torch.no_grad()
 def main(args):
@@ -611,10 +486,7 @@ def main(args):
     out_dir = pathlib.Path(args.out_dir or os.environ.get("TMPDIR", "."))
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    print("== decode construction ==")
-    check_decode()
-
-    print("\n== network exactness ==")
+    print("== network exactness ==")
     net, sched = build_network(args.num_x)
     check_network(net, sched, gen)
 
@@ -638,7 +510,6 @@ def main(args):
     )
 
     print()
-    plot_encoding(out_dir)
     plot_learned_curves(net, out_dir)
     plot_probe_hists(sched, results, args, out_dir)
     plot_auroc_by_layer(results, out_dir)
