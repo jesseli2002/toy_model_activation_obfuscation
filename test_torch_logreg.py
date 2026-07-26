@@ -190,6 +190,29 @@ def test_overflow_triggers_reset_and_retry(monkeypatch):
     assert torch.isfinite(model.intercept_).all()
 
 
+def test_overflow_on_retry_still_propagates(monkeypatch):
+    """Characterizes a real crash (2026-07-26) where the retry added for
+    test_overflow_triggers_reset_and_retry also overflowed: the first
+    overflow is caught and the optimizer is reset as designed, but the
+    single retry has no protection of its own, so a second overflow
+    propagates uncaught. This documents the current (incomplete) behavior
+    rather than asserting it's desirable -- see the crash writeup for
+    root-cause discussion of why a *fresh*, curvature-history-free
+    optimizer can still overflow on its first step."""
+    X, y = make_binary_data(n=200, d=5, seed=13)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=True)
+    model.fit(Xt, yt)  # establish a real, non-None optimizer + coef_
+
+    def always_overflow(self, closure):
+        raise RuntimeError("value cannot be converted to type float without overflow")
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", always_overflow)
+
+    with pytest.raises(RuntimeError, match="overflow"):
+        model.fit(Xt, yt)
+
+
 def test_non_overflow_runtime_error_is_not_swallowed(monkeypatch):
     X, y = make_binary_data(n=200, d=5, seed=17)
     Xt, yt = to_torch(X, y)
