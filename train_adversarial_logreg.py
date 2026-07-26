@@ -25,25 +25,20 @@ so this is a stress test of whatever hiding the DoM/LDA runs found.
 This is NOT gated. The deliverable is the trained checkpoint + diagnostics;
 run once, then stop and review.
 
-Normally warm-starts from an existing train_adversarial.py-produced
-checkpoint (`--warmstart PATH`). `--no-warmstart` inits a fresh model from
-`--num-x`/`--d-model`/`--d-mlp`/`--num-blocks` instead, conflating "learn the
-task" with "hide c from a probe that's learning simultaneously" -- a
-confound, so only use it to intentionally study that confound.
-
 Three run modes (see plans/rare_flags_config_plan.md for the full design):
   - fresh run: hyperparameters are freshly resolved from `--config`'s JSON
-    file plus `--lam`/`--penalty-layers`. Writes `runs/<tag>/config.json`
-    once.
+    file plus CLI-common flags. Writes `runs/<tag>/config.json` once.
   - `--resume <tag>`: strictly continues the same experiment. All
     hyperparameters (CLI-common and config-file) are restored from the
     checkpoint, never re-read from `--config` or CLI. `runs/<tag>/config.json`
     is read once for a sanity check against the restored config (a mismatch
     warns but never rewrites the file) -- not for resolving hyperparameters.
   - `--fork-from <source_tag>` (with `--tag <new_tag>`): branches a new
-    experiment off `source_tag`'s checkpoint (weights/optimizer/iter), but
-    hyperparameters are freshly resolved exactly like a fresh run --
-    `runs/<new_tag>/config.json` additionally records `forked_from`.
+    experiment off `source_tag`'s checkpoint -- architecture, weights,
+    optimizer, and iteration count all come from there, same as `--resume` --
+    but the adversarial-objective hyperparameters are freshly resolved
+    exactly like a fresh run. `runs/<new_tag>/config.json` additionally
+    records `forked_from`.
 
 `runs/<tag>/config.json` is write-once and read-only thereafter for the
 lifetime of that tag: hand-editing it after creation has no effect except
@@ -73,12 +68,6 @@ from rate_meter import EMARateMeter
 PROBE_STEP_MAX_ITER = 100
 
 
-def _parse_penalty_layers(s: str) -> str | list[int]:
-    if s.strip().lower() == "all":
-        return "all"
-    return [int(v) for v in s.split(",") if v.strip() != ""]
-
-
 def parse_args():
     p = argparse.ArgumentParser(
         description="Adversarial training: model vs. a simultaneous, "
@@ -86,57 +75,20 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     g_init = p.add_argument_group(
-        "model initialization",
-        "Warm-start from a train_adversarial.py checkpoint (default), or init "
-        "from scratch with the given architecture.",
+        "model initialization (fresh run only)",
+        "The model always inits from scratch with this architecture. Ignored "
+        "under --resume/--fork-from, which instead take the architecture from "
+        "the checkpoint being restored.",
     )
-    g_init.add_argument(
-        "--warmstart",
-        type=str,
-        default=None,
-        metavar="PATH",
-        help="checkpoint to warm-start from (train_adversarial.py-produced, "
-        "loaded via ResidualMLP.load). Architecture is taken from this "
-        "checkpoint's config. Mutually exclusive with --no-warmstart.",
-    )
-    g_init.add_argument(
-        "--no-warmstart",
-        action="store_true",
-        help="init the model from scratch instead of warm-starting -- "
-        "conflates learning the task with hiding c from a probe that's "
-        "learning simultaneously, so only use this to intentionally study "
-        "that confound. Requires --num-x/--d-model/--d-mlp/--num-blocks.",
-    )
-    g_init.add_argument(
-        "--num-x",
-        type=int,
-        default=ResidualMLPConfig.num_x,
-        help="(--no-warmstart only)",
-    )
-    g_init.add_argument(
-        "--d-model",
-        type=int,
-        default=ResidualMLPConfig.d_model,
-        help="(--no-warmstart only)",
-    )
-    g_init.add_argument(
-        "--d-mlp",
-        type=int,
-        default=None,
-        help="default: num_x. (--no-warmstart only)",
-    )
-    g_init.add_argument(
-        "--num-blocks",
-        type=int,
-        default=ResidualMLPConfig.num_blocks,
-        help="(--no-warmstart only)",
-    )
+    g_init.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
+    g_init.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
+    g_init.add_argument("--d-mlp", type=int, default=None, help="default: num_x.")
+    g_init.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
 
     g_adv = p.add_argument_group(
         "adversarial objective (CLI-common)",
         "Touched often enough to stay CLI flags; every other hyperparameter "
-        "(probe/data/optimizer) lives in --config's JSON file instead -- see "
-        "LogregAdversarialConfig.",
+        "lives in --config's JSON file instead -- see LogregAdversarialConfig.",
     )
     g_adv.add_argument(
         "--lam",
@@ -145,13 +97,6 @@ def parse_args():
         help="convex-combination weight: loss = lam * L_probe + (1-lam) * L_task. "
         "lam=1 optimizes purely for hiding c (task loss ignored). lam=0 is "
         "plain task training.",
-    )
-    g_adv.add_argument(
-        "--penalty-layers",
-        type=_parse_penalty_layers,
-        default="all",
-        help="'all' = every hidden layer (1..num_blocks-1), or a comma-separated "
-        "subset e.g. '1,2,3'.",
     )
 
     g_book = p.add_argument_group("bookkeeping")
@@ -172,11 +117,11 @@ def parse_args():
         type=str,
         default=None,
         metavar="SOURCE_TAG",
-        help="branch a new --tag off SOURCE_TAG's latest checkpoint (weights, "
-        "optimizer state, iteration count, and history -- continued for "
-        "continuous loss curves). Unlike --resume, hyperparameters are "
-        "freshly resolved from this invocation's --config/--lam/"
-        "--penalty-layers, not inherited from SOURCE_TAG. Mutually exclusive "
+        help="branch a new --tag off SOURCE_TAG's latest checkpoint (architecture, "
+        "weights, optimizer state, iteration count, and history -- continued for "
+        "continuous loss curves). Unlike --resume, the adversarial-objective "
+        "hyperparameters are freshly resolved from this invocation's "
+        "--config/--lam, not inherited from SOURCE_TAG. Mutually exclusive "
         "with --resume.",
     )
     g_book.add_argument(
@@ -209,10 +154,6 @@ def parse_args():
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
 
     args = p.parse_args()
-    if args.warmstart is not None and args.no_warmstart:
-        p.error("--warmstart and --no-warmstart are mutually exclusive.")
-    if args.warmstart is None and not args.no_warmstart:
-        p.error("specify --warmstart PATH or --no-warmstart.")
     if args.resume and args.fork_from is not None:
         p.error("--resume and --fork-from are mutually exclusive.")
     if not args.resume and args.config is None:
@@ -225,8 +166,6 @@ if __name__ == "__main__":
     args = parse_args()
     # Cheap existence checks, fired before run-dir setup (in main()) can delete
     # an existing runs/<tag> or start restoring from a nonexistent checkpoint.
-    if not args.no_warmstart and not os.path.exists(args.warmstart):
-        raise SystemExit(f"[error] --warmstart checkpoint not found: {args.warmstart}")
     if args.fork_from is not None:
         source_ckpt = os.path.join(ckpt_dir(args.fork_from), "last.pt")
         if not os.path.exists(source_ckpt):
@@ -277,30 +216,9 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
     return layers
 
 
-def resolve_model(args, device):
-    """Warm-start from a train_adversarial.py checkpoint (default) or init
-    from scratch, per --warmstart/--no-warmstart. Assumes --warmstart's
-    existence has already been checked (Tier 2, in the __main__ guard)."""
-    if not args.no_warmstart:
-        model, _ = ResidualMLP.load(args.warmstart, map_location=device)
-        model = model.to(device)
-        model_config = model.config
-        print(f"[init] warm-started from {args.warmstart} (cfg={model_config})")
-    else:
-        model_config = ResidualMLPConfig(
-            num_x=args.num_x,
-            d_model=args.d_model,
-            d_mlp=args.d_mlp,
-            num_blocks=args.num_blocks,
-        )
-        model = ResidualMLP(model_config).to(device)
-        print(f"[init] scratch model cfg={model_config}")
-    return model, model_config
-
-
 def _read_config_file(path: str) -> dict:
     """Read --config's JSON file. Required-key validation happens later, in
-    load_run_config, once lam/penalty_layers are known too."""
+    load_run_config, once lam is known too."""
     try:
         with open(path) as f:
             return json.load(f)
@@ -311,29 +229,37 @@ def _read_config_file(path: str) -> dict:
 
 
 def load_run_config(
-    file_fields: dict, *, lam: float, penalty_layers: list[int], config_path: str
-) -> LogregAdversarialConfig:
-    """Merge --config's file_fields with this invocation's CLI-common
-    hyperparameters (lam, resolved penalty_layers) into one
-    LogregAdversarialConfig. A missing required key in the file surfaces as
-    the dataclass constructor's TypeError; re-raised here as a SystemExit
-    naming the specific key(s), per this module's [error] convention."""
-    try:
-        return LogregAdversarialConfig(
-            lam=lam, penalty_layers=penalty_layers, **file_fields
+    file_fields: dict, *, lam: float, num_blocks: int, config_path: str
+) -> tuple[LogregAdversarialConfig, list[int]]:
+    """Merge --config's file_fields with this invocation's --lam into one
+    LogregAdversarialConfig, resolving `penalty_layers` (a config-file value
+    of "all" or an explicit list) against num_blocks first -- so a missing/
+    invalid `penalty_layers` surfaces the same as any other bad --config key.
+    A missing required key in the file surfaces as the dataclass
+    constructor's TypeError; re-raised here as a SystemExit naming the
+    specific key(s), per this module's [error] convention. Returns
+    (adv_config, hidden_layers) -- the latter is what callers actually index
+    caches with."""
+    fields = dict(file_fields)
+    if "penalty_layers" in fields:
+        fields["penalty_layers"] = _resolve_hidden_layers(
+            fields["penalty_layers"], num_blocks
         )
+    try:
+        adv_config = LogregAdversarialConfig(lam=lam, **fields)
     except TypeError:
         required = {
             f.name
             for f in dataclasses.fields(LogregAdversarialConfig)
             if f.default is dataclasses.MISSING
         }
-        missing = sorted(required - file_fields.keys())
+        missing = sorted(required - fields.keys())
         if missing:
             raise SystemExit(
                 f"[error] --config {config_path} missing required key(s): {missing}"
             )
         raise
+    return adv_config, adv_config.penalty_layers
 
 
 def _config_json_path(tag: str) -> str:
@@ -377,19 +303,20 @@ def _check_config_json(tag: str, adv_config: LogregAdversarialConfig) -> None:
         )
 
 
-def _restore_checkpoint(ckpt_path: str, model, opt, device):
-    """Load weights + optimizer state + iteration count from `ckpt_path` in
-    place onto `model`/`opt` -- shared by --resume (source: args.tag) and
-    --fork-from (source: args.fork_from). The two differ only in WHICH tag's
-    checkpoint/config feeds this, not in what gets restored here. Returns
-    (start_iter, best_loss, rck) so callers can pull any other checkpoint
+def _restore_checkpoint(ckpt_path: str, device):
+    """Load a full checkpoint -- architecture, weights, optimizer state, and
+    iteration count -- shared by --resume (source: args.tag) and --fork-from
+    (source: args.fork_from). The two differ only in WHICH tag's checkpoint
+    feeds this, not in what gets restored here. Returns (model, opt,
+    start_iter, best_loss, rck) so callers can pull any other checkpoint
     field they need (e.g. --resume rebuilds adv_config from rck)."""
-    rck = torch.load(ckpt_path, map_location=device)
-    model.load_state_dict(rck["model"])
+    model, rck = ResidualMLP.load(ckpt_path, map_location=device)
+    model = model.to(device)
+    opt = torch.optim.AdamW(model.parameters(), lr=1.0)  # lr/eps/betas set by caller
     opt.load_state_dict(rck["opt"])
     start_iter = rck["iter"]
     best_loss = rck.get("best_loss", float("inf"))
-    return start_iter, best_loss, rck
+    return model, opt, start_iter, best_loss, rck
 
 
 def _forked_history(source_tag: str, fork_iter: int) -> list[dict]:
@@ -688,57 +615,35 @@ def main(args):
     os.makedirs(run_ckpt_dir, exist_ok=True)
     os.makedirs(run_log_dir, exist_ok=True)
 
-    # Fresh/fork: hyperparameters are freshly resolved from --config + CLI.
-    # Resume: hyperparameters instead come from the checkpoint below, so
-    # --config is never read for them here.
-    file_fields = None if args.resume else _read_config_file(args.config)
-    if file_fields is not None and "seed" in file_fields:
-        # Needed before resolve_model() below for --no-warmstart's scratch
-        # init to be reproducible. (Under --resume/--fork-from the model
-        # built here is fully overwritten by the restored checkpoint, so the
-        # seed in effect at this point doesn't matter there.)
-        torch.manual_seed(file_fields["seed"])
-
-    model, model_config = resolve_model(args, device)
-    num_x, num_blocks = model_config.num_x, model_config.num_blocks
-    hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
-    if not hidden_layers:
-        raise SystemExit(
-            f"[error] no penalty layers (num_blocks={num_blocks} has no hidden "
-            f"layers). Nothing to hide against."
-        )
-
     last_path = os.path.join(run_ckpt_dir, "last.pt")
     best_path = os.path.join(run_ckpt_dir, "best.pt")
     hist_path = os.path.join(run_log_dir, "history.json")
     history = []  # list of dicts
 
     if args.resume:
-        opt = torch.optim.AdamW(model.parameters(), lr=1.0)  # lr restored below
-        start_iter, best_loss, rck = _restore_checkpoint(last_path, model, opt, device)
+        model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
         adv_config = LogregAdversarialConfig.from_dict(rck)
+        hidden_layers = adv_config.penalty_layers
         if os.path.exists(hist_path):
             with open(hist_path) as f:
                 history = json.load(f)
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
         _check_config_json(args.tag, adv_config)
     else:
-        adv_config = load_run_config(
-            file_fields,
-            lam=args.lam,
-            penalty_layers=hidden_layers,
-            config_path=args.config,
-        )
-        opt = torch.optim.AdamW(
-            model.parameters(),
-            lr=adv_config.lr,
-            eps=adv_config.adam_eps,
-            betas=(0.9, adv_config.adam_beta2),
-        )
+        # Hyperparameters are freshly resolved from --config + --lam (never
+        # read from the checkpoint, unlike --resume above).
+        file_fields = _read_config_file(args.config)
+        if "seed" in file_fields:
+            # Needed before the scratch init below is reproducible. (Under
+            # --fork-from the model built here is discarded in favor of the
+            # restored checkpoint, so the seed in effect at this point
+            # doesn't matter there.)
+            torch.manual_seed(file_fields["seed"])
+
         if args.fork_from is not None:
             source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
-            start_iter, best_loss, rck = _restore_checkpoint(
-                source_ckpt_path, model, opt, device
+            model, opt, start_iter, best_loss, rck = _restore_checkpoint(
+                source_ckpt_path, device
             )
             history = _forked_history(args.fork_from, start_iter)
             forked_from = {"tag": args.fork_from, "iter": start_iter}
@@ -747,10 +652,39 @@ def main(args):
                 f"best_loss={best_loss:.3e}"
             )
         else:
+            model_config = ResidualMLPConfig(
+                num_x=args.num_x,
+                d_model=args.d_model,
+                d_mlp=args.d_mlp,
+                num_blocks=args.num_blocks,
+            )
+            model = ResidualMLP(model_config).to(device)
+            print(f"[init] scratch model cfg={model_config}")
             start_iter = 0
             best_loss = float("inf")
             forked_from = None
+
+        adv_config, hidden_layers = load_run_config(
+            file_fields,
+            lam=args.lam,
+            num_blocks=model.config.num_blocks,
+            config_path=args.config,
+        )
+        if args.fork_from is None:
+            opt = torch.optim.AdamW(
+                model.parameters(),
+                lr=adv_config.lr,
+                eps=adv_config.adam_eps,
+                betas=(0.9, adv_config.adam_beta2),
+            )
         _write_config_json(args.tag, adv_config, forked_from=forked_from)
+
+    num_x, num_blocks = model.config.num_x, model.config.num_blocks
+    if not hidden_layers:
+        raise SystemExit(
+            f"[error] no penalty layers (num_blocks={num_blocks} has no hidden "
+            f"layers). Nothing to hide against."
+        )
 
     # --resume/--fork-from restore the optimizer's own state_dict, which
     # includes the SOURCE run's lr/eps/betas -- override with this

@@ -1,4 +1,5 @@
 {
+  "penalty_layers": [2],
   "lam_warmup_iters": 0,
   "seed": 913768,
   "probe_C": 1.0,

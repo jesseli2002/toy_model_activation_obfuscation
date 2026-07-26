@@ -1,6 +1,6 @@
 """pytest unit tests for the pure-Python helpers in train_adversarial_logreg.py
 extracted/cleaned up per plans/train_adversarial_logreg_cleanup_plan.md:
-_history_entry, _resolve_hidden_layers, and the Tier-2 --warmstart existence
+_history_entry, _resolve_hidden_layers, and the Tier-2 --fork-from existence
 check (run as a subprocess so it exercises the real pre-heavy-import path).
 
 Also covers the --config/--fork-from machinery from
@@ -80,22 +80,22 @@ class TestResolveHiddenLayers:
             _resolve_hidden_layers([5], 4)
 
 
-def test_bad_warmstart_path_exits_before_touching_run_dir(tmp_path):
+def test_bad_fork_from_tag_exits_before_touching_run_dir(tmp_path):
     """Tier 2's existence check (in the __main__ guard, right after
-    parse_args()) must fire before main()'s run-dir setup -- so a bad
-    --warmstart path can never let --tag-force delete an existing
-    runs/<tag> directory. Runs as a subprocess since the check lives in
-    module-level `if __name__ == "__main__":` code."""
+    parse_args()) must fire before main()'s run-dir setup -- so a
+    --fork-from tag with no checkpoint can never let --tag-force delete an
+    existing runs/<tag> directory. Runs as a subprocess since the check
+    lives in module-level `if __name__ == "__main__":` code."""
     script = Path(__file__).parent / "train_adversarial_logreg.py"
     result = subprocess.run(
         [
             sys.executable,
             str(script),
-            "--warmstart",
-            str(tmp_path / "does_not_exist.pt"),
+            "--fork-from",
+            "does-not-exist",
             "--tag",
             "unused-test-tag",
-            # unused: Tier 2's --warmstart check fires before this is ever
+            # unused: Tier 2's --fork-from check fires before this is ever
             # read, but parse_args() (Tier 1) requires it to be present.
             "--config",
             str(tmp_path / "unused_config.json"),
@@ -103,14 +103,16 @@ def test_bad_warmstart_path_exits_before_touching_run_dir(tmp_path):
         capture_output=True,
         text=True,
         timeout=60,
+        cwd=tmp_path,
     )
     assert result.returncode != 0
     assert "checkpoint not found" in result.stderr + result.stdout
 
 
 def _file_fields(**overrides) -> dict:
-    """A valid --config JSON file's contents (all 14 config-file-only keys)."""
+    """A valid --config JSON file's contents (all config-file-only keys)."""
     d = dict(
+        penalty_layers=[1, 2],
         lam_warmup_iters=0,
         seed=1,
         probe_C=1.0,
@@ -136,20 +138,48 @@ def _file_fields(**overrides) -> dict:
 
 class TestLoadRunConfig:
     def test_round_trip(self):
-        cfg = load_run_config(
-            _file_fields(), lam=0.7, penalty_layers=[1, 2], config_path="unused.json"
+        cfg, hidden_layers = load_run_config(
+            _file_fields(), lam=0.7, num_blocks=4, config_path="unused.json"
         )
         assert cfg.lam == 0.7
         assert cfg.penalty_layers == [1, 2]
+        assert hidden_layers == [1, 2]
         assert cfg.seed == 1
         assert LogregAdversarialConfig.from_dict(cfg.to_dict()) == cfg
+
+    def test_all_resolves_against_num_blocks(self):
+        cfg, hidden_layers = load_run_config(
+            _file_fields(penalty_layers="all"),
+            lam=0.5,
+            num_blocks=4,
+            config_path="unused.json",
+        )
+        assert cfg.penalty_layers == [1, 2, 3]
+        assert hidden_layers == [1, 2, 3]
+
+    def test_invalid_penalty_layer_raises_system_exit(self):
+        with pytest.raises(SystemExit):
+            load_run_config(
+                _file_fields(penalty_layers=[0]),
+                lam=0.5,
+                num_blocks=4,
+                config_path="unused.json",
+            )
+
+    def test_missing_penalty_layers_raises_system_exit_naming_the_key(self):
+        file_fields = _file_fields()
+        del file_fields["penalty_layers"]
+        with pytest.raises(SystemExit, match="penalty_layers"):
+            load_run_config(
+                file_fields, lam=0.5, num_blocks=4, config_path="my_config.json"
+            )
 
     def test_missing_key_raises_system_exit_naming_the_key(self):
         file_fields = _file_fields()
         del file_fields["probe_C"]
         with pytest.raises(SystemExit, match="probe_C"):
             load_run_config(
-                file_fields, lam=0.5, penalty_layers=[1], config_path="my_config.json"
+                file_fields, lam=0.5, num_blocks=4, config_path="my_config.json"
             )
 
     def test_missing_key_error_names_config_path(self):
@@ -157,12 +187,12 @@ class TestLoadRunConfig:
         del file_fields["seed"]
         with pytest.raises(SystemExit, match="my_config.json"):
             load_run_config(
-                file_fields, lam=0.5, penalty_layers=[1], config_path="my_config.json"
+                file_fields, lam=0.5, num_blocks=4, config_path="my_config.json"
             )
 
 
 def _make_adv_config(**overrides) -> LogregAdversarialConfig:
-    d = {"lam": 0.5, "penalty_layers": [1, 2], **_file_fields()}
+    d = {"lam": 0.5, **_file_fields()}
     d.update(overrides)
     return LogregAdversarialConfig(**d)
 
