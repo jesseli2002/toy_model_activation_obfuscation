@@ -160,10 +160,12 @@ def parse_args():
         "pass only. 0 = no noise (pre-noise behavior).",
     )
     # Architecture (only used for --init scratch; warmstart reads the checkpoint).
-    p.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
-    p.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
+    # ResidualMLPConfig itself has no default architecture, so this script
+    # keeps its own literal defaults (num_x/d_model/num_blocks below).
+    p.add_argument("--num-x", type=int, default=32)
+    p.add_argument("--d-model", type=int, default=256)
     p.add_argument("--d-mlp", type=int, default=None, help="default: num_x")
-    p.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
+    p.add_argument("--num-blocks", type=int, default=8)
     p.add_argument(
         "--activation",
         choices=config.ACTIVATION_CHOICES,
@@ -389,10 +391,13 @@ def main(args):
         num_x = args.num_x
         d_model = args.d_model
         num_blocks = args.num_blocks
+        # ResidualMLPConfig no longer derives d_mlp from num_x itself (no
+        # field default) -- do it here, the one CLI-facing spot that needs it.
+        d_mlp = args.d_mlp if args.d_mlp is not None else num_x
         model_config = ResidualMLPConfig(
             num_x=num_x,
             d_model=d_model,
-            d_mlp=args.d_mlp,
+            d_mlp=d_mlp,
             num_blocks=num_blocks,
             out_init_scale=args.out_init_scale,
             activation=args.activation,
@@ -400,7 +405,6 @@ def main(args):
             layer_norm=args.layer_norm,
         )
         model = ResidualMLP(model_config).to(device)
-        d_mlp = model_config.d_mlp
         print(f"[init] scratch model num_x={num_x} d_model={d_model} d_mlp={d_mlp}")
 
     hidden_layers = _resolve_hidden_layers(args.penalty_layers, num_blocks)
