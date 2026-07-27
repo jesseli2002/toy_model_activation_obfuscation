@@ -157,37 +157,90 @@ def test_warm_start_reset_interval_creates_fresh_optimizer():
     assert opt_ids[7] == opt_ids[8]
 
 
-def test_overflow_triggers_reset_and_retry(monkeypatch):
-    """Regression test for the crash in crash_log/1.txt: a warm-started
-    LBFGS instance's curvature history occasionally blows up its search
-    direction until the line search overflows float32
-    (`RuntimeError: value cannot be converted to type float without
-    overflow`). fit() should catch that specific failure, drop the
-    corrupted optimizer state, and retry once instead of propagating."""
+def test_overflow_falls_back_to_last_good_coefficients_when_warm_started(monkeypatch):
+    """A line-search overflow (`RuntimeError: value cannot be converted to
+    type float without overflow`) can happen on a single LBFGS instance
+    regardless of curvature history -- e.g. a bad trial step. When warm-started
+    fits are available, fit() should give up on the failing call rather than
+    raise: keep the last successfully-fit coefficients and drop the optimizer
+    so the next call starts clean."""
     X, y = make_binary_data(n=200, d=5, seed=13)
     Xt, yt = to_torch(X, y)
     model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=True)
-    model.fit(Xt, yt)  # establish a real, non-None optimizer + coef_
-    stale_optimizer = model._optimizer
+    model.fit(Xt, yt)  # establish real, non-None coef_/optimizer
+    good_coef = model.coef_.clone()
+    good_intercept = model.intercept_.clone()
 
-    orig_step = torch.optim.LBFGS.step
-    calls = {"n": 0}
+    def always_overflow(self, closure):
+        raise RuntimeError("value cannot be converted to type float without overflow")
 
-    def flaky_step(self, closure):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise RuntimeError(
-                "value cannot be converted to type float without overflow"
-            )
-        return orig_step(self, closure)
+    monkeypatch.setattr(torch.optim.LBFGS, "step", always_overflow)
 
-    monkeypatch.setattr(torch.optim.LBFGS, "step", flaky_step)
-    model.fit(Xt, yt)
+    with pytest.warns(RuntimeWarning, match="overflow"):
+        model.fit(Xt, yt)
 
-    assert calls["n"] == 2
-    assert model._optimizer is not stale_optimizer
-    assert torch.isfinite(model.coef_).all()
-    assert torch.isfinite(model.intercept_).all()
+    assert model._optimizer is None
+    np.testing.assert_array_equal(model.coef_.numpy(), good_coef.numpy())
+    np.testing.assert_array_equal(model.intercept_.numpy(), good_intercept.numpy())
+
+
+def test_overflow_reraises_without_prior_fit(monkeypatch):
+    """No previous successful fit means there's nothing safe to fall back
+    on (e.g. a one-shot eval fit with no warm start history) -- the overflow
+    should propagate."""
+    X, y = make_binary_data(n=200, d=5, seed=13)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=True)
+
+    def always_overflow(self, closure):
+        raise RuntimeError("value cannot be converted to type float without overflow")
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", always_overflow)
+
+    with pytest.raises(RuntimeError, match="overflow"):
+        model.fit(Xt, yt)
+
+
+def test_overflow_reraises_without_warm_start(monkeypatch):
+    """Without warm_start there's no persisted direction worth falling back
+    to, so the overflow should propagate even if a previous fit happened to
+    succeed."""
+    X, y = make_binary_data(n=200, d=5, seed=13)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=False)
+    model.fit(Xt, yt)  # coef_ is set, but warm_start=False
+
+    def always_overflow(self, closure):
+        raise RuntimeError("value cannot be converted to type float without overflow")
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", always_overflow)
+
+    with pytest.raises(RuntimeError, match="overflow"):
+        model.fit(Xt, yt)
+
+
+def test_overflow_after_periodic_reset_still_falls_back(monkeypatch):
+    """A periodic curvature-history reset (warm_start_reset_interval) must
+    not discard the last-good coefficients: if the overflow happens on the
+    very next fit after a reset, fallback should still recover the
+    pre-reset coefficients, not raise."""
+    X, y = make_binary_data(n=200, d=5, seed=13)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(
+        C=1.0, max_iter=5, warm_start=True, warm_start_reset_interval=2
+    )
+    model.fit(Xt, yt)  # call 1
+    good_coef = model.coef_.clone()
+
+    def always_overflow(self, closure):
+        raise RuntimeError("value cannot be converted to type float without overflow")
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", always_overflow)
+
+    with pytest.warns(RuntimeWarning, match="overflow"):
+        model.fit(Xt, yt)  # call 2 -- periodic_reset triggers here
+
+    np.testing.assert_array_equal(model.coef_.numpy(), good_coef.numpy())
 
 
 def test_non_overflow_runtime_error_is_not_swallowed(monkeypatch):
