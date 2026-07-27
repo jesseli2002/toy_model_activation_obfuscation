@@ -871,10 +871,13 @@ def main(args):
     )
     for lyr in hidden_layers:
         pi = gap_plot_inputs[lyr]
+        # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so
+        # its bias is the midpoint threshold negated.
+        b_dom = -pi["midpoint"]
         plot_probe_separation(
             "c1-2",
             [lyr],
-            LinearBoundary(pi["w_dom"], -pi["midpoint"]),
+            LinearBoundary(pi["w_dom"], b_dom),
             LinearBoundary(pi["w_probe"], pi["b_probe"]),
             pi["X_te"],
             pi["y_te"],

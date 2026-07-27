@@ -339,6 +339,9 @@ def main():
     proj_test = X_test @ w_dom
     pred_dom = (proj_test > midpoint).astype(float)
     dom_acc = float((pred_dom == y_test).mean())
+    # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so its
+    # bias is the midpoint threshold negated.
+    b_dom = -midpoint
 
     # --- logistic regression (DoM above needs no normalization: it's just a
     # difference of means, invariant to a shared affine rescaling of features) ---
@@ -375,7 +378,7 @@ def main():
     plot_probe(
         args.tag,
         args.layers,
-        LinearBoundary(w_dom, -midpoint),
+        LinearBoundary(w_dom, b_dom),
         LinearBoundary(w_probe, b_probe),
         X_test,
         y_test,
