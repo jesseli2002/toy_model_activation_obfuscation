@@ -73,14 +73,19 @@ class _CheckpointConfigMixin:
         return cls(**(cls._LEGACY_DEFAULTS | present))
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ResidualMLPConfig(_CheckpointConfigMixin):
-    """Architecture + init hyperparameters for ResidualMLP."""
+    """Architecture + init hyperparameters for ResidualMLP.
 
-    num_x: int = 32
-    d_model: int = 256
-    d_mlp: int | None = None
-    num_blocks: int =
+    `num_x`/`d_model`/`d_mlp`/`num_blocks` have no default -- every caller
+    must pin the architecture explicitly, rather than this dataclass and its
+    CLI callers each carrying their own copy of the same default.
+    """
+
+    num_x: int
+    d_model: int
+    d_mlp: int
+    num_blocks: int
     out_init_scale: float = 0.1
     activation: str = "gelu"
     leaky_relu_slope: float = 0.0
@@ -95,10 +100,6 @@ class ResidualMLPConfig(_CheckpointConfigMixin):
         "leaky_relu_slope": 0.0,
         "layer_norm": False,
     }
-
-    def __post_init__(self):
-        if self.d_mlp is None:
-            self.d_mlp = self.num_x
 
 
 @dataclass
@@ -218,3 +219,42 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "explode_factor": 0.0,  # legacy runs had no explode-detection
         "explode_clip_divisor": 5.0,  # inert when explode_factor is 0
     }
+
+
+@dataclass
+class ForkedFrom:
+    tag: str
+    iter: int
+
+
+@dataclass
+class LogregRunConfig:
+    """Complete definition of one train_adversarial_logreg.py run, serialized
+    to runs/<tag>/config.json as that run directory's read-only record.
+
+    Sole definition of that file's schema -- document it here, not in the
+    script that writes it.
+
+    `model` is frozen at tag creation (--fork-from inherits it from the source
+    checkpoint); `adversarial` is freshly resolved for every new tag;
+    `forked_from` is present only on a forked tag.
+    """
+
+    model: ResidualMLPConfig
+    adversarial: LogregAdversarialConfig
+    forked_from: ForkedFrom | None = None
+
+    def to_dict(self) -> dict:
+        d = {"model": self.model.to_dict(), "adversarial": self.adversarial.to_dict()}
+        if self.forked_from is not None:
+            d["forked_from"] = dataclasses.asdict(self.forked_from)
+        return d
+
+    @classmethod
+    def from_dict(cls, d: dict) -> "LogregRunConfig":
+        forked_from = d.get("forked_from")
+        return cls(
+            model=ResidualMLPConfig.from_dict(d["model"]),
+            adversarial=LogregAdversarialConfig.from_dict(d["adversarial"]),
+            forked_from=ForkedFrom(**forked_from) if forked_from is not None else None,
+        )
