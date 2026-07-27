@@ -6,7 +6,13 @@ import dataclasses
 
 import pytest
 
-from config import AdversarialConfig, LogregAdversarialConfig, ResidualMLPConfig
+from config import (
+    AdversarialConfig,
+    ForkedFrom,
+    LogregAdversarialConfig,
+    LogregRunConfig,
+    ResidualMLPConfig,
+)
 
 
 def _make_logreg_config() -> LogregAdversarialConfig:
@@ -102,3 +108,47 @@ class TestLogregAdversarialConfigRequiredFields:
         del kwargs["penalty_layers"]
         with pytest.raises(TypeError):
             LogregAdversarialConfig(**kwargs)
+
+
+class TestLogregRunConfig:
+    def test_round_trip_without_forked_from(self):
+        run_config = LogregRunConfig(
+            model=ResidualMLPConfig(), adversarial=_make_logreg_config()
+        )
+        assert LogregRunConfig.from_dict(run_config.to_dict()) == run_config
+
+    def test_forked_from_absent_from_dict_when_none(self):
+        run_config = LogregRunConfig(
+            model=ResidualMLPConfig(), adversarial=_make_logreg_config()
+        )
+        assert "forked_from" not in run_config.to_dict()
+
+    def test_forked_from_round_trips_when_present(self):
+        run_config = LogregRunConfig(
+            model=ResidualMLPConfig(),
+            adversarial=_make_logreg_config(),
+            forked_from=ForkedFrom(tag="source", iter=100),
+        )
+        d = run_config.to_dict()
+        assert d["forked_from"] == {"tag": "source", "iter": 100}
+        assert LogregRunConfig.from_dict(d) == run_config
+
+    def test_legacy_backfill_applies_per_block(self):
+        """A field missing from the nested `model`/`adversarial` dicts backfills
+        through each block's own _LEGACY_DEFAULTS, same as calling that
+        dataclass's from_dict directly."""
+        run_config = LogregRunConfig(
+            model=ResidualMLPConfig(), adversarial=_make_logreg_config()
+        )
+        d = run_config.to_dict()
+        del d["model"]["num_blocks"]
+        del d["adversarial"]["probe_retrain_interval"]
+        restored = LogregRunConfig.from_dict(d)
+        assert (
+            restored.model.num_blocks
+            == ResidualMLPConfig._LEGACY_DEFAULTS["num_blocks"]
+        )
+        assert (
+            restored.adversarial.probe_retrain_interval
+            == LogregAdversarialConfig._LEGACY_DEFAULTS["probe_retrain_interval"]
+        )
