@@ -140,7 +140,13 @@ from paths import plot_dir as get_plot_dir
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, resolve_probe_backend
 from train_model_plot import plot_learned_curves
-from train_probe import capture_layers, capture_layers_dict, forward_steered, load_model
+from train_probe import (
+    LinearBoundary,
+    capture_layers,
+    capture_layers_dict,
+    forward_steered,
+    load_model,
+)
 from train_probe import plot_probe as plot_probe_separation
 
 
@@ -868,10 +874,8 @@ def main(args):
         plot_probe_separation(
             "c1-2",
             [lyr],
-            pi["w_dom"],
-            pi["midpoint"],
-            pi["w_probe"],
-            pi["b_probe"],
+            LinearBoundary(pi["w_dom"], -pi["midpoint"]),
+            LinearBoundary(pi["w_probe"], pi["b_probe"]),
             pi["X_te"],
             pi["y_te"],
             plot_dir,
