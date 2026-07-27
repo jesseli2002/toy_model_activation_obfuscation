@@ -310,7 +310,12 @@ def _auroc_snapshots(tag, device, n_snapshots=1000, eval_n=4096, seed=0):
             continue  # not a train_adversarial_logreg.py checkpoint
         model = model.to(device).eval()
         if eval_x is None:
-            class_threshold = ck.get("adv_config", {}).get("class_threshold", 1.5)
+            # "probe_w" present (checked above) guarantees this is a
+            # train_adversarial_logreg.py checkpoint written by
+            # save_checkpoint, so adv_config/class_threshold are always
+            # there -- fail loudly (direct indexing) rather than silently
+            # falling back on a corrupt/unexpected checkpoint.
+            class_threshold = ck["adv_config"]["class_threshold"]
             eval_x, _ = sample_batch(
                 eval_n, model.config.num_x, generator=gen, device=device
             )
@@ -707,10 +712,18 @@ def _build_report(
 
     emit(f"# Step 3 adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
     emit()
-    adv_ck = ck.get("adv_config", {})
+    # ck may be a train_probe.py/train_model_plot.py checkpoint with no
+    # adversarial config at all -- that {} default is load-bearing. Once
+    # adv_config exists, `lam` is always present (both AdversarialConfig and
+    # LogregAdversarialConfig have it) so fail loudly there; `init` is
+    # AdversarialConfig-only (LogregAdversarialConfig has no such field), so
+    # it legitimately stays a soft .get.
+    adv_ck = ck.get("adv_config")
+    lam = adv_ck["lam"] if adv_ck is not None else None
+    init = adv_ck.get("init") if adv_ck is not None else None
     emit(
         f"config: num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
-        f"num_blocks={num_blocks} lam={adv_ck.get('lam')} init={adv_ck.get('init')} "
+        f"num_blocks={num_blocks} lam={lam} init={init} "
         f"penalty_layers={penalty_layers}"
     )
     emit()
@@ -769,7 +782,13 @@ def main(args):
     model, ck = load_model(args.tag, args.ckpt, device)
     num_x = model.num_x
     num_blocks = model.num_blocks
-    penalty_layers = ck.get("adv_config", {}).get("penalty_layers") or list(
+    # ck may carry no adversarial config at all (train_probe.py/
+    # train_model_plot.py checkpoint) -- that's the only case that falls
+    # back; once adv_config exists, penalty_layers is always a key in it
+    # (though its value may legitimately be None/"unset"), so fail loudly
+    # on a missing key rather than silently defaulting.
+    adv_ck = ck.get("adv_config")
+    penalty_layers = (adv_ck["penalty_layers"] if adv_ck is not None else None) or list(
         range(1, num_blocks)
     )
     hidden_layers = list(range(1, num_blocks))

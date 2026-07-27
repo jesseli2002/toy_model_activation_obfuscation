@@ -77,17 +77,6 @@ from rate_meter import EMARateMeter
 PROBE_STEP_MAX_ITER = 100
 
 
-class _RecordExplicit(argparse.Action):
-    """Behaves as a normal store action (so `default=`/--help still work),
-    but also records the dest on the namespace's `_explicit` set -- used to
-    detect architecture flags passed alongside --resume/--fork-from, where
-    they'd otherwise be silently ignored."""
-
-    def __call__(self, parser, namespace, values, option_string=None):
-        setattr(namespace, self.dest, values)
-        namespace._explicit.add(self.dest)
-
-
 def parse_args():
     p = argparse.ArgumentParser(
         description="Adversarial training: model vs. a simultaneous, "
@@ -95,33 +84,15 @@ def parse_args():
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     g_init = p.add_argument_group(
-        "model initialization (fresh run only)",
-        "The model always inits from scratch with this architecture. Errors "
-        "if explicitly passed alongside --resume/--fork-from, which instead "
+        "model initialization",
+        "Required for a fresh run (no default -- see ResidualMLPConfig); "
+        "errors if passed alongside --resume/--fork-from, which instead "
         "take the architecture from the checkpoint being restored.",
     )
-    g_init.add_argument(
-        "--num-x", type=int, default=ResidualMLPConfig.num_x, action=_RecordExplicit
-    )
-    g_init.add_argument(
-        "--d-model",
-        type=int,
-        default=ResidualMLPConfig.d_model,
-        action=_RecordExplicit,
-    )
-    g_init.add_argument(
-        "--d-mlp",
-        type=int,
-        default=None,
-        help="default: num_x.",
-        action=_RecordExplicit,
-    )
-    g_init.add_argument(
-        "--num-blocks",
-        type=int,
-        default=ResidualMLPConfig.num_blocks,
-        action=_RecordExplicit,
-    )
+    g_init.add_argument("--num-x", type=int, default=None)
+    g_init.add_argument("--d-model", type=int, default=None)
+    g_init.add_argument("--d-mlp", type=int, default=None)
+    g_init.add_argument("--num-blocks", type=int, default=None)
 
     g_adv = p.add_argument_group(
         "adversarial objective (CLI-common)",
@@ -191,21 +162,21 @@ def parse_args():
     )
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
 
-    namespace = argparse.Namespace(_explicit=set())
-    args = p.parse_args(namespace=namespace)
+    args = p.parse_args()
     if args.resume and args.fork_from is not None:
         p.error("--resume and --fork-from are mutually exclusive.")
     if not args.resume and args.config is None:
         p.error("--config PATH is required (unless --resume).")
+
+    arch_flags = {
+        "num_x": "--num-x",
+        "d_model": "--d-model",
+        "d_mlp": "--d-mlp",
+        "num_blocks": "--num-blocks",
+    }
     if args.resume or args.fork_from is not None:
-        arch_flags = {
-            "num_x": "--num-x",
-            "d_model": "--d-model",
-            "d_mlp": "--d-mlp",
-            "num_blocks": "--num-blocks",
-        }
         offending = [
-            flag for dest, flag in arch_flags.items() if dest in args._explicit
+            flag for dest, flag in arch_flags.items() if getattr(args, dest) is not None
         ]
         if offending:
             mode = "--resume" if args.resume else "--fork-from"
@@ -213,6 +184,12 @@ def parse_args():
                 f"{', '.join(offending)} cannot be combined with {mode} -- "
                 f"architecture comes from the checkpoint being restored."
             )
+    else:
+        missing = [
+            flag for dest, flag in arch_flags.items() if getattr(args, dest) is None
+        ]
+        if missing:
+            p.error(f"{', '.join(missing)} required for a fresh run.")
     return args
 
 

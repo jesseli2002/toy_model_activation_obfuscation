@@ -67,7 +67,11 @@ def build_exact_model(
     # ResidualMLPConfig's own default activation happens to be.
     m = ResidualMLP(
         ResidualMLPConfig(
-            num_x, d_model, d_mlp, num_blocks=num_blocks, activation="leaky_relu"
+            num_x=num_x,
+            d_model=d_model,
+            d_mlp=d_mlp,
+            num_blocks=num_blocks,
+            activation="leaky_relu",
         )
     )
     with torch.no_grad():
@@ -100,7 +104,11 @@ def build_exact_obfuscator(
     # ResidualMLPConfig's own default activation happens to be.
     m = ResidualMLP(
         ResidualMLPConfig(
-            num_x, d_model, d_mlp, num_blocks=num_blocks, activation="leaky_relu"
+            num_x=num_x,
+            d_model=d_model,
+            d_mlp=d_mlp,
+            num_blocks=num_blocks,
+            activation="leaky_relu",
         )
     )
 

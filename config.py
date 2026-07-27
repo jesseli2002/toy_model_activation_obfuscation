@@ -73,14 +73,19 @@ class _CheckpointConfigMixin:
         return cls(**(cls._LEGACY_DEFAULTS | present))
 
 
-@dataclass
+@dataclass(kw_only=True)
 class ResidualMLPConfig(_CheckpointConfigMixin):
-    """Architecture + init hyperparameters for ResidualMLP."""
+    """Architecture + init hyperparameters for ResidualMLP.
 
-    num_x: int = 32
-    d_model: int = 256
-    d_mlp: int | None = None
-    num_blocks: int =
+    `num_x`/`d_model`/`d_mlp`/`num_blocks` have no default -- every caller
+    must pin the architecture explicitly, rather than this dataclass and its
+    CLI callers each carrying their own copy of the same default.
+    """
+
+    num_x: int
+    d_model: int
+    d_mlp: int
+    num_blocks: int
     out_init_scale: float = 0.1
     activation: str = "gelu"
     leaky_relu_slope: float = 0.0
@@ -95,10 +100,6 @@ class ResidualMLPConfig(_CheckpointConfigMixin):
         "leaky_relu_slope": 0.0,
         "layer_norm": False,
     }
-
-    def __post_init__(self):
-        if self.d_mlp is None:
-            self.d_mlp = self.num_x
 
 
 @dataclass

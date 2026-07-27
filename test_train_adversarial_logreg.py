@@ -32,6 +32,14 @@ from train_adversarial_logreg import (
 )
 
 
+def _make_model_config(**overrides) -> ResidualMLPConfig:
+    """ResidualMLPConfig's num_x/d_model/d_mlp/num_blocks have no Python
+    default -- every caller must pin the architecture explicitly."""
+    d = dict(num_x=4, d_model=8, d_mlp=4, num_blocks=3)
+    d.update(overrides)
+    return ResidualMLPConfig(**d)
+
+
 def _make_record(**overrides):
     defaults = dict(
         iter=42,
@@ -132,6 +140,35 @@ def test_arch_flag_with_resume_or_fork_from_exits_naming_the_flag(tmp_path, mode
             "--config",
             str(tmp_path / "unused_config.json"),
             *mode_args,
+        ],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+    assert result.returncode != 0
+    assert "--num-x" in result.stderr + result.stdout
+
+
+def test_missing_arch_flag_on_fresh_run_exits_naming_the_flag(tmp_path):
+    """num_x/d_model/d_mlp/num_blocks have no default (see ResidualMLPConfig)
+    -- a fresh run (no --resume/--fork-from) must name whichever is missing,
+    rather than silently falling back to some value."""
+    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--d-model",
+            "8",
+            "--d-mlp",
+            "4",
+            "--num-blocks",
+            "3",
+            "--tag",
+            "t",
+            "--config",
+            str(tmp_path / "unused_config.json"),
         ],
         capture_output=True,
         text=True,
@@ -245,7 +282,7 @@ class TestConfigJsonPersistence:
         self, tmp_path, monkeypatch, capsys
     ):
         monkeypatch.chdir(tmp_path)
-        model_config = ResidualMLPConfig()
+        model_config = _make_model_config()
         cfg = _make_adv_config()
         (tmp_path / "runs" / "t1").mkdir(parents=True)
         input_path = _write_input_config(tmp_path / "input.json")
@@ -258,7 +295,7 @@ class TestConfigJsonPersistence:
         self, tmp_path, monkeypatch, capsys
     ):
         monkeypatch.chdir(tmp_path)
-        model_config = ResidualMLPConfig()
+        model_config = _make_model_config()
         cfg = _make_adv_config()
         (tmp_path / "runs" / "t1").mkdir(parents=True)
         input_path = _write_input_config(tmp_path / "input.json")
@@ -276,7 +313,7 @@ class TestConfigJsonPersistence:
     def test_check_config_json_missing_file_warns(self, tmp_path, monkeypatch, capsys):
         monkeypatch.chdir(tmp_path)
         (tmp_path / "runs" / "t1").mkdir(parents=True)
-        _check_config_json("t1", ResidualMLPConfig(), _make_adv_config())
+        _check_config_json("t1", _make_model_config(), _make_adv_config())
         assert "[warn]" in capsys.readouterr().out
 
     def test_write_run_config_records_forked_from(self, tmp_path, monkeypatch):
@@ -286,7 +323,7 @@ class TestConfigJsonPersistence:
         input_path = _write_input_config(tmp_path / "input.json")
         _write_run_config(
             "t2",
-            ResidualMLPConfig(),
+            _make_model_config(),
             cfg,
             input_config_path=str(input_path),
             forked_from=ForkedFrom(tag="t1", iter=100),
@@ -301,7 +338,7 @@ class TestConfigJsonPersistence:
         input_path = _write_input_config(tmp_path / "input.json")
         _write_run_config(
             "t3",
-            ResidualMLPConfig(),
+            _make_model_config(),
             _make_adv_config(),
             input_config_path=str(input_path),
         )
@@ -379,6 +416,8 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
             "2",
             "--d-model",
             "4",
+            "--d-mlp",
+            "2",
             "--num-blocks",
             "2",
             "--max-iters",
