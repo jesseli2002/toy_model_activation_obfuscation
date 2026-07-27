@@ -380,18 +380,35 @@ def concat_caches_torch(caches: list[torch.Tensor], layers: list[int]) -> torch.
     return torch.cat([caches[lyr] for lyr in layers], dim=1)
 
 
+def _trimmed_mean(s: torch.Tensor, trim_frac: float) -> torch.Tensor:
+    """Mean of `s` after dropping its bottom/top `trim_frac` quantile tails
+    (each), so a handful of extreme projected scores can't dominate the
+    adversarial penalty. Quantile thresholds are computed without gradient
+    (only which elements survive should be a discrete, non-differentiable
+    choice); the mean over the survivors stays differentiable."""
+    if trim_frac <= 0:
+        return s.mean()
+    with torch.no_grad():
+        lo = torch.quantile(s, trim_frac)
+        hi = torch.quantile(s, 1 - trim_frac)
+        mask = (s >= lo) & (s <= hi)
+    return s[mask].mean()
+
+
 def score_penalty(
     cat_live: torch.Tensor,
     affine: tuple[torch.Tensor, torch.Tensor],
     label: torch.Tensor,
     kind: str,
+    trim_frac: float = 0.0,
 ) -> torch.Tensor:
     """Differentiable adversarial penalty: project the live (grad-carrying),
     concatenated-across-layers activations onto the probe's current learned
-    direction and push the two classes' mean scores together."""
+    direction and push the two classes' (optionally trimmed-mean, see
+    `_trimmed_mean`) scores together."""
     w_eff, b_eff = affine
     s = cat_live @ w_eff + b_eff
-    gap = s[label].mean() - s[~label].mean()
+    gap = _trimmed_mean(s[label], trim_frac) - _trimmed_mean(s[~label], trim_frac)
     if kind == "meandiff-relu":
         return torch.relu(gap)
     elif kind == "meandiff":
@@ -451,8 +468,9 @@ def train_steps(
     consuming this generator always leaves the caller's for-loop variable
     holding the last *fully completed* step, never a half-updated one.
 
-    probe_x/probe_label: the fixed probe dataset (sampled once by the
-    caller) -- reused for every probe fit and penalty this run, unlike the
+    probe_x/probe_label: the probe dataset (sampled once by the caller) --
+    reused for every probe fit and penalty until/unless
+    adv_config.probe_resample_interval periodically redraws it, unlike the
     task batch below which resamples fresh each iteration."""
     num_x = model.config.num_x
     n_exploded = 0
@@ -480,9 +498,22 @@ def train_steps(
         )
         l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
 
-        # probe fit + penalty: clean pass over the FIXED probe set, full
-        # resolution -- the probe stays exempt from the noise so it can
+        # probe fit + penalty: clean pass over the probe set (fixed unless
+        # --probe-resample-interval periodically redraws it, see below),
+        # full resolution -- the probe stays exempt from the noise so it can
         # still out-resolve the model.
+        if (
+            adv_config.probe_resample_interval > 0
+            and it % adv_config.probe_resample_interval == 0
+        ):
+            probe_x, _ = sample_batch(
+                adv_config.batch_size, num_x, generator=gen, device=device
+            )
+            probe_label = probe_x[:, num_x] >= adv_config.class_threshold
+            assert probe_label.any() and (~probe_label).any(), (
+                "resampled probe batch has only one class present -- check "
+                "--class-threshold against c's range."
+            )
         _, caches = model.forward(probe_x, return_cache=True)
         fwd_dt = time.time() - t_fwd0
 
@@ -502,7 +533,11 @@ def train_steps(
         probe_dt = time.time() - t_probe0
 
         l_probe = score_penalty(
-            cat_live, affine, probe_label, adv_config.probe_loss_kind
+            cat_live,
+            affine,
+            probe_label,
+            adv_config.probe_loss_kind,
+            adv_config.probe_loss_trim_frac,
         )
 
         if adv_config.lam_warmup_iters > 0:
@@ -544,7 +579,11 @@ def train_steps(
                 _, caches_after = model.forward(probe_x, return_cache=True)
                 cat_after = concat_caches_torch(caches_after, hidden_layers)
                 l_probe_after = score_penalty(
-                    cat_after, affine, probe_label, adv_config.probe_loss_kind
+                    cat_after,
+                    affine,
+                    probe_label,
+                    adv_config.probe_loss_kind,
+                    adv_config.probe_loss_trim_frac,
                 )
                 loss_after_step = (
                     lam_eff * l_probe_after + (1 - lam_eff) * l_task_after
@@ -571,7 +610,11 @@ def train_steps(
                 _, caches = model.forward(probe_x, return_cache=True)
                 cat_live = concat_caches_torch(caches, hidden_layers)
                 l_probe = score_penalty(
-                    cat_live, affine, probe_label, adv_config.probe_loss_kind
+                    cat_live,
+                    affine,
+                    probe_label,
+                    adv_config.probe_loss_kind,
+                    adv_config.probe_loss_trim_frac,
                 )
                 loss = lam_eff * l_probe + (1 - lam_eff) * l_task
 
@@ -788,6 +831,8 @@ def main(args):
         f"probe_loss_kind={adv_config.probe_loss_kind} "
         f"probe_backend={probe_backend} probe_subsample={adv_config.probe_subsample} "
         f"probe_retrain_interval={adv_config.probe_retrain_interval} "
+        f"probe_resample_interval={adv_config.probe_resample_interval} "
+        f"probe_loss_trim_frac={adv_config.probe_loss_trim_frac} "
         f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
         f"lr={adv_config.lr} adam_eps={adv_config.adam_eps} "
         f"adam_beta2={adv_config.adam_beta2} explode_factor={adv_config.explode_factor} "

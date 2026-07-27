@@ -14,6 +14,7 @@ for the rationale behind the probe choices and gate thresholds.
 
 import argparse
 import os
+from typing import NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,6 +28,19 @@ from paths import plot_dir as get_plot_dir
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 torch.set_default_device(device)
+
+
+class LinearBoundary(NamedTuple):
+    """An affine decision boundary over probed features: score(x) = w . x + b,
+    boundary at score = 0. Used to compare probes (e.g. difference-of-means vs
+    a fit logreg/LDA probe) that share this representation regardless of how
+    each was derived."""
+
+    w: Float[np.ndarray, "d"]
+    b: float
+
+    def score(self, X: Float[np.ndarray, "n d"]) -> Float[np.ndarray, "n"]:
+        return X @ self.w + self.b
 
 
 def _parse_layers(s: str) -> list[int]:
@@ -199,30 +213,30 @@ def _plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
 def plot_probe(
     tag,
     layers,
-    w_dom: Float[np.ndarray, "d"],
-    midpoint,
-    w_probe: Float[np.ndarray, "d"],
-    b_probe: float,
+    dom: LinearBoundary,
+    probe: LinearBoundary,
     X_test: Float[np.ndarray, "n d"],
     y_test: Bool[np.ndarray, "n"],
     plot_dir,
 ):
     """n = test-set size (both classes concatenated), d = probed feature dim
-    (sum of d_model over --layers). `w_probe`/`b_probe` are the logreg probe's
-    raw (unstandardized) affine decision score s(r) = w_probe . r + b_probe --
-    i.e. whatever scaler the probe was fit with already folded in, so this
-    function is agnostic to which backend (sklearn/torch) produced them.
+    (sum of d_model over --layers). `dom` and `probe` are two affine decision
+    boundaries over the same feature space -- a difference-of-means direction
+    and a fit logreg/LDA probe -- compared side by side. `probe`'s weight/bias
+    are raw (unstandardized): whatever scaler the probe was fit with already
+    folded in, so this function is agnostic to which backend (sklearn/torch)
+    produced them.
 
-    2x3 grid: top row is each probe's histogram plus a shared PCA scatter;
-    bottom row extends each histogram with a second axis (that probe's
-    direction projected out, then PC1 of what's left -- showing whether any
-    orthogonal variance still separates the classes), plus an ROC panel
-    comparing both probes' generalization directly."""
+    Writes two 1x3 figures rather than one wide 2x3 grid: a histogram+ROC
+    comparison ({tag}_L{layers}_probe.png), and a PCA comparison
+    ({tag}_L{layers}_probe_pca.png) -- each probe's own direction projected
+    out and PC1 of what's left plotted against a shared top-2-component PCA,
+    showing whether any orthogonal variance still separates the classes."""
     from sklearn.decomposition import PCA
     from sklearn.metrics import roc_auc_score, roc_curve
 
-    proj_dom = X_test @ w_dom - midpoint
-    proj_logreg = X_test @ w_probe + b_probe
+    proj_dom = dom.score(X_test)
+    proj_logreg = probe.score(X_test)
     pca_xy = PCA(n_components=2).fit_transform(X_test)
 
     def _resid_pc1(w: Float[np.ndarray, "d"]):
@@ -234,12 +248,12 @@ def plot_probe(
     # each probe's own direction, projected out, then PC1 of what's left --
     # raw projections are in data coordinates (unlike proj_dom/proj_logreg
     # above, which are in each probe's own decision-score units).
-    w_dom_hat, pc1_resid_dom = _resid_pc1(w_dom)
-    w_logreg_hat, pc1_resid_logreg = _resid_pc1(w_probe)
+    w_dom_hat, pc1_resid_dom = _resid_pc1(dom.w)
+    w_logreg_hat, pc1_resid_logreg = _resid_pc1(probe.w)
     proj_dom_raw = X_test @ w_dom_hat
     proj_logreg_raw = X_test @ w_logreg_hat
-    dom_raw_threshold = float(midpoint / np.linalg.norm(w_dom))
-    logreg_raw_threshold = float(-b_probe / np.linalg.norm(w_probe))
+    dom_raw_threshold = float(-dom.b / np.linalg.norm(dom.w))
+    logreg_raw_threshold = float(-probe.b / np.linalg.norm(probe.w))
 
     auroc_dom = roc_auc_score(y_test, proj_dom)
     auroc_logreg = roc_auc_score(y_test, proj_logreg)
@@ -248,11 +262,10 @@ def plot_probe(
 
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
+    layer_str = "-".join(str(i) for i in layers)
 
-    fig, (
-        (ax_dom, ax_logreg, ax_pca),
-        (ax_dom_resid, ax_logreg_resid, ax_roc),
-    ) = plt.subplots(2, 3, figsize=(15, 9))
+    # --- figure 1: histograms + ROC ---
+    fig, (ax_dom, ax_logreg, ax_roc) = plt.subplots(1, 3, figsize=(15, 4.5))
 
     for ax, proj, title in (
         (ax_dom, proj_dom, "DoM projection"),
@@ -276,6 +289,25 @@ def plot_probe(
         ax.set_xlabel("projection (test set)")
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
+
+    ax_roc.plot(fpr_dom, tpr_dom, label="DoM")
+    ax_roc.plot(fpr_logreg, tpr_logreg, label="logreg")
+    ax_roc.plot([0, 1], [0, 1], "k--", lw=1, label="chance")
+    ax_roc.set_xlabel("FPR")
+    ax_roc.set_ylabel("TPR")
+    ax_roc.set_title(f"AUROC: DoM: {auroc_dom:.3f}; LogReg: {auroc_logreg:.3f}")
+    ax_roc.legend(fontsize=8, loc="lower right")
+    ax_roc.grid(True, alpha=0.3)
+    ax_roc.set_aspect("equal", adjustable="box")
+
+    fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
+    fig.tight_layout()
+    path = os.path.join(plot_dir, f"{tag}_L{layer_str}_probe.png")
+    fig.savefig(path, dpi=120)
+    print(f"[plot] wrote {path}")
+
+    # --- figure 2: PCA comparisons ---
+    fig, (ax_pca, ax_dom_resid, ax_logreg_resid) = plt.subplots(1, 3, figsize=(15, 4.5))
 
     ax_pca.scatter(pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1")
     ax_pca.scatter(pca_xy[hi_mask, 0], pca_xy[hi_mask, 1], s=4, alpha=0.4, label="c=2")
@@ -313,20 +345,9 @@ def plot_probe(
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
-    ax_roc.plot(fpr_dom, tpr_dom, label="DoM")
-    ax_roc.plot(fpr_logreg, tpr_logreg, label="logreg")
-    ax_roc.plot([0, 1], [0, 1], "k--", lw=1, label="chance")
-    ax_roc.set_xlabel("FPR")
-    ax_roc.set_ylabel("TPR")
-    ax_roc.set_title(f"AUROC: DoM: {auroc_dom:.3f}; LogReg: {auroc_logreg:.3f}")
-    ax_roc.legend(fontsize=8, loc="lower right")
-    ax_roc.grid(True, alpha=0.3)
-    ax_roc.set_aspect("equal", adjustable="box")
-
-    layer_str = "-".join(str(i) for i in layers)
-    fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
+    fig.suptitle(f"probe separation, PCA ({tag}, layers={layer_str})")
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_L{layer_str}_probe.png")
+    path = os.path.join(plot_dir, f"{tag}_L{layer_str}_probe_pca.png")
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
@@ -372,6 +393,9 @@ def main():
     proj_test = X_test @ w_dom
     pred_dom = (proj_test > midpoint).astype(float)
     dom_acc = float((pred_dom == y_test).mean())
+    # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so its
+    # bias is the midpoint threshold negated.
+    b_dom = -midpoint
 
     # --- logistic regression (DoM above needs no normalization: it's just a
     # difference of means, invariant to a shared affine rescaling of features) ---
@@ -408,10 +432,8 @@ def main():
     plot_probe(
         args.tag,
         args.layers,
-        w_dom,
-        midpoint,
-        w_probe,
-        b_probe,
+        LinearBoundary(w_dom, b_dom),
+        LinearBoundary(w_probe, b_probe),
         X_test,
         y_test,
         plot_dir,
