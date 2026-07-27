@@ -15,8 +15,10 @@ import torch # and other heavy imports
 This is not a hard rule; if argument parsing necessarily relies on some heavy libraries, don't sacrifice code readability or command line ease-of-use for this one specific problem.
 - Indicate tensor/array shapes/sizes with jaxtyping on functions and methods
 - Write concise docs; avoid brittle docs.
-    - Docs should cover high level concepts, not implementation (which would be redundant and brittle to implementation changes).
-    - Docs shouldn't give unimportant history (contrast important history: examples of past pitfalls/bugs of a more obvious-seeming solution; even in these cases, keep it concise and link to external issue reasoning)
+    - Cover high level concepts, not implementation (which would be redundant and brittle to implementation changes).
+    - Don't list specific callers/users; instead explain use cases, to be robust to changes in where a method gets used.
+    - Don't give unimportant history (contrast important history: examples of past pitfalls/bugs of a more obvious-seeming solution; even in these cases, keep it concise and link to external issue reasoning)
+    - If a subtle flaw was identified, don't pollute the code with a long comment about it - often it's both too short to explain all the nuance and so long that it interrupts the flow. Instead, use one or two line comments, and refer to a PR# where more details can be found.
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.

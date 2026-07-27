@@ -22,6 +22,12 @@ This directory contains plans for agents.
       train_adversarial_logreg.py only (checkpoint-save closure, pre-call assert
       placement, history-dict helper, validation/provisioning split, doc fixes).
       Deliberately excludes train_adversarial.py, which may be sunset soon.
+- logreg_run_config_plan.md
+    - Stop splatting the adversarial config into the checkpoint's top level (which made
+      --resume warn on every state key); give each run directory two artifacts -- a verbatim
+      copy of the --config input and a fully-resolved config.json that finally includes the
+      model architecture -- with the schema owned by one new dataclass in config.py.
+      Also makes architecture flags an error under --resume/--fork-from.
 - rare_flags_config_plan.md
     - (COMPLETED) Move most train_adversarial_logreg.py hyperparameters into a
       required --config JSON file persisted as runs/<tag>/config.json; adds a new

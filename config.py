@@ -80,7 +80,7 @@ class ResidualMLPConfig(_CheckpointConfigMixin):
     num_x: int = 32
     d_model: int = 256
     d_mlp: int | None = None
-    num_blocks: int = 8
+    num_blocks: int =
     out_init_scale: float = 0.1
     activation: str = "gelu"
     leaky_relu_slope: float = 0.0
