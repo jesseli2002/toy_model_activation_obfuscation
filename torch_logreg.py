@@ -150,21 +150,15 @@ class TorchLogisticRegression:
                 # No previous fit to fall back on (e.g. a one-shot eval fit)
                 # -- there's nothing safe to return, so let it propagate.
                 raise
-            # A bad line-search trial pushed a coefficient far enough that
-            # evaluating the closure overflowed float32 -- this can happen on
-            # a single fresh LBFGS instance and isn't specific to stale
-            # curvature history. Recovering it mid-step isn't reliable, so
-            # give up on this fit: keep the last successfully-fit
-            # coefficients (self.coef_/self.intercept_, left untouched below)
-            # and drop the optimizer's curvature history so the next
-            # warm-started call starts clean instead of repeating the same
-            # bad step.
+            # A bad line-search trial overflowed, not stale curvature history
+            # (see PR #84) -- retrying just repeats it, so give up on this
+            # fit and keep the last-good coefficients instead.
             warnings.warn(
                 "TorchLogisticRegression.fit() overflowed and is falling back "
                 "to the last successfully-fit coefficients for this call.",
                 RuntimeWarning,
             )
-            self._optimizer = None
+            self._optimizer = None  # so the next call builds a fresh one
             return self
 
         self.coef_ = w.detach()
