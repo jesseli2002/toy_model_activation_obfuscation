@@ -14,6 +14,8 @@ The intercept is not L2-penalized, matching sklearn. Solved with
 L-BFGS-B -- numerically close but not bit-identical to sklearn's solver.
 """
 
+import warnings
+
 import torch
 import torch.nn.functional as F
 from jaxtyping import Bool, Float
@@ -144,22 +146,19 @@ class TorchLogisticRegression:
         except RuntimeError as e:
             if "overflow" not in str(e):
                 raise
-            # The curvature-history blowup described above: recover by
-            # dropping the corrupted optimizer state and retrying once from
-            # the last successfully-fit coefficients, rather than crashing
-            # the whole training run.
-            self._optimizer = None
-            w, b = self._init_params(d, X.device, X.dtype)
-            optimizer = torch.optim.LBFGS(
-                [w, b],
-                max_iter=self.max_iter,
-                tolerance_grad=self.tol,
-                tolerance_change=self.tol * 1e-2,
-                line_search_fn="strong_wolfe",
+            if not (self.warm_start and self.coef_ is not None):
+                # No previous fit to fall back on (e.g. a one-shot eval fit)
+                # -- there's nothing safe to return, so let it propagate.
+                raise
+            # Probably bad line-search trial overflowed (see PR $84)
+            # - give up and keep the last-good coefficients instead.
+            warnings.warn(
+                "TorchLogisticRegression.fit() overflowed and is falling back "
+                "to the last successfully-fit coefficients for this call.",
+                RuntimeWarning,
             )
-            if self.warm_start:
-                self._optimizer = optimizer
-            optimizer.step(closure)
+            self._optimizer = None  # so the next call builds a fresh one
+            return self
 
         self.coef_ = w.detach()
         self.intercept_ = b.detach()
