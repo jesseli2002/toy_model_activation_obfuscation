@@ -153,6 +153,15 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     probe_loss_kind: str
     probe_subsample: int
     probe_retrain_interval: int
+    # 0 disables resampling -- the probe dataset stays fixed for the whole
+    # run, as it always did before this field existed.
+    probe_resample_interval: int
+    # Per-tail fraction of each class's projected scores dropped before
+    # averaging in the adversarial penalty (e.g. 0.05 drops below the 5th and
+    # above the 95th percentile, keeping the middle 90%) -- robustifies the
+    # penalty against a handful of extreme activations dominating the mean.
+    # 0.0 disables trimming (plain mean).
+    probe_loss_trim_frac: float
     resid_noise_std: float
     # Clipped per-block, not whole-model: a global L2 norm sums correlated
     # per-block gradient contributions (every block shares the same backprop
@@ -202,6 +211,8 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "probe_loss_kind": "meandiff-relu",
         "probe_subsample": 1,  # legacy runs fit on the full batch every step
         "probe_retrain_interval": 1,  # legacy runs refit every iteration
+        "probe_resample_interval": 0,  # legacy runs never resampled the probe set
+        "probe_loss_trim_frac": 0.0,  # legacy runs used the plain (untrimmed) mean
         "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
         "grad_clip": 0.0,  # legacy runs trained with no gradient clipping
         "x_p_outer": None,  # legacy runs sampled x plain-uniform, unbiased

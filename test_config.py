@@ -39,6 +39,8 @@ def _make_logreg_config() -> LogregAdversarialConfig:
         probe_loss_kind="meandiff-relu",
         probe_subsample=8,
         probe_retrain_interval=16,
+        probe_resample_interval=512,
+        probe_loss_trim_frac=0.05,
         resid_noise_std=0.1,
         grad_clip=1.0,
         x_p_outer=None,
