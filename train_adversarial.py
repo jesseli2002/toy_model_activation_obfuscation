@@ -453,7 +453,7 @@ def main(args):
             best_loss=best_loss,
             # adversarial metadata (not architecture, so kept out of "config");
             # includes seed, so it is not passed separately here.
-            **adv_config.to_dict(),
+            adv_config=adv_config.to_dict(),
         )
 
     # Fixed eval batch, drawn once from gen so the delta-mean trace reflects the

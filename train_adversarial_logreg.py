@@ -40,9 +40,13 @@ Three run modes (see plans/rare_flags_config_plan.md for the full design):
     exactly like a fresh run. `runs/<new_tag>/config.json` additionally
     records `forked_from`.
 
-`runs/<tag>/config.json` is write-once and read-only thereafter for the
-lifetime of that tag: hand-editing it after creation has no effect except
-tripping the mismatch warning on a later `--resume`.
+Two run-directory artifacts are written once, at tag-creation time, and are
+read-only thereafter for the lifetime of that tag (see `LogregRunConfig` for
+`config.json`'s schema): `runs/<tag>/input_config.json` is a verbatim copy of
+the `--config` file, kept reusable as a later `--config` argument (e.g. for
+`--fork-from`); `runs/<tag>/config.json` is the fully-resolved run config.
+Hand-editing either after creation has no effect except tripping the
+mismatch warning on a later `--resume`.
 """
 
 import argparse
@@ -57,7 +61,12 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 
 import config
-from config import LogregAdversarialConfig, ResidualMLPConfig
+from config import (
+    ForkedFrom,
+    LogregAdversarialConfig,
+    LogregRunConfig,
+    ResidualMLPConfig,
+)
 from paths import ckpt_dir, log_dir, run_dir
 from rate_meter import EMARateMeter
 
@@ -68,6 +77,17 @@ from rate_meter import EMARateMeter
 PROBE_STEP_MAX_ITER = 100
 
 
+class _RecordExplicit(argparse.Action):
+    """Behaves as a normal store action (so `default=`/--help still work),
+    but also records the dest on the namespace's `_explicit` set -- used to
+    detect architecture flags passed alongside --resume/--fork-from, where
+    they'd otherwise be silently ignored."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        setattr(namespace, self.dest, values)
+        namespace._explicit.add(self.dest)
+
+
 def parse_args():
     p = argparse.ArgumentParser(
         description="Adversarial training: model vs. a simultaneous, "
@@ -76,14 +96,32 @@ def parse_args():
     )
     g_init = p.add_argument_group(
         "model initialization (fresh run only)",
-        "The model always inits from scratch with this architecture. Ignored "
-        "under --resume/--fork-from, which instead take the architecture from "
-        "the checkpoint being restored.",
+        "The model always inits from scratch with this architecture. Errors "
+        "if explicitly passed alongside --resume/--fork-from, which instead "
+        "take the architecture from the checkpoint being restored.",
     )
-    g_init.add_argument("--num-x", type=int, default=ResidualMLPConfig.num_x)
-    g_init.add_argument("--d-model", type=int, default=ResidualMLPConfig.d_model)
-    g_init.add_argument("--d-mlp", type=int, default=None, help="default: num_x.")
-    g_init.add_argument("--num-blocks", type=int, default=ResidualMLPConfig.num_blocks)
+    g_init.add_argument(
+        "--num-x", type=int, default=ResidualMLPConfig.num_x, action=_RecordExplicit
+    )
+    g_init.add_argument(
+        "--d-model",
+        type=int,
+        default=ResidualMLPConfig.d_model,
+        action=_RecordExplicit,
+    )
+    g_init.add_argument(
+        "--d-mlp",
+        type=int,
+        default=None,
+        help="default: num_x.",
+        action=_RecordExplicit,
+    )
+    g_init.add_argument(
+        "--num-blocks",
+        type=int,
+        default=ResidualMLPConfig.num_blocks,
+        action=_RecordExplicit,
+    )
 
     g_adv = p.add_argument_group(
         "adversarial objective (CLI-common)",
@@ -153,11 +191,28 @@ def parse_args():
     )
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
 
-    args = p.parse_args()
+    namespace = argparse.Namespace(_explicit=set())
+    args = p.parse_args(namespace=namespace)
     if args.resume and args.fork_from is not None:
         p.error("--resume and --fork-from are mutually exclusive.")
     if not args.resume and args.config is None:
         p.error("--config PATH is required (unless --resume).")
+    if args.resume or args.fork_from is not None:
+        arch_flags = {
+            "num_x": "--num-x",
+            "d_model": "--d-model",
+            "d_mlp": "--d-mlp",
+            "num_blocks": "--num-blocks",
+        }
+        offending = [
+            flag for dest, flag in arch_flags.items() if dest in args._explicit
+        ]
+        if offending:
+            mode = "--resume" if args.resume else "--fork-from"
+            p.error(
+                f"{', '.join(offending)} cannot be combined with {mode} -- "
+                f"architecture comes from the checkpoint being restored."
+            )
     return args
 
 
@@ -266,36 +321,48 @@ def _config_json_path(tag: str) -> str:
     return os.path.join(run_dir(tag), "config.json")
 
 
-def _write_config_json(
-    tag: str, adv_config: LogregAdversarialConfig, forked_from: dict | None = None
+def _input_config_json_path(tag: str) -> str:
+    return os.path.join(run_dir(tag), "input_config.json")
+
+
+def _write_run_config(
+    tag: str,
+    model_config: ResidualMLPConfig,
+    adv_config: LogregAdversarialConfig,
+    input_config_path: str,
+    forked_from: ForkedFrom | None = None,
 ) -> None:
-    """Write runs/<tag>/config.json once, at tag-creation time (fresh run or
-    --fork-from). Write-once, read-only thereafter -- see module docstring;
-    --resume never calls this."""
-    d = adv_config.to_dict()
-    if forked_from is not None:
-        d["forked_from"] = forked_from
+    """Write runs/<tag>/config.json (fully resolved) and
+    runs/<tag>/input_config.json (verbatim copy of --config) once, at
+    tag-creation time (fresh run or --fork-from). Write-once, read-only
+    thereafter -- see module docstring; --resume never calls this."""
+    run_config = LogregRunConfig(
+        model=model_config, adversarial=adv_config, forked_from=forked_from
+    )
     path = _config_json_path(tag)
     with open(path, "w") as f:
-        json.dump(d, f, indent=2)
+        json.dump(run_config.to_dict(), f, indent=2)
+    shutil.copyfile(input_config_path, _input_config_json_path(tag))
     print(
         f"[config] wrote {path} (write-once -- hand-edits after this point "
         f"are only detected, as a warning, on a later --resume; never applied)"
     )
 
 
-def _check_config_json(tag: str, adv_config: LogregAdversarialConfig) -> None:
+def _check_config_json(
+    tag: str, model_config: ResidualMLPConfig, adv_config: LogregAdversarialConfig
+) -> None:
     """--resume sanity check: compare runs/<tag>/config.json (written once at
     tag-creation) against the checkpoint-restored config. A mismatch means
     someone hand-edited the file since -- warn and proceed on the
     checkpoint's values; the file itself is left untouched either way."""
     path = _config_json_path(tag)
     if not os.path.exists(path):
-        return  # predates this feature -- nothing to check against
+        print(f"[warn] {path} not found -- nothing to sanity-check against.")
+        return
     with open(path) as f:
-        on_disk = json.load(f)
-    on_disk.pop("forked_from", None)
-    if LogregAdversarialConfig(**on_disk) != adv_config:
+        on_disk = LogregRunConfig.from_dict(json.load(f))
+    if on_disk.adversarial != adv_config or on_disk.model != model_config:
         print(
             f"[warn] {path} does not match the checkpoint's config -- was it "
             f"hand-edited after {tag} was created? Proceeding with the "
@@ -590,7 +657,7 @@ def save_checkpoint(
             probe_w=w_eff.cpu(),
             probe_b=b_eff.cpu(),
             probe_layers=hidden_layers,
-            **adv_config.to_dict(),
+            adv_config=adv_config.to_dict(),
         )
 
 
@@ -622,13 +689,19 @@ def main(args):
 
     if args.resume:
         model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
-        adv_config = LogregAdversarialConfig.from_dict(rck)
+        if "adv_config" not in rck:
+            raise SystemExit(
+                f"[error] {last_path} predates the nested adv_config checkpoint "
+                f"layout and cannot be --resume'd. Start a fresh run, or "
+                f"--fork-from it instead."
+            )
+        adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
         hidden_layers = adv_config.penalty_layers
         if os.path.exists(hist_path):
             with open(hist_path) as f:
                 history = json.load(f)
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
-        _check_config_json(args.tag, adv_config)
+        _check_config_json(args.tag, model.config, adv_config)
     else:
         # Hyperparameters are freshly resolved from --config + --lam (never
         # read from the checkpoint, unlike --resume above).
@@ -646,7 +719,7 @@ def main(args):
                 source_ckpt_path, device
             )
             history = _forked_history(args.fork_from, start_iter)
-            forked_from = {"tag": args.fork_from, "iter": start_iter}
+            forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
             print(
                 f"[fork] from {args.fork_from} @ iter {start_iter}, "
                 f"best_loss={best_loss:.3e}"
@@ -677,7 +750,13 @@ def main(args):
                 eps=adv_config.adam_eps,
                 betas=(0.9, adv_config.adam_beta2),
             )
-        _write_config_json(args.tag, adv_config, forked_from=forked_from)
+        _write_run_config(
+            args.tag,
+            model.config,
+            adv_config,
+            input_config_path=args.config,
+            forked_from=forked_from,
+        )
 
     num_x, num_blocks = model.config.num_x, model.config.num_blocks
     if not hidden_layers:

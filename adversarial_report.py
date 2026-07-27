@@ -310,7 +310,7 @@ def _auroc_snapshots(tag, device, n_snapshots=1000, eval_n=4096, seed=0):
             continue  # not a train_adversarial_logreg.py checkpoint
         model = model.to(device).eval()
         if eval_x is None:
-            class_threshold = ck.get("class_threshold", 1.5)
+            class_threshold = ck.get("adv_config", {}).get("class_threshold", 1.5)
             eval_x, _ = sample_batch(
                 eval_n, model.config.num_x, generator=gen, device=device
             )
@@ -707,9 +707,10 @@ def _build_report(
 
     emit(f"# Step 3 adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
     emit()
+    adv_ck = ck.get("adv_config", {})
     emit(
         f"config: num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
-        f"num_blocks={num_blocks} lam={ck.get('lam')} init={ck.get('init')} "
+        f"num_blocks={num_blocks} lam={adv_ck.get('lam')} init={adv_ck.get('init')} "
         f"penalty_layers={penalty_layers}"
     )
     emit()
@@ -768,7 +769,9 @@ def main(args):
     model, ck = load_model(args.tag, args.ckpt, device)
     num_x = model.num_x
     num_blocks = model.num_blocks
-    penalty_layers = ck.get("penalty_layers") or list(range(1, num_blocks))
+    penalty_layers = ck.get("adv_config", {}).get("penalty_layers") or list(
+        range(1, num_blocks)
+    )
     hidden_layers = list(range(1, num_blocks))
 
     if args.steer:
