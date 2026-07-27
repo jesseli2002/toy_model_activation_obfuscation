@@ -16,19 +16,13 @@ only printed/written with --detailed.
 Optionally pass --baseline-path to run the same probes on the pre-adversarial
 model for a before/after contrast.
 
-Three optional deep-dive diagnostics, each opt-in since they cost extra compute:
-  --detailed        also plots the held-out-pair accuracy gap across layers
-                     (extends the table above into a bar chart).
+Two optional deep-dive diagnostics, each opt-in since they cost extra compute:
+  --detailed        more detailed analysis.
   --steer L1,L2,...  causal test: inject the DoM- and logreg-discovered c=1->c=2
                      directions at each given layer and see whether the model's
                      output actually moves toward the c=2 target -- a probe that
                      merely correlates with c but isn't causally used would fail
                      this even at high probe accuracy.
-  --linear-y-probe   fits a linear map residual[layer] -> model's own final y,
-                     for every layer. Tests whether y is already linearly
-                     recoverable well before the final unembed: if so, the
-                     remaining blocks don't need to keep carrying c information,
-                     they can just carry y forward through always-on neurons.
 """
 
 import argparse
@@ -89,8 +83,7 @@ def parse_args():
     p.add_argument(
         "--detailed",
         action="store_true",
-        help="also compute the binary held-out c-pair statistics (3b) and "
-        "plot their accuracy gap across layers.",
+        help="more detailed analysis.",
     )
     p.add_argument(
         "--steer",
@@ -107,13 +100,6 @@ def parse_args():
         type=float,
         default=1.0,
         help="multiple of the full c=1->c=2 shift magnitude to inject (1.0 = full).",
-    )
-    p.add_argument(
-        "--linear-y-probe",
-        action="store_true",
-        help="fit a linear map residual[layer] -> model's own final y at every "
-        "layer (0..num_blocks) and report/plot R^2. Tests whether y is already "
-        "linearly recoverable well before the final unembed.",
     )
     return p.parse_args()
 
@@ -846,7 +832,7 @@ def main(args):
                 heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
 
     linear_y_r2 = None
-    if args.linear_y_probe:
+    if args.detailed:
         linear_y_r2 = _linear_y_reconstruction(
             model, num_x, num_blocks, args.n_train, args.n_test, g, device
         )
