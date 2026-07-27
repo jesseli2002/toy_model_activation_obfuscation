@@ -16,15 +16,9 @@ X_LOW, X_HIGH = -3.0, 3.0  # x ~ U[X_LOW, X_HIGH]
 C_LOW, C_HIGH = 1.0, 2.0  # c ~ U[X_LOW, X_HIGH]
 
 # Training
-# BATCH_SIZE = 4096
-BATCH_SIZE = 4096 * 4
-LR = 3e-3
 MAX_ITERS = 100_000
-EARLY_STOP_LOSS = 1e-12  # float32 eps^2 ~ 1.4e-14; 1e-12 is a sane "exact" bar
 
 
-PROBE_LOSS_CHOICES = ["squared", "absolute", "squared-var", "absolute-std", "lda"]
-PROBE_LOGREG_LOSS_CHOICES = ["meandiff-relu", "meandiff"]
 ACTIVATION_CHOICES = ["leaky_relu", "gelu"]
 PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch"]
 
