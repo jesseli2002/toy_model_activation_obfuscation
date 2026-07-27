@@ -14,6 +14,7 @@ for the rationale behind the probe choices and gate thresholds.
 
 import argparse
 import os
+from typing import NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -27,6 +28,19 @@ from paths import plot_dir as get_plot_dir
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 torch.set_default_device(device)
+
+
+class LinearBoundary(NamedTuple):
+    """An affine decision boundary over probed features: score(x) = w . x + b,
+    boundary at score = 0. Used to compare probes (e.g. difference-of-means vs
+    a fit logreg/LDA probe) that share this representation regardless of how
+    each was derived."""
+
+    w: Float[np.ndarray, "d"]
+    b: float
+
+    def score(self, X: Float[np.ndarray, "n d"]) -> Float[np.ndarray, "n"]:
+        return X @ self.w + self.b
 
 
 def _parse_layers(s: str) -> list[int]:
@@ -186,40 +200,40 @@ def _plot_steering(model, num_x, steer_layer, steer_vec, tag, plot_dir):
 def plot_probe(
     tag,
     layers,
-    w_dom: Float[np.ndarray, "d"],
-    midpoint,
-    w_probe: Float[np.ndarray, "d"],
-    b_probe: float,
+    dom: LinearBoundary,
+    probe: LinearBoundary,
     X_test: Float[np.ndarray, "n d"],
     y_test: Bool[np.ndarray, "n"],
     plot_dir,
 ):
     """n = test-set size (both classes concatenated), d = probed feature dim
-    (sum of d_model over --layers). `w_probe`/`b_probe` are the logreg probe's
-    raw (unstandardized) affine decision score s(r) = w_probe . r + b_probe --
-    i.e. whatever scaler the probe was fit with already folded in, so this
-    function is agnostic to which backend (sklearn/torch) produced them."""
+    (sum of d_model over --layers). `dom` and `probe` are two affine decision
+    boundaries over the same feature space -- a difference-of-means direction
+    and a fit logreg/LDA probe -- compared side by side. `probe`'s weight/bias
+    are raw (unstandardized): whatever scaler the probe was fit with already
+    folded in, so this function is agnostic to which backend (sklearn/torch)
+    produced them."""
     from sklearn.decomposition import PCA
 
-    proj_dom = X_test @ w_dom - midpoint
-    proj_logreg = X_test @ w_probe + b_probe
+    proj_dom = dom.score(X_test)
+    proj_logreg = probe.score(X_test)
     pca_xy = PCA(n_components=2).fit_transform(X_test)
 
     # logreg's decision boundary direction, so we can project it out and PCA
     # the residual: this extends the logreg histogram into a second axis
     # showing whether any of the remaining (logreg-orthogonal) variance still
     # separates the classes.
-    w_logreg: Float[np.ndarray, "d"] = w_probe
+    w_logreg: Float[np.ndarray, "d"] = probe.w
     w_hat: Float[np.ndarray, "d"] = w_logreg / np.linalg.norm(w_logreg)
     X_resid: Float[np.ndarray, "n d"] = X_test - np.outer(X_test @ w_hat, w_hat)
     pc1_resid: Float[np.ndarray, "n"] = PCA(n_components=1).fit_transform(X_resid)[:, 0]
 
     # raw projection onto the logreg direction, for the scatter plot's
-    # x-axis: proj_logreg above is in "decision score" units (w_probe already
+    # x-axis: proj_logreg above is in "decision score" units (probe.w already
     # folds in the scaler), whereas w_hat @ X_test is the unnormalized
     # projection in data coordinates.
     proj_logreg_raw: Float[np.ndarray, "n"] = X_test @ w_hat
-    logreg_raw_threshold = float(-b_probe / np.linalg.norm(w_logreg))
+    logreg_raw_threshold = float(-probe.b / np.linalg.norm(w_logreg))
 
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
@@ -325,6 +339,9 @@ def main():
     proj_test = X_test @ w_dom
     pred_dom = (proj_test > midpoint).astype(float)
     dom_acc = float((pred_dom == y_test).mean())
+    # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so its
+    # bias is the midpoint threshold negated.
+    b_dom = -midpoint
 
     # --- logistic regression (DoM above needs no normalization: it's just a
     # difference of means, invariant to a shared affine rescaling of features) ---
@@ -361,10 +378,8 @@ def main():
     plot_probe(
         args.tag,
         args.layers,
-        w_dom,
-        midpoint,
-        w_probe,
-        b_probe,
+        LinearBoundary(w_dom, b_dom),
+        LinearBoundary(w_probe, b_probe),
         X_test,
         y_test,
         plot_dir,
