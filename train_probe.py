@@ -83,21 +83,34 @@ def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
 
 @torch.no_grad()
 def capture_layers_dict(
-    model: ResidualMLP, x_full: torch.Tensor, layers: list[int]
+    model: ResidualMLP,
+    x_full: torch.Tensor,
+    layers: list[int],
+    noise_std: float = 0.0,
+    generator: torch.Generator | None = None,
 ) -> dict[int, torch.Tensor]:
     """Returns each requested layer's residual-stream activations, keyed by
-    layer index, from a single shared forward pass."""
-    _, caches = model.forward(x_full, return_cache=True)
+    layer index, from a single shared forward pass. `noise_std`/`generator`
+    are passed straight through to `ResidualMLP.forward`."""
+    _, caches = model.forward(
+        x_full, return_cache=True, noise_std=noise_std, generator=generator
+    )
     return {i: caches[i] for i in layers}
 
 
 @torch.no_grad()
 def capture_layers(
-    model: ResidualMLP, x_full: torch.Tensor, layers: list[int]
+    model: ResidualMLP,
+    x_full: torch.Tensor,
+    layers: list[int],
+    noise_std: float = 0.0,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Like capture_layers_dict, but concatenates the requested layers into a
     single flat feature tensor."""
-    d = capture_layers_dict(model, x_full, layers)
+    d = capture_layers_dict(
+        model, x_full, layers, noise_std=noise_std, generator=generator
+    )
     return torch.cat([d[i] for i in layers], dim=-1)
 
 
@@ -198,35 +211,48 @@ def plot_probe(
     (sum of d_model over --layers). `w_probe`/`b_probe` are the logreg probe's
     raw (unstandardized) affine decision score s(r) = w_probe . r + b_probe --
     i.e. whatever scaler the probe was fit with already folded in, so this
-    function is agnostic to which backend (sklearn/torch) produced them."""
+    function is agnostic to which backend (sklearn/torch) produced them.
+
+    2x3 grid: top row is each probe's histogram plus a shared PCA scatter;
+    bottom row extends each histogram with a second axis (that probe's
+    direction projected out, then PC1 of what's left -- showing whether any
+    orthogonal variance still separates the classes), plus an ROC panel
+    comparing both probes' generalization directly."""
     from sklearn.decomposition import PCA
+    from sklearn.metrics import roc_auc_score, roc_curve
 
     proj_dom = X_test @ w_dom - midpoint
     proj_logreg = X_test @ w_probe + b_probe
     pca_xy = PCA(n_components=2).fit_transform(X_test)
 
-    # logreg's decision boundary direction, so we can project it out and PCA
-    # the residual: this extends the logreg histogram into a second axis
-    # showing whether any of the remaining (logreg-orthogonal) variance still
-    # separates the classes.
-    w_logreg: Float[np.ndarray, "d"] = w_probe
-    w_hat: Float[np.ndarray, "d"] = w_logreg / np.linalg.norm(w_logreg)
-    X_resid: Float[np.ndarray, "n d"] = X_test - np.outer(X_test @ w_hat, w_hat)
-    pc1_resid: Float[np.ndarray, "n"] = PCA(n_components=1).fit_transform(X_resid)[:, 0]
+    def _resid_pc1(w: Float[np.ndarray, "d"]):
+        w_hat = w / np.linalg.norm(w)
+        X_resid = X_test - np.outer(X_test @ w_hat, w_hat)
+        pc1 = PCA(n_components=1).fit_transform(X_resid)[:, 0]
+        return w_hat, pc1
 
-    # raw projection onto the logreg direction, for the scatter plot's
-    # x-axis: proj_logreg above is in "decision score" units (w_probe already
-    # folds in the scaler), whereas w_hat @ X_test is the unnormalized
-    # projection in data coordinates.
-    proj_logreg_raw: Float[np.ndarray, "n"] = X_test @ w_hat
-    logreg_raw_threshold = float(-b_probe / np.linalg.norm(w_logreg))
+    # each probe's own direction, projected out, then PC1 of what's left --
+    # raw projections are in data coordinates (unlike proj_dom/proj_logreg
+    # above, which are in each probe's own decision-score units).
+    w_dom_hat, pc1_resid_dom = _resid_pc1(w_dom)
+    w_logreg_hat, pc1_resid_logreg = _resid_pc1(w_probe)
+    proj_dom_raw = X_test @ w_dom_hat
+    proj_logreg_raw = X_test @ w_logreg_hat
+    dom_raw_threshold = float(midpoint / np.linalg.norm(w_dom))
+    logreg_raw_threshold = float(-b_probe / np.linalg.norm(w_probe))
+
+    auroc_dom = roc_auc_score(y_test, proj_dom)
+    auroc_logreg = roc_auc_score(y_test, proj_logreg)
+    fpr_dom, tpr_dom, _ = roc_curve(y_test, proj_dom)
+    fpr_logreg, tpr_logreg, _ = roc_curve(y_test, proj_logreg)
 
     lo_mask = y_test == 0.0
     hi_mask = y_test == 1.0
 
-    fig, (ax_dom, ax_logreg, ax_pca, ax_logreg_resid) = plt.subplots(
-        1, 4, figsize=(20, 6)
-    )
+    fig, (
+        (ax_dom, ax_logreg, ax_pca),
+        (ax_dom_resid, ax_logreg_resid, ax_roc),
+    ) = plt.subplots(2, 3, figsize=(15, 9))
 
     for ax, proj, title in (
         (ax_dom, proj_dom, "DoM projection"),
@@ -260,21 +286,42 @@ def plot_probe(
     ax_pca.grid(True, alpha=0.3)
     ax_pca.set_aspect("equal", adjustable="datalim")
 
-    ax_logreg_resid.scatter(
-        proj_logreg_raw[lo_mask], pc1_resid[lo_mask], s=4, alpha=0.4, label="c=1"
-    )
-    ax_logreg_resid.scatter(
-        proj_logreg_raw[hi_mask], pc1_resid[hi_mask], s=4, alpha=0.4, label="c=2"
-    )
-    ax_logreg_resid.axvline(
-        logreg_raw_threshold, color="k", ls="--", lw=1, label="threshold"
-    )
-    ax_logreg_resid.set_title("logreg vs residual PCA")
-    ax_logreg_resid.set_xlabel("logreg projection (data coords)")
-    ax_logreg_resid.set_ylabel("PC1 of logreg-orthogonal residual")
-    ax_logreg_resid.legend(fontsize=8)
-    ax_logreg_resid.grid(True, alpha=0.3)
-    # ax_logreg_resid.set_aspect("equal", adjustable="datalim")
+    for ax, proj_raw, pc1_resid, threshold, title, xlabel in (
+        (
+            ax_dom_resid,
+            proj_dom_raw,
+            pc1_resid_dom,
+            dom_raw_threshold,
+            "DoM vs residual PCA",
+            "DoM projection (data coords)",
+        ),
+        (
+            ax_logreg_resid,
+            proj_logreg_raw,
+            pc1_resid_logreg,
+            logreg_raw_threshold,
+            "logreg vs residual PCA",
+            "logreg projection (data coords)",
+        ),
+    ):
+        ax.scatter(proj_raw[lo_mask], pc1_resid[lo_mask], s=4, alpha=0.4, label="c=1")
+        ax.scatter(proj_raw[hi_mask], pc1_resid[hi_mask], s=4, alpha=0.4, label="c=2")
+        ax.axvline(threshold, color="k", ls="--", lw=1, label="threshold")
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("PC1 of orthogonal residual")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    ax_roc.plot(fpr_dom, tpr_dom, label="DoM")
+    ax_roc.plot(fpr_logreg, tpr_logreg, label="logreg")
+    ax_roc.plot([0, 1], [0, 1], "k--", lw=1, label="chance")
+    ax_roc.set_xlabel("FPR")
+    ax_roc.set_ylabel("TPR")
+    ax_roc.set_title(f"AUROC: DoM: {auroc_dom:.3f}; LogReg: {auroc_logreg:.3f}")
+    ax_roc.legend(fontsize=8, loc="lower right")
+    ax_roc.grid(True, alpha=0.3)
+    ax_roc.set_aspect("equal", adjustable="box")
 
     layer_str = "-".join(str(i) for i in layers)
     fig.suptitle(f"probe separation ({tag}, layers={layer_str})")

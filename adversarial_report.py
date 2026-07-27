@@ -101,6 +101,16 @@ def parse_args():
         default=1.0,
         help="multiple of the full c=1->c=2 shift magnitude to inject (1.0 = full).",
     )
+    p.add_argument(
+        "--eval-noise-mult",
+        type=float,
+        default=1.0,
+        help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
+        "injected into the residual stream only when EVALUATING probes (never "
+        "when fitting them, since a probe fit is a large-n limit that noise "
+        "doesn't move) -- replicates the noisy environment the model itself "
+        "saw at train time. 0 disables.",
+    )
     return p.parse_args()
 
 
@@ -156,13 +166,21 @@ def _raw_signed_distance(w_probe, b_probe, X):
 
 
 @torch.no_grad()
-def _binary_dataset_all_layers(model, num_x, n, c_lo, c_hi, layers, generator, device):
+def _binary_dataset_all_layers(
+    model, num_x, n, c_lo, c_hi, layers, generator, device, noise_std=0.0
+):
     """One forward pass over c_lo and one over c_hi, shared across all
-    `layers` -- returns {layer: (r_lo, r_hi)}."""
+    `layers` -- returns {layer: (r_lo, r_hi)}. `noise_std` (if > 0) injects
+    residual-stream noise into that forward pass, same as the model's own
+    training-time environment."""
     xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
     xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)
-    r_lo = capture_layers_dict(model, xf_lo, layers)
-    r_hi = capture_layers_dict(model, xf_hi, layers)
+    r_lo = capture_layers_dict(
+        model, xf_lo, layers, noise_std=noise_std, generator=generator
+    )
+    r_hi = capture_layers_dict(
+        model, xf_hi, layers, noise_std=noise_std, generator=generator
+    )
     return {layer: (r_lo[layer], r_hi[layer]) for layer in layers}
 
 
@@ -176,6 +194,7 @@ def _binary_probe_metrics_all_layers(
     g,
     probe_backend_name,
     desc="layers",
+    eval_noise_std=0.0,
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
     c_hi) pair, from a single shared forward pass per train/test set.
@@ -193,6 +212,11 @@ def _binary_probe_metrics_all_layers(
     `device` end-to-end for the torch backend, so it actually skips the numpy
     round-trip rather than just wrapping the same CPU path under a new name.
     LDA has no GPU variant and stays on the numpy/sklearn path.
+
+    `eval_noise_std` injects residual-stream noise into the TEST forward pass
+    only -- fitting a probe is a large-n limit that noise doesn't move, but
+    evaluating it should see the same noisy environment the model itself
+    trained under.
     """
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -200,7 +224,7 @@ def _binary_probe_metrics_all_layers(
         model, num_x, n_train, c_lo, c_hi, layers, g, device
     )
     test_ds = _binary_dataset_all_layers(
-        model, num_x, n_test, c_lo, c_hi, layers, g, device
+        model, num_x, n_test, c_lo, c_hi, layers, g, device, noise_std=eval_noise_std
     )
 
     metrics = {}
@@ -267,7 +291,9 @@ def _binary_probe_metrics_all_layers(
 # ----------------------------------------------------------------------------
 # Plots
 # ----------------------------------------------------------------------------
-def _auroc_snapshots(tag, device, n_snapshots=1000, eval_n=4096, seed=0):
+def _auroc_snapshots(
+    tag, device, eval_noise_mult, n_snapshots=1000, eval_n=4096, seed=0
+):
     """Probe AUROC over the course of training, computed here (not logged
     during training) from the numbered checkpoint snapshots
     train_adversarial_logreg.py already writes every --save-every-n iters
@@ -276,10 +302,12 @@ def _auroc_snapshots(tag, device, n_snapshots=1000, eval_n=4096, seed=0):
 
     Snapshots are approximately-uniformly strided down to ~n_snapshots (a
     simple stride, not an exact pick) since loading + a forward pass per
-    snapshot is the expensive part. All snapshots are scored against the
-    same freshly-sampled eval batch, for a trace that's comparable point to
-    point (this is a fresh generalization check, not the training run's own
-    fixed probe set)."""
+    snapshot is the expensive part. All snapshots are scored against the same
+    fixed c=1/c=2 pair (not the continuous c~U[1,2] training distribution),
+    sampled once and reused across snapshots for a trace that's comparable
+    point to point -- the same binary contrast used everywhere else in this
+    module, with `eval_noise_mult` * each snapshot's own
+    adv_config.resid_noise_std injected into the eval forward pass."""
     paths = sorted(
         glob.glob(os.path.join(ckpt_dir(tag), "iter_*.pt")),
         key=lambda p: int(os.path.basename(p)[len("iter_") : -len(".pt")]),
@@ -288,6 +316,7 @@ def _auroc_snapshots(tag, device, n_snapshots=1000, eval_n=4096, seed=0):
     paths = paths[::stride]
 
     gen = torch.Generator(device=device).manual_seed(seed)
+    noise_gen = torch.Generator(device=device).manual_seed(seed)
     eval_x = eval_label = None
     out = []
     for path in paths:
@@ -298,26 +327,33 @@ def _auroc_snapshots(tag, device, n_snapshots=1000, eval_n=4096, seed=0):
         if eval_x is None:
             # "probe_w" present (checked above) guarantees this is a
             # train_adversarial_logreg.py checkpoint written by
-            # save_checkpoint, so adv_config/class_threshold are always
-            # there -- fail loudly (direct indexing) rather than silently
-            # falling back on a corrupt/unexpected checkpoint.
-            class_threshold = ck["adv_config"]["class_threshold"]
-            eval_x, _ = sample_batch(
-                eval_n, model.config.num_x, generator=gen, device=device
-            )
-            eval_label = (
-                (eval_x[:, model.config.num_x] >= class_threshold).cpu().numpy()
-            )
+            # save_checkpoint, so adv_config is always there -- fail loudly
+            # (direct indexing) rather than silently falling back on a
+            # corrupt/unexpected checkpoint.
+            num_x = model.config.num_x
+            xf_lo, _ = sample_fixed_c(eval_n, num_x, 1.0, generator=gen, device=device)
+            xf_hi, _ = sample_fixed_c(eval_n, num_x, 2.0, generator=gen, device=device)
+            eval_x = torch.cat([xf_lo, xf_hi], dim=0)
+            eval_label = np.concatenate([np.zeros(eval_n), np.ones(eval_n)])
         w = ck["probe_w"].to(device)
         b = ck["probe_b"].to(device)
+        noise_std = ck["adv_config"]["resid_noise_std"] * eval_noise_mult
         with torch.no_grad():
-            feats = capture_layers(model, eval_x, ck["probe_layers"])
+            feats = capture_layers(
+                model,
+                eval_x,
+                ck["probe_layers"],
+                noise_std=noise_std,
+                generator=noise_gen,
+            )
             s = (feats @ w + b).cpu().numpy()
         out.append((ck["iter"], roc_auc_score(eval_label, s)))
     return out
 
 
-def _plot_training_traces(tag, history, plot_dir, device):
+def _plot_training_traces(
+    tag, history, plot_dir, device, class_threshold, eval_noise_mult
+):
     pts = [h for h in history if h.get("l_task") is not None]
     if not pts:
         return
@@ -330,7 +366,7 @@ def _plot_training_traces(tag, history, plot_dir, device):
     ax_err.set_ylabel("max abs error")
     ax_err.grid(True, alpha=0.3)
 
-    snapshots = _auroc_snapshots(tag, device)
+    snapshots = _auroc_snapshots(tag, device, eval_noise_mult)
     if snapshots:
         auroc_its = [it for it, _ in snapshots]
         auroc_ys = [y for _, y in snapshots]
@@ -347,7 +383,10 @@ def _plot_training_traces(tag, history, plot_dir, device):
             va="center",
             transform=ax_auroc.transAxes,
         )
-    ax_auroc.set_title("probe AUROC (adversary strength)")
+    if class_threshold is not None:
+        ax_auroc.set_title(f"probe AUROC for c > {class_threshold:g}")
+    else:
+        ax_auroc.set_title("probe AUROC (adversary strength)")
     ax_auroc.set_xlabel("iter")
     ax_auroc.set_ylabel("AUROC")
     ax_auroc.grid(True, alpha=0.3)
@@ -609,7 +648,9 @@ def _plot_steer_comparison(
 
 
 @torch.no_grad()
-def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, device):
+def _linear_y_reconstruction(
+    model, num_x, num_blocks, n_train, n_test, g, device, eval_noise_std=0.0
+):
     """Fit a linear map residual[layer] -> model's own final task output y,
     for every residual-stream layer 0..num_blocks (embedding through the
     final residual, inclusive). Layer num_blocks is a sanity anchor: y IS a
@@ -618,17 +659,23 @@ def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, devic
     recoverable well before that point -- if so, downstream blocks don't need
     to keep encoding c, they can just carry y forward through always-on
     neurons. Samples c ~ U[1,2] (the training distribution), not pinned pairs,
-    since this asks about the model's actual behavior, not a probe contrast."""
+    since this asks about the model's actual behavior, not a probe contrast.
+
+    `eval_noise_std` injects residual-stream noise into the TEST forward pass
+    only (fitting the linear map is unaffected), same as the binary probe
+    metrics above."""
     layers = list(range(0, num_blocks + 1))
 
-    def _sample(n):
+    def _sample(n, noise_std=0.0):
         x_full, _ = sample_batch(n, num_x, generator=g, device=device)
-        pred, caches = model.forward(x_full, return_cache=True)
+        pred, caches = model.forward(
+            x_full, return_cache=True, noise_std=noise_std, generator=g
+        )
         y = pred[:, :num_x]
         return {lyr: caches[lyr].cpu().numpy() for lyr in layers}, y.cpu().numpy()
 
     train_caches, y_train = _sample(n_train)
-    test_caches, y_test = _sample(n_test)
+    test_caches, y_test = _sample(n_test, noise_std=eval_noise_std)
 
     r2 = {}
     for lyr in tqdm(layers, desc="linear-y per layer", leave=False):
@@ -778,6 +825,13 @@ def main(args):
         range(1, num_blocks)
     )
     hidden_layers = list(range(1, num_blocks))
+    # Multiplier on the model's OWN training-time noise, injected only when
+    # evaluating probes (see --eval-noise-mult help). class_threshold only
+    # exists on LogregAdversarialConfig checkpoints.
+    eval_noise_std = (
+        adv_ck.get("resid_noise_std", 0.0) if adv_ck is not None else 0.0
+    ) * args.eval_noise_mult
+    class_threshold = adv_ck.get("class_threshold") if adv_ck is not None else None
 
     if args.steer:
         for lyr in args.steer:
@@ -812,6 +866,7 @@ def main(args):
         g,
         probe_backend_name,
         desc="probe gap @ {1,2}",
+        eval_noise_std=eval_noise_std,
     )
 
     heldout = {}
@@ -827,6 +882,7 @@ def main(args):
                 g,
                 probe_backend_name,
                 desc=f"held-out {c_lo:g}-{c_hi:g}",
+                eval_noise_std=eval_noise_std,
             )
             for lyr in hidden_layers:
                 heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
@@ -834,7 +890,14 @@ def main(args):
     linear_y_r2 = None
     if args.detailed:
         linear_y_r2 = _linear_y_reconstruction(
-            model, num_x, num_blocks, args.n_train, args.n_test, g, device
+            model,
+            num_x,
+            num_blocks,
+            args.n_train,
+            args.n_test,
+            g,
+            device,
+            eval_noise_std=eval_noise_std,
         )
 
     # --- phase 2: build + write the report ---
@@ -866,7 +929,9 @@ def main(args):
     if os.path.exists(hist_path):
         with open(hist_path) as f:
             history = json.load(f)
-        _plot_training_traces(args.tag, history, plot_dir, device)
+        _plot_training_traces(
+            args.tag, history, plot_dir, device, class_threshold, args.eval_noise_mult
+        )
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
     _plot_layer_distributions(
         args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir
