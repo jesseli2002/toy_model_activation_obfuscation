@@ -959,10 +959,10 @@ def main(args):
     print(f"[report] wrote {report_path}")
 
     # --- phase 3: generate all plots ---
-    hist_path = os.path.join(out_log, "history.json")
+    hist_path = os.path.join(out_log, "history.jsonl")
     if os.path.exists(hist_path):
         with open(hist_path) as f:
-            history = json.load(f)
+            history = [json.loads(line) for line in f if line.strip()]
         _plot_training_traces(
             args.tag, history, plot_dir, device, class_threshold, args.eval_noise_mult
         )

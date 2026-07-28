@@ -23,9 +23,12 @@ from config import (
 )
 from train_adversarial_logreg import (
     TrainRecord,
+    _append_history,
     _check_config_json,
     _forked_history,
     _history_entry,
+    _history_path,
+    _read_history,
     _resolve_hidden_layers,
     _write_run_config,
     load_run_config,
@@ -359,8 +362,8 @@ class TestForkedHistory:
         monkeypatch.chdir(tmp_path)
         (tmp_path / "runs" / "src" / "logs").mkdir(parents=True)
         history = [{"iter": i, "loss": 1.0 / (i + 1)} for i in [0, 10, 20, 30, 40]]
-        with open(tmp_path / "runs" / "src" / "logs" / "history.json", "w") as f:
-            json.dump(history, f)
+        with open(tmp_path / "runs" / "src" / "logs" / "history.jsonl", "w") as f:
+            f.write("\n".join(json.dumps(h) for h in history) + "\n")
 
         truncated = _forked_history("src", fork_iter=20)
         assert [h["iter"] for h in truncated] == [0, 10, 20]
@@ -368,6 +371,33 @@ class TestForkedHistory:
     def test_missing_history_file_returns_empty_list(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
         assert _forked_history("nonexistent-tag", fork_iter=100) == []
+
+
+class TestHistoryJsonl:
+    def test_append_then_read_round_trips_in_order(self, tmp_path):
+        path = tmp_path / "history.jsonl"
+        for i in [0, 1, 2]:
+            _append_history(str(path), {"iter": i, "loss": 1.0 / (i + 1)})
+        assert _read_history(str(path)) == [
+            {"iter": 0, "loss": 1.0},
+            {"iter": 1, "loss": 0.5},
+            {"iter": 2, "loss": 1 / 3},
+        ]
+
+    def test_append_does_not_rewrite_existing_lines(self, tmp_path):
+        """Regression guard for the quadratic-rewrite bug this format
+        replaces: appending must not touch bytes already on disk."""
+        path = tmp_path / "history.jsonl"
+        _append_history(str(path), {"iter": 0})
+        first_write_bytes = path.read_bytes()
+        _append_history(str(path), {"iter": 1})
+        assert path.read_bytes().startswith(first_write_bytes)
+
+    def test_read_missing_file_returns_empty_list(self, tmp_path):
+        assert _read_history(str(tmp_path / "nope.jsonl")) == []
+
+    def test_history_path_uses_jsonl_extension(self):
+        assert _history_path("mytag").endswith("history.jsonl")
 
 
 class TestAdvConfigCheckpointExtraction:

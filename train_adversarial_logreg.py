@@ -357,16 +357,33 @@ def _restore_checkpoint(ckpt_path: str, device):
     return model, opt, start_iter, best_loss, rck
 
 
+def _history_path(tag: str) -> str:
+    return os.path.join(log_dir(tag), "history.jsonl")
+
+
+def _read_history(path: str) -> list[dict]:
+    """Read a history.jsonl file (one JSON object per line) into a list."""
+    if not os.path.exists(path):
+        return []
+    with open(path) as f:
+        return [json.loads(line) for line in f if line.strip()]
+
+
+def _append_history(path: str, entry: dict) -> None:
+    """Append one entry to history.jsonl -- O(1) per call, unlike rewriting
+    the whole file (the previous format was a read-modify-write-the-whole-
+    array pattern, making total logging cost quadratic in the number of log
+    points over a run)."""
+    with open(path, "a") as f:
+        f.write(json.dumps(entry) + "\n")
+
+
 def _forked_history(source_tag: str, fork_iter: int) -> list[dict]:
-    """The new tag's history.json seed: source_tag's own history entries up
+    """The new tag's history.jsonl seed: source_tag's own history entries up
     to (inclusive of) the fork point, so loss curves stay continuous across
     the fork boundary for plotting -- new entries append after this as the
     new tag trains."""
-    source_hist_path = os.path.join(log_dir(source_tag), "history.json")
-    if not os.path.exists(source_hist_path):
-        return []
-    with open(source_hist_path) as f:
-        source_history = json.load(f)
+    source_history = _read_history(_history_path(source_tag))
     return [h for h in source_history if h["iter"] <= fork_iter]
 
 
@@ -442,7 +459,7 @@ class TrainRecord:
 
 
 def _history_entry(record: TrainRecord, **extra) -> dict:
-    """Build one `history.json` entry from a `TrainRecord`, overridden/extended
+    """Build one `history.jsonl` entry from a `TrainRecord`, overridden/extended
     by `**extra` -- the single schema shared by the log-interval and final
     sites, rather than two hand-built dicts drifting independently."""
     d = dataclasses.asdict(record)
@@ -708,8 +725,7 @@ def main(args):
 
     last_path = os.path.join(run_ckpt_dir, "last.pt")
     best_path = os.path.join(run_ckpt_dir, "best.pt")
-    hist_path = os.path.join(run_log_dir, "history.json")
-    history = []  # list of dicts
+    hist_path = _history_path(args.tag)
 
     if args.resume:
         model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
@@ -721,9 +737,9 @@ def main(args):
             )
         adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
         hidden_layers = adv_config.penalty_layers
-        if os.path.exists(hist_path):
-            with open(hist_path) as f:
-                history = json.load(f)
+        # history.jsonl is append-only: this run's earlier entries are
+        # already on disk, so resuming needs no read -- new entries just
+        # keep appending to the same file.
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
         _check_config_json(args.tag, model.config, adv_config)
     else:
@@ -742,7 +758,11 @@ def main(args):
             model, opt, start_iter, best_loss, rck = _restore_checkpoint(
                 source_ckpt_path, device
             )
-            history = _forked_history(args.fork_from, start_iter)
+            # One-time seed write (not per-iteration, so no quadratic cost):
+            # copy source_tag's pre-fork entries into the new tag's own
+            # history.jsonl so loss curves stay continuous across the fork.
+            for h in _forked_history(args.fork_from, start_iter):
+                _append_history(hist_path, h)
             forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
             print(
                 f"[fork] from {args.fork_from} @ iter {start_iter}, "
@@ -884,9 +904,7 @@ def main(args):
 
             if record.iter % args.log_interval == 0:
                 me = eval_max_err(model, gen, device=device)
-                history.append(_history_entry(record, max_err=me))
-                with open(hist_path, "w") as f:
-                    json.dump(history, f)
+                _append_history(hist_path, _history_entry(record, max_err=me))
                 rate = rate_meter.update(record.iter)
                 print(
                     f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
@@ -915,13 +933,12 @@ def main(args):
     # final logging + save
     save(last_path)
     me = eval_max_err(model, gen, device=device)
-    history.append(
+    _append_history(
+        hist_path,
         _history_entry(
             record, loss=best_loss, l_task=None, l_probe=None, max_err=me, final=True
-        )
+        ),
     )
-    with open(hist_path, "w") as f:
-        json.dump(history, f)
     print(
         f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
         f"elapsed {time.time()-t0:.1f}s"
