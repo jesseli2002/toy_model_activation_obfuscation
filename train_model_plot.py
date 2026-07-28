@@ -1,8 +1,11 @@
-"""Step 1 plots: training dynamics and learned y(x) curves.
+"""Training dynamics and learned y(x) curves.
 
 Writes to plot/<tag>/:
   - <tag>_dynamics.png : iteration vs loss, iteration vs max-abs-error
   - <tag>_curves.png   : y vs x for fixed c in [1, 1.333, 1.667, 2], num_x lines each
+
+In practice this module is used as a library of plotting functions rather
+than run standalone as a script.
 """
 
 import argparse
