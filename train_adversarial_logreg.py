@@ -612,9 +612,8 @@ def train_steps(
         if adv_config.explode_factor > 0:
             gen.set_state(noise_gen_state)  # replay the same noise as above
             with torch.no_grad():
-                loss_after_step = forward_loss(x_task, y, lam_eff, retrain_probe=False)[
-                    0
-                ].item()
+                loss_after, _, _ = forward_loss(x_task, y, lam_eff, retrain_probe=False)
+                loss_after_step = loss_after.item()
 
             if loss_after_step > adv_config.explode_factor * loss_before_step:
                 n_exploded += 1
