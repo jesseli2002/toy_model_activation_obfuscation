@@ -125,7 +125,6 @@ from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, resolve_probe_backend
-from train_model_plot import plot_learned_curves
 from train_probe import (
     LinearBoundary,
     capture_layers,
@@ -134,6 +133,53 @@ from train_probe import (
     load_model,
 )
 from train_probe import plot_probe as plot_probe_separation
+
+
+@torch.no_grad()
+def plot_learned_curves(
+    model,
+    tag,
+    plot_dir,
+    c_values=(1.0, 1.333, 1.667, 2.0),
+):
+    """Plot learned y(x) per coordinate at fixed c, for an already-loaded model."""
+    num_x = model.num_x
+    device = next(model.parameters()).device
+    xs = torch.linspace(-3, 3, 400, device=device)
+    fig, axes = plt.subplots(
+        1, len(c_values), figsize=(4 * len(c_values), 4), sharey=True
+    )
+    if len(c_values) == 1:
+        axes = [axes]
+    for ax, c in zip(axes, c_values):
+        # Build inputs: sweep x on every coordinate simultaneously is not valid
+        # (coords are independent), so sweep coordinate 0 and hold others at 0.
+        for j in range(num_x):
+            x = torch.zeros(len(xs), num_x, device=device)
+            x[:, j] = xs
+            x_full = torch.cat([x, torch.full((len(xs), 1), c, device=device)], dim=1)
+            y = model.task_output(x_full)[:, j]
+            ax.plot(xs.cpu().numpy(), y.cpu().numpy(), alpha=0.5, zorder=5)
+        ax.plot(
+            xs.cpu().numpy(),
+            torch.clamp(xs, -c, c).cpu().numpy(),
+            "k--",
+            lw=1,
+            label="target sat",
+            zorder=2,
+        )
+        ax.set_title(f"c = {c:.3f}")
+        ax.set_xlabel("x")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+    axes[0].set_ylabel("y")
+    fig.suptitle(f"learned y(x) per coordinate, fixed c ({tag}); {num_x} lines/panel")
+    fig.tight_layout()
+    p = os.path.join(plot_dir, f"{tag}_curves.png")
+    fig.savefig(p, dpi=120)
+    plt.close(fig)
+    print(f"[plot] wrote {p}")
+    return p
 
 
 # ----------------------------------------------------------------------------
