@@ -125,14 +125,14 @@ from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, resolve_probe_backend
-from train_probe import (
+from probe_lib import (
     LinearBoundary,
     capture_layers,
     capture_layers_dict,
     forward_steered,
     load_model,
 )
-from train_probe import plot_probe as plot_probe_separation
+from probe_lib import plot_probe as plot_probe_separation
 
 
 @torch.no_grad()
@@ -183,7 +183,7 @@ def plot_learned_curves(
 
 
 # ----------------------------------------------------------------------------
-# Probe primitives (reuse train_probe's harness where possible)
+# Probe primitives (reuse probe_lib's harness where possible)
 # ----------------------------------------------------------------------------
 def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
     """Raw difference-of-means classifier (train direction, test accuracy)."""
@@ -200,7 +200,7 @@ def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
 
 def _raw_signed_distance(w_probe, b_probe, X):
     """Signed distance to the probe's decision boundary in raw (unstandardized)
-    data units, boundary at 0 -- same fold as train_probe.plot_probe's
+    data units, boundary at 0 -- same fold as probe_lib.plot_probe's
     raw-space panel."""
     w_hat = w_probe / np.linalg.norm(w_probe)
     threshold = -b_probe / np.linalg.norm(w_probe)
@@ -245,7 +245,7 @@ def _binary_probe_metrics_all_layers(
     `metrics` is {layer: {"dom", "delta_norm", "logreg", "lda"}}, and
     `plot_inputs` is {layer: {"w_dom", "midpoint", "w_probe", "b_probe",
     "X_te", "y_te", "dist_lo", "dist_hi"}}, everything a caller needs to
-    later feed train_probe.plot_probe or _plot_layer_distributions for this
+    later feed probe_lib.plot_probe or _plot_layer_distributions for this
     (c_lo, c_hi) pair -- returned unconditionally since the forward pass and
     the fit already happened regardless of whether the caller wants a plot.
 
@@ -636,8 +636,8 @@ def _plot_steer_comparison(
     tag, steer_layer, num_x, model, w_dom, w_probe, steer_scale, plot_dir, device
 ):
     """Causal steering test, DoM direction vs logreg direction side by side.
-    Only the steered curves are shown (not the unsteered/reference panels
-    train_probe.py's version has) -- each panel already carries both targets
+    Only the steered curves are shown (no unsteered/reference panels) --
+    each panel already carries both targets
     (sat(x,1), sat(x,2)) so steering effectiveness reads directly off how far
     the steered curve moved from the c=1 target toward the c=2 one."""
     w_dom_vec, w_logreg_vec = _steer_vectors(w_dom, w_probe, steer_scale)
