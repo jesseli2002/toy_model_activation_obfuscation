@@ -22,6 +22,15 @@ This directory contains plans for agents.
       train_adversarial_logreg.py only (checkpoint-save closure, pre-call assert
       placement, history-dict helper, validation/provisioning split, doc fixes).
       Deliberately excludes train_adversarial.py, which may be sunset soon.
+- model_noise_blob_plan.md
+    - Replace the gen-state snapshot/reset dance in train_adversarial_logreg.py's
+      train_steps (used to replay identical noise across the explode-check/redo
+      forward passes) with an explicit, model-owned noise blob: a new
+      ResidualMLP.generate_noise() method, and forward()/task_output() accepting
+      either a Generator (draws fresh, same as today) or a pre-drawn blob (replays
+      it). Deliberately breaks bit-identical RNG reproducibility vs. pre-refactor
+      runs/checkpoints (accepted by user) and defers folding noise_std into the
+      blob itself.
 - logreg_run_config_plan.md
     - Stop splatting the adversarial config into the checkpoint's top level (which made
       --resume warn on every state key); give each run directory two artifacts -- a verbatim
