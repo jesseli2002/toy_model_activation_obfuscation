@@ -13,9 +13,6 @@ cares about:
 The held-out-pairs table is the most expensive part of the script and is
 only printed/written with --detailed.
 
-Optionally pass --baseline-path to run the same probes on the pre-adversarial
-model for a before/after contrast.
-
 Two optional deep-dive diagnostics, each opt-in since they cost extra compute:
   --detailed        more detailed analysis.
   --steer L1,L2,...  causal test: inject the DoM- and logreg-discovered c=1->c=2
@@ -55,13 +52,6 @@ def parse_args():
     )
     p.add_argument("--tag", type=str, required=True)
     p.add_argument("--ckpt", type=str, default="last", choices=["best", "last"])
-    p.add_argument(
-        "--baseline-path",
-        type=str,
-        default=None,
-        help="optional checkpoint to run the same probes on for a before/after "
-        "contrast (e.g. the pre-adversarial model).",
-    )
     p.add_argument(
         "--held-out-pairs",
         type=_parse_pairs,
@@ -737,7 +727,6 @@ def _build_report(
     penalty_layers,
     hidden_layers,
     me,
-    me_b,
     gap,
     heldout,
     linear_y_r2,
@@ -770,8 +759,6 @@ def _build_report(
     # --- 1. task fidelity ---
     emit(f"## 1. Task fidelity")
     emit(f"max abs elementwise error (c~U[1,2]): {me:.3e}")
-    if me_b is not None:
-        emit(f"  baseline max abs error: {me_b:.3e}")
     emit()
 
     # --- 2. probe-strength gap at c in {1,2} ---
@@ -849,18 +836,11 @@ def main(args):
     plot_dir = get_plot_dir(args.tag)
     os.makedirs(plot_dir, exist_ok=True)
 
-    base_model = None
-    if args.baseline_path:
-        base_model, _ = ResidualMLP.load(args.baseline_path, map_location=device)
-        base_model = base_model.to(device)
-        base_model.eval()
-
     g = torch.Generator(device=device).manual_seed(args.seed)
     probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
     # --- phase 1: generate all data ---
     me = eval_max_err(model, num_x, g, device=device)
-    me_b = eval_max_err(base_model, num_x, g, device=device) if base_model else None
 
     gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
         model,
@@ -916,7 +896,6 @@ def main(args):
         penalty_layers,
         hidden_layers,
         me,
-        me_b,
         gap,
         heldout,
         linear_y_r2,
@@ -939,8 +918,6 @@ def main(args):
             args.tag, history, plot_dir, device, class_threshold, args.eval_noise_mult
         )
     plot_learned_curves(model, args.tag, plot_dir)
-    if base_model is not None:
-        plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
 
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
     _plot_layer_distributions(
