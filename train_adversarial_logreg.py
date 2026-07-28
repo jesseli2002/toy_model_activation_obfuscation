@@ -1,14 +1,13 @@
-"""Step 3 (variant) — adversarial training: model vs. a stateful
-LogisticRegression probe, trained *simultaneously* with the model.
+"""Adversarial training: model vs. a stateful LogisticRegression probe,
+trained *simultaneously* with the model.
 
-Unlike train_adversarial.py's closed-form DoM/LDA penalty (recomputed from
-scratch each step, no inner probe optimizer), this script keeps a single
-LogisticRegression probe over the concatenation of all penalized hidden
-layers, warm-started once against the initial model and then advanced a few
-solver iterations per training step -- an actual adversary that tracks the
-model as it moves, rather than a static closed-form proxy for one. The probe
-backend is `sklearn.linear_model.LogisticRegression` (CPU) or a GPU-resident
-torch reimplementation, selected via `--probe-backend` (see probe_backend.py).
+The probe is a single LogisticRegression instance over the concatenation of
+one or more penalized hidden layers, advanced a few solver iterations per
+training step from the previous step's coefficients rather than refit from
+scratch (see the three run modes below for how the probe's initial
+coefficients are established). The probe backend is
+`sklearn.linear_model.LogisticRegression` (CPU) or a GPU-resident torch
+reimplementation, selected via `--probe-backend` (see probe_backend.py).
 
 The training objective combines a probe-adversarial penalty with the task
 loss (see LogregAdversarialConfig for the weighting and probe hyperparameters).
@@ -16,14 +15,9 @@ The probe (both its own fit and the differentiable penalty) is always
 evaluated against one fixed input batch sampled before the training loop
 starts -- the task loss, by contrast, resamples a fresh batch every step.
 
-The interesting science is the same as train_adversarial.py: not "can it hide
-c" but HOW -- does it hide c only at the probed threshold ("hidden"), or
-genuinely erase linear c-information across the range ("erased")? A moving,
-adaptive probe is a strictly harder adversary than the closed-form penalty,
-so this is a stress test of whatever hiding the DoM/LDA runs found.
-
-This is NOT gated. The deliverable is the trained checkpoint + diagnostics;
-run once, then stop and review.
+Each run is a standalone experiment with no automated pass/fail check. The
+deliverable is the trained checkpoint + diagnostics; run once, then stop and
+review.
 
 Three run modes (see plans/rare_flags_config_plan.md for the full design):
   - fresh run: hyperparameters are freshly resolved from `--config`'s JSON
