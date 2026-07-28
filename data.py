@@ -79,17 +79,16 @@ def sample_fixed_c(
 @torch.no_grad()
 def eval_max_err(
     model: ResidualMLP,
-    num_x: int,
     generator: torch.Generator,
+    device: str = "cpu",
     n: int = 100_000,
     batch: int = 20_000,
-    device: str = "cpu",
 ) -> float:
     worst = 0.0
     done = 0
     while done < n:
         b = min(batch, n - done)
-        x_full, y = sample_batch(b, num_x, generator=generator, device=device)
+        x_full, y = sample_batch(b, model.num_x, generator=generator, device=device)
         pred: Float[Tensor, "b num_x"] = model.task_output(x_full)
         worst = max(worst, (pred - y).abs().max().item())
         done += b

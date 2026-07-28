@@ -886,7 +886,7 @@ def main(args):
     probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
     # --- phase 1: generate all data ---
-    me = eval_max_err(model, num_x, g, device=device)
+    me = eval_max_err(model, g, device=device)
 
     gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
         model,
