@@ -7,7 +7,7 @@
   "probe_C": 1.0,
   "probe_init_iters": 1000,
   "class_threshold": 1.5,
-  "probe_loss_kind": "meandiff",
+  "probe_loss_kind": "probe-report",
   "probe_subsample": 4,
   "probe_retrain_interval": 2,
   "probe_resample_interval": 512,

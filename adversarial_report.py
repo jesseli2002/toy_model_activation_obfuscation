@@ -29,6 +29,9 @@ import os
 
 import config
 
+# Regularization constant for LogisticRegression (see scikit-learn LogisticRegression interface). Larger = less regularization but higher accuracy.
+PROBE_C = 1000
+
 
 def _parse_pairs(s: str) -> list[tuple[float, float]]:
     pairs = []
@@ -297,7 +300,7 @@ def _binary_probe_metrics_all_layers(
             ]
         )
         pipeline = build_probe_pipeline(
-            C=1.0, max_iter=2000, backend=probe_backend_name
+            C=PROBE_C, max_iter=2000, backend=probe_backend_name
         )
         pipeline.fit(X_tr_t, y_tr_t)
         w_probe_t, b_probe_t = pipeline.get_affine(device)
