@@ -370,10 +370,8 @@ def _read_history(path: str) -> list[dict]:
 
 
 def _append_history(path: str, entry: dict) -> None:
-    """Append one entry to history.jsonl -- O(1) per call, unlike rewriting
-    the whole file (the previous format was a read-modify-write-the-whole-
-    array pattern, making total logging cost quadratic in the number of log
-    points over a run)."""
+    """Append one entry to history.jsonl -- O(1) per call, unlike a full-file
+    rewrite (see PR #98)."""
     with open(path, "a") as f:
         f.write(json.dumps(entry) + "\n")
 
