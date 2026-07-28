@@ -1,15 +1,17 @@
-"""Step 2: probe the residual stream for the hidden scalar c.
+"""Probes a trained checkpoint's residual stream for the hidden scalar c.
 
-Loads a trained checkpoint (Step 1), captures the residual stream at one or more
-layers (--layers, concatenated if more than one) on datasets pinned at c=1 and
-c=2 (x resampled each time), and fits two probe types:
+Captures the residual stream at one or more layers (--layers, concatenated if
+more than one) on datasets pinned at c=1 and c=2 (x resampled each time), and
+fits two probe types:
     - raw difference-of-means (DoM): direction = mean(r1|c=2) - mean(r1|c=1),
       classified by comparing projection to the train-set midpoint.
     - logistic regression (binary c=1 vs c=2)
 
-Gate 2 (logreg accuracy) is the pass/fail signal that c is linearly decodable;
-raw DoM is reported as a diagnostic, not gated on. See plans/detailed_plan.md
-for the rationale behind the probe choices and gate thresholds.
+Logreg accuracy is the pass/fail signal that c is linearly decodable; raw DoM
+is reported as a diagnostic, not gated on.
+
+In practice this module is used as a library of probing/plotting functions
+rather than run standalone as a script.
 """
 
 import argparse
