@@ -398,10 +398,20 @@ def score_penalty(
 ) -> torch.Tensor:
     """Differentiable adversarial penalty: project the live (grad-carrying),
     concatenated-across-layers activations onto the probe's current learned
-    direction and push the two classes' (optionally trimmed-mean, see
-    `_trimmed_mean`) scores together."""
+    direction.
+
+    "meandiff"/"meandiff-relu" push the two classes' (optionally
+    trimmed-mean, see `_trimmed_mean`) scores together -- this needs the true
+    label to separate the classes. "probe-report" instead mimics what
+    training against a deployed probe actually looks like: the probe just
+    reports "flagged" for any score past its decision threshold (0, since
+    `affine` already folds the threshold into `b_eff`), regardless of which
+    class it came from, so the penalty is every score's excess over that
+    threshold, label-agnostic."""
     w_eff, b_eff = affine
     s = cat_live @ w_eff + b_eff
+    if kind == "probe-report":
+        return _trimmed_mean(torch.relu(s), trim_frac)
     gap = _trimmed_mean(s[label], trim_frac) - _trimmed_mean(s[~label], trim_frac)
     if kind == "meandiff-relu":
         return torch.relu(gap)
