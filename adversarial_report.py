@@ -938,6 +938,10 @@ def main(args):
         _plot_training_traces(
             args.tag, history, plot_dir, device, class_threshold, args.eval_noise_mult
         )
+    plot_learned_curves(model, args.tag, plot_dir)
+    if base_model is not None:
+        plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
+
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
     _plot_layer_distributions(
         args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir
@@ -956,15 +960,6 @@ def main(args):
             pi["y_te"],
             plot_dir,
         )
-    plot_learned_curves(model, args.tag, plot_dir)
-    if base_model is not None:
-        plot_learned_curves(base_model, f"{args.tag}_baseline", plot_dir)
-
-    if args.detailed:
-        _plot_heldout_gap(
-            args.tag, hidden_layers, args.held_out_pairs, gap, heldout, plot_dir
-        )
-
     if args.steer:
         for lyr in args.steer:
             pi = gap_plot_inputs[lyr]
@@ -979,6 +974,11 @@ def main(args):
                 plot_dir,
                 device,
             )
+
+    if args.detailed:
+        _plot_heldout_gap(
+            args.tag, hidden_layers, args.held_out_pairs, gap, heldout, plot_dir
+        )
 
     if linear_y_r2 is not None:
         _plot_linear_y_reconstruction(args.tag, linear_y_r2, penalty_layers, plot_dir)
