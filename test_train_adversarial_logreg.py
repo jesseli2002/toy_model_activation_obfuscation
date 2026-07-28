@@ -51,8 +51,6 @@ def _make_record(**overrides):
         l_probe=0.5,
         lam_eff=0.3,
         affine=("w", "b"),
-        probe_dt=0.1,
-        model_dt=0.2,
     )
     defaults.update(overrides)
     return TrainRecord(**defaults)

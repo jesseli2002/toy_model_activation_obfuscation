@@ -447,8 +447,6 @@ class TrainRecord:
     l_probe: float | None
     lam_eff: float | None
     affine: tuple[torch.Tensor, torch.Tensor]
-    probe_dt: float
-    model_dt: float
     # Cumulative count of --explode-detected-and-corrected steps so far THIS
     # process invocation (see adv_config.explode_factor) -- resets to 0 on
     # --resume/--fork-from rather than continuing the source run's count,
@@ -498,9 +496,67 @@ def train_steps(
     # resampling/refitting/scoring entirely rather than paying for a value
     # that gets multiplied by zero.
     skip_probe = adv_config.lam == 0
-    l_probe = torch.tensor(float("nan"))
+
+    def forward_loss(
+        x_task: torch.Tensor,
+        y: torch.Tensor,
+        lam_eff: float,
+        *,
+        refit_probe: bool,
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        """One full forward at the model's current weights, returning
+        (loss, l_task, l_probe).
+
+        task: noisy pass -- this is what forbids shrinking c's encoding below
+        the noise floor (see plans/resid_stream_noise_plan.md). probe: clean
+        pass over the probe set, full resolution, so the probe can still
+        out-resolve the model; `refit_probe` first advances the probe on those
+        activations and updates `affine`. Under lam=0 the probe pass is skipped
+        entirely (l_probe is nan) rather than paying for a value that gets
+        multiplied by zero.
+        """
+        nonlocal affine
+        y_pred_full = model.forward(
+            x_task, noise_std=adv_config.resid_noise_std, generator=gen
+        )
+        l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
+        if skip_probe:
+            return l_task, l_task, torch.tensor(float("nan"))
+
+        _, caches = model.forward(probe_x, return_cache=True)
+        cat_live = concat_caches_torch(caches, hidden_layers)
+        if refit_probe:
+            X_fit = cat_live.detach()[:: adv_config.probe_subsample]  # no-op at 1
+            label_fit = probe_label[:: adv_config.probe_subsample]
+            assert label_fit.any() and (~label_fit).any(), (
+                "subsampled probe batch has only one class present -- lower "
+                "--probe-subsample or raise --batch-size."
+            )
+            fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
+            affine = probe.get_affine(device)
+
+        l_probe = score_penalty(
+            cat_live,
+            affine,
+            probe_label,
+            adv_config.probe_loss_kind,
+            adv_config.probe_loss_trim_frac,
+        )
+        return lam_eff * l_probe + (1 - lam_eff) * l_task, l_task, l_probe
+
+    def optimizer_step(loss: torch.Tensor, grad_clip: float) -> None:
+        opt.zero_grad(set_to_none=True)
+        loss.backward()
+        if grad_clip > 0:
+            # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
+            for block in model.blocks:
+                torch.nn.utils.clip_grad_norm_(block.parameters(), grad_clip)
+        # TODO(perf/quality): grad_clip/adam_eps/adam_beta2 are band-aids
+        # for instability; StableAdamW (update clipping) might be a
+        # cleaner fix -- see PR #77.
+        opt.step()
+
     for it in range(start_iter, max_iters):
-        t_fwd0 = time.time()
         x_task, y = sample_batch(
             adv_config.batch_size,
             num_x,
@@ -509,116 +565,56 @@ def train_steps(
             x_p_outer=adv_config.x_p_outer,
             x_threshold=adv_config.x_threshold,
         )
-
-        # Snapshotted right before the noise draw below, so a detected
-        # explosion (below) can replay the IDENTICAL noise on the
-        # check/redo forwards by resetting to this state first, instead of
-        # consuming extra draws from `gen` that would desync every later
-        # iteration's noise from a run with --explode-factor disabled.
-        noise_gen_state = gen.get_state()
-        # task: noisy pass -- this is what forbids shrinking c's encoding
-        # below the noise floor (see plans/resid_stream_noise_plan.md).
-        y_pred_full = model.forward(
-            x_task, noise_std=adv_config.resid_noise_std, generator=gen
-        )
-        l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
-
-        # probe fit + penalty: clean pass over the probe set (fixed unless
-        # --probe-resample-interval periodically redraws it, see below),
-        # full resolution -- the probe stays exempt from the noise so it can
-        # still out-resolve the model.
-        probe_dt = 0.0
-        if skip_probe:
-            fwd_dt = time.time() - t_fwd0
-        else:
-            if (
-                adv_config.probe_resample_interval > 0
-                and it % adv_config.probe_resample_interval == 0
-            ):
-                probe_x, _ = sample_batch(
-                    adv_config.batch_size, num_x, generator=gen, device=device
-                )
-                probe_label = probe_x[:, num_x] >= adv_config.class_threshold
-                assert probe_label.any() and (~probe_label).any(), (
-                    "resampled probe batch has only one class present -- check "
-                    "--class-threshold against c's range."
-                )
-            _, caches = model.forward(probe_x, return_cache=True)
-            fwd_dt = time.time() - t_fwd0
-            cat_live = concat_caches_torch(caches, hidden_layers)
-
-            t_probe0 = time.time()
-            if it % adv_config.probe_retrain_interval == 0:
-                X = cat_live.detach()
-                X_fit = X[:: adv_config.probe_subsample]  # no-op slice at 1
-                label_fit = probe_label[:: adv_config.probe_subsample]
-                assert label_fit.any() and (~label_fit).any(), (
-                    "subsampled probe batch has only one class present -- lower "
-                    "--probe-subsample or raise --batch-size."
-                )
-                fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
-                affine = probe.get_affine(device)
-            probe_dt = time.time() - t_probe0
-
-            l_probe = score_penalty(
-                cat_live,
-                affine,
-                probe_label,
-                adv_config.probe_loss_kind,
-                adv_config.probe_loss_trim_frac,
+        if (
+            not skip_probe
+            and adv_config.probe_resample_interval > 0
+            and it % adv_config.probe_resample_interval == 0
+        ):
+            probe_x, _ = sample_batch(
+                adv_config.batch_size, num_x, generator=gen, device=device
             )
-
+            probe_label = probe_x[:, num_x] >= adv_config.class_threshold
+            assert probe_label.any() and (~probe_label).any(), (
+                "resampled probe batch has only one class present -- check "
+                "--class-threshold against c's range."
+            )
         if adv_config.lam_warmup_iters > 0:
             lam_eff = adv_config.lam * min(1.0, it / adv_config.lam_warmup_iters)
         else:
             lam_eff = adv_config.lam
-        loss = l_task if skip_probe else lam_eff * l_probe + (1 - lam_eff) * l_task
 
+        # Snapshotted right before the first noise draw, so a detected
+        # explosion (below) can replay the IDENTICAL noise on the check/redo
+        # forwards by resetting to this state first, instead of consuming extra
+        # draws from `gen` that would desync every later iteration's noise from
+        # a run with --explode-factor disabled. Everything that draws for other
+        # purposes (batches above) must stay outside that replay window.
+        noise_gen_state = gen.get_state()
+        loss, l_task, l_probe = forward_loss(
+            x_task,
+            y,
+            lam_eff,
+            refit_probe=it % adv_config.probe_retrain_interval == 0,
+        )
         loss_before_step = loss.item()
-        t_bwd0 = time.time()
 
         # Snapshot BEFORE the step, so a detected explosion (below) can
         # revert to it. TODO(perf): every-iteration deepcopy + re-forward
         # just to catch a rare event -- a cheaper retroactive alternative
         # exists, see PR #77's revert-and-retry discussion (not the
-        # StableAdamW note below).
+        # StableAdamW note in optimizer_step).
         if adv_config.explode_factor > 0:
             pre_model_state = copy.deepcopy(model.state_dict())
             pre_opt_state = copy.deepcopy(opt.state_dict())
 
-        opt.zero_grad(set_to_none=True)
-        loss.backward()
-        if adv_config.grad_clip > 0:
-            # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
-            for block in model.blocks:
-                torch.nn.utils.clip_grad_norm_(block.parameters(), adv_config.grad_clip)
-        # TODO(perf/quality): grad_clip/adam_eps/adam_beta2 are band-aids
-        # for instability; StableAdamW (update clipping) might be a
-        # cleaner fix -- see PR #77.
-        opt.step()
+        optimizer_step(loss, adv_config.grad_clip)
 
         if adv_config.explode_factor > 0:
             gen.set_state(noise_gen_state)  # replay the same noise as above
             with torch.no_grad():
-                y_pred_after = model.forward(
-                    x_task, noise_std=adv_config.resid_noise_std, generator=gen
-                )
-                l_task_after = torch.mean((y_pred_after[:, :num_x] - y) ** 2)
-                if skip_probe:
-                    loss_after_step = l_task_after.item()
-                else:
-                    _, caches_after = model.forward(probe_x, return_cache=True)
-                    cat_after = concat_caches_torch(caches_after, hidden_layers)
-                    l_probe_after = score_penalty(
-                        cat_after,
-                        affine,
-                        probe_label,
-                        adv_config.probe_loss_kind,
-                        adv_config.probe_loss_trim_frac,
-                    )
-                    loss_after_step = (
-                        lam_eff * l_probe_after + (1 - lam_eff) * l_task_after
-                    ).item()
+                loss_after_step = forward_loss(x_task, y, lam_eff, refit_probe=False)[
+                    0
+                ].item()
 
             if loss_after_step > adv_config.explode_factor * loss_before_step:
                 n_exploded += 1
@@ -634,33 +630,12 @@ def train_steps(
                 # Fresh forward: the previous graph was freed by backward()
                 # above, and this is otherwise numerically the same
                 # pre-step state already used for l_task/l_probe/loss.
-                y_pred_full = model.forward(
-                    x_task, noise_std=adv_config.resid_noise_std, generator=gen
+                loss, l_task, l_probe = forward_loss(
+                    x_task, y, lam_eff, refit_probe=False
                 )
-                l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
-                if skip_probe:
-                    loss = l_task
-                else:
-                    _, caches = model.forward(probe_x, return_cache=True)
-                    cat_live = concat_caches_torch(caches, hidden_layers)
-                    l_probe = score_penalty(
-                        cat_live,
-                        affine,
-                        probe_label,
-                        adv_config.probe_loss_kind,
-                        adv_config.probe_loss_trim_frac,
-                    )
-                    loss = lam_eff * l_probe + (1 - lam_eff) * l_task
-
-                opt.zero_grad(set_to_none=True)
-                loss.backward()
-                if adv_config.grad_clip > 0:
-                    tight_clip = adv_config.grad_clip / adv_config.explode_clip_divisor
-                    for block in model.blocks:
-                        torch.nn.utils.clip_grad_norm_(block.parameters(), tight_clip)
-                opt.step()
-
-        model_dt = fwd_dt + (time.time() - t_bwd0)
+                optimizer_step(
+                    loss, adv_config.grad_clip / adv_config.explode_clip_divisor
+                )
 
         yield TrainRecord(
             iter=it,
@@ -669,8 +644,6 @@ def train_steps(
             l_probe=float(l_probe.item()),
             lam_eff=lam_eff,
             affine=affine,
-            probe_dt=probe_dt,
-            model_dt=model_dt,
             n_exploded=n_exploded,
         )
 
@@ -887,8 +860,6 @@ def main(args):
         l_probe=None,
         lam_eff=None,
         affine=affine,
-        probe_dt=0.0,
-        model_dt=0.0,
     )
 
     def save(path):
