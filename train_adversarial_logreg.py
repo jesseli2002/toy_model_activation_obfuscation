@@ -501,6 +501,8 @@ def train_steps(
         x_task: torch.Tensor,
         y: torch.Tensor,
         lam_eff: float,
+        probe_x: torch.Tensor,
+        probe_label: torch.Tensor,
         *,
         retrain_probe: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -594,6 +596,8 @@ def train_steps(
             x_task,
             y,
             lam_eff,
+            probe_x,
+            probe_label,
             retrain_probe=it % adv_config.probe_retrain_interval == 0,
         )
         loss_before_step = loss.item()
@@ -612,7 +616,9 @@ def train_steps(
         if adv_config.explode_factor > 0:
             gen.set_state(noise_gen_state)  # replay the same noise as above
             with torch.no_grad():
-                loss_after, _, _ = forward_loss(x_task, y, lam_eff, retrain_probe=False)
+                loss_after, _, _ = forward_loss(
+                    x_task, y, lam_eff, probe_x, probe_label, retrain_probe=False
+                )
                 loss_after_step = loss_after.item()
 
             if loss_after_step > adv_config.explode_factor * loss_before_step:
@@ -630,7 +636,7 @@ def train_steps(
                 # above, and this is otherwise numerically the same
                 # pre-step state already used for l_task/l_probe/loss.
                 loss, l_task, l_probe = forward_loss(
-                    x_task, y, lam_eff, retrain_probe=False
+                    x_task, y, lam_eff, probe_x, probe_label, retrain_probe=False
                 )
                 optimizer_step(
                     loss, adv_config.grad_clip / adv_config.explode_clip_divisor
