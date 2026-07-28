@@ -873,7 +873,7 @@ def main(args):
                 save(best_path)
 
             if record.iter % args.log_interval == 0:
-                me = eval_max_err(model, num_x, gen, device=device)
+                me = eval_max_err(model, gen, device=device)
                 history.append(_history_entry(record, max_err=me))
                 with open(hist_path, "w") as f:
                     json.dump(history, f)
@@ -904,7 +904,7 @@ def main(args):
 
     # final logging + save
     save(last_path)
-    me = eval_max_err(model, num_x, gen, device=device)
+    me = eval_max_err(model, gen, device=device)
     history.append(
         _history_entry(
             record, loss=best_loss, l_task=None, l_probe=None, max_err=me, final=True
