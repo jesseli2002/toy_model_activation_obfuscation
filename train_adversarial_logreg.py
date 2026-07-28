@@ -502,7 +502,7 @@ def train_steps(
         y: torch.Tensor,
         lam_eff: float,
         *,
-        refit_probe: bool,
+        retrain_probe: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """One full forward at the model's current weights, returning
         (loss, l_task, l_probe).
@@ -510,10 +510,10 @@ def train_steps(
         task: noisy pass -- this is what forbids shrinking c's encoding below
         the noise floor (see plans/resid_stream_noise_plan.md). probe: clean
         pass over the probe set, full resolution, so the probe can still
-        out-resolve the model; `refit_probe` first advances the probe on those
-        activations and updates `affine`. Under lam=0 the probe pass is skipped
-        entirely (l_probe is nan) rather than paying for a value that gets
-        multiplied by zero.
+        out-resolve the model; `retrain_probe` first advances the probe on
+        those activations and updates `affine`. Under lam=0 the probe pass is
+        skipped entirely (l_probe is nan) rather than paying for a value that
+        gets multiplied by zero.
         """
         nonlocal affine
         y_pred_full = model.forward(
@@ -525,7 +525,7 @@ def train_steps(
 
         _, caches = model.forward(probe_x, return_cache=True)
         cat_live = concat_caches_torch(caches, hidden_layers)
-        if refit_probe:
+        if retrain_probe:
             X_fit = cat_live.detach()[:: adv_config.probe_subsample]  # no-op at 1
             label_fit = probe_label[:: adv_config.probe_subsample]
             assert label_fit.any() and (~label_fit).any(), (
@@ -594,7 +594,7 @@ def train_steps(
             x_task,
             y,
             lam_eff,
-            refit_probe=it % adv_config.probe_retrain_interval == 0,
+            retrain_probe=it % adv_config.probe_retrain_interval == 0,
         )
         loss_before_step = loss.item()
 
@@ -612,7 +612,7 @@ def train_steps(
         if adv_config.explode_factor > 0:
             gen.set_state(noise_gen_state)  # replay the same noise as above
             with torch.no_grad():
-                loss_after_step = forward_loss(x_task, y, lam_eff, refit_probe=False)[
+                loss_after_step = forward_loss(x_task, y, lam_eff, retrain_probe=False)[
                     0
                 ].item()
 
@@ -631,7 +631,7 @@ def train_steps(
                 # above, and this is otherwise numerically the same
                 # pre-step state already used for l_task/l_probe/loss.
                 loss, l_task, l_probe = forward_loss(
-                    x_task, y, lam_eff, refit_probe=False
+                    x_task, y, lam_eff, retrain_probe=False
                 )
                 optimizer_step(
                     loss, adv_config.grad_clip / adv_config.explode_clip_divisor
