@@ -136,6 +136,7 @@ from probe_lib import (
     load_model,
 )
 from probe_lib import plot_probe as plot_probe_separation
+from probe_lib import plot_probe_pca as plot_probe_pca_separation
 
 
 @torch.no_grad()
@@ -986,6 +987,16 @@ def main(args):
             pi["y_te"],
             plot_dir,
         )
+        if args.detailed:
+            plot_probe_pca_separation(
+                "c1-2",
+                [lyr],
+                LinearBoundary(pi["w_dom"], b_dom),
+                LinearBoundary(pi["w_probe"], pi["b_probe"]),
+                pi["X_te"],
+                pi["y_te"],
+                plot_dir,
+            )
     if args.steer:
         for lyr in args.steer:
             pi = gap_plot_inputs[lyr]

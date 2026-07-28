@@ -112,33 +112,13 @@ def plot_probe(
     with already folded in, so this function is agnostic to which backend
     (sklearn/torch) produced them.
 
-    Writes two 1x3 figures rather than one wide 2x3 grid: a histogram+ROC
-    comparison ({tag}_L{layers}_probe.png), and a PCA comparison
-    ({tag}_L{layers}_probe_pca.png) -- each probe's own direction projected
-    out and PC1 of what's left plotted against a shared top-2-component PCA,
-    showing whether any orthogonal variance still separates the classes."""
-    from sklearn.decomposition import PCA
+    Writes a histogram+ROC comparison ({tag}_L{layers}_probe.png). See also
+    `plot_probe_pca` for a companion PCA-based comparison over the same
+    inputs."""
     from sklearn.metrics import roc_auc_score, roc_curve
 
     proj_dom = dom.score(X_test)
     proj_logreg = probe.score(X_test)
-    pca_xy = PCA(n_components=2).fit_transform(X_test)
-
-    def _resid_pc1(w: Float[np.ndarray, "d"]):
-        w_hat = w / np.linalg.norm(w)
-        X_resid = X_test - np.outer(X_test @ w_hat, w_hat)
-        pc1 = PCA(n_components=1).fit_transform(X_resid)[:, 0]
-        return w_hat, pc1
-
-    # each probe's own direction, projected out, then PC1 of what's left --
-    # raw projections are in data coordinates (unlike proj_dom/proj_logreg
-    # above, which are in each probe's own decision-score units).
-    w_dom_hat, pc1_resid_dom = _resid_pc1(dom.w)
-    w_logreg_hat, pc1_resid_logreg = _resid_pc1(probe.w)
-    proj_dom_raw = X_test @ w_dom_hat
-    proj_logreg_raw = X_test @ w_logreg_hat
-    dom_raw_threshold = float(-dom.b / np.linalg.norm(dom.w))
-    logreg_raw_threshold = float(-probe.b / np.linalg.norm(probe.w))
 
     auroc_dom = roc_auc_score(y_test, proj_dom)
     auroc_logreg = roc_auc_score(y_test, proj_logreg)
@@ -191,7 +171,46 @@ def plot_probe(
     fig.savefig(path, dpi=120)
     print(f"[plot] wrote {path}")
 
-    # --- figure 2: PCA comparisons ---
+
+def plot_probe_pca(
+    tag,
+    layers,
+    dom: LinearBoundary,
+    probe: LinearBoundary,
+    X_test: Float[np.ndarray, "n d"],
+    y_test: Bool[np.ndarray, "n"],
+    plot_dir,
+):
+    """Companion to `plot_probe`, over the same inputs: writes a PCA
+    comparison ({tag}_L{layers}_probe_pca.png) -- each probe's own direction
+    projected out and PC1 of what's left plotted against a shared
+    top-2-component PCA, showing whether any orthogonal variance still
+    separates the classes. Split out since PCA is the expensive part and
+    only wanted for a detailed report."""
+    from sklearn.decomposition import PCA
+
+    pca_xy = PCA(n_components=2).fit_transform(X_test)
+
+    def _resid_pc1(w: Float[np.ndarray, "d"]):
+        w_hat = w / np.linalg.norm(w)
+        X_resid = X_test - np.outer(X_test @ w_hat, w_hat)
+        pc1 = PCA(n_components=1).fit_transform(X_resid)[:, 0]
+        return w_hat, pc1
+
+    # each probe's own direction, projected out, then PC1 of what's left --
+    # raw projections are in data coordinates (unlike a decision-score
+    # projection, which is in each probe's own units).
+    w_dom_hat, pc1_resid_dom = _resid_pc1(dom.w)
+    w_logreg_hat, pc1_resid_logreg = _resid_pc1(probe.w)
+    proj_dom_raw = X_test @ w_dom_hat
+    proj_logreg_raw = X_test @ w_logreg_hat
+    dom_raw_threshold = float(-dom.b / np.linalg.norm(dom.w))
+    logreg_raw_threshold = float(-probe.b / np.linalg.norm(probe.w))
+
+    lo_mask = y_test == 0.0
+    hi_mask = y_test == 1.0
+    layer_str = "-".join(str(i) for i in layers)
+
     fig, (ax_pca, ax_dom_resid, ax_logreg_resid) = plt.subplots(1, 3, figsize=(15, 4.5))
 
     ax_pca.scatter(pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1")
