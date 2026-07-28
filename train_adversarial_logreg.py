@@ -906,8 +906,7 @@ def main(args):
                 rate = rate_meter.update(record.iter)
                 print(
                     f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
-                    f"probe {record.l_probe:.3e}  λ {record.lam_eff:.1e}  max_err {me:.3e}  "
-                    f"probe_dt {record.probe_dt*1e3:.1f}ms  model_dt {record.model_dt*1e3:.1f}ms  "
+                    f"probe {record.l_probe:.3e}  max_err {me:.3e}  "
                     f"n_exploded {record.n_exploded}  {rate:.1f} it/s"
                 )
 
