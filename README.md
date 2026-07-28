@@ -1,1 +1,4 @@
-Note: This project is WIP. See `logbook/logbook.md` for up-to-date research log.
+Note: This project is WIP. Refer to the following links for more information (admittedly, the info is a bit disorganized and will be cleaned up once more substantial results are obtained):
+- [Experiment proposal](https://docs.google.com/document/d/15W6lZcOq0MEUZ160FK9wqKK4sTOWA4yb2bsnxF5cD6k/edit?usp=sharing), giving an overview of the experiment concept
+- [Research project log](https://docs.google.com/document/d/1-XKT-NM-udI8HtbvmkKsVsQyhkgus7EJud1C2q6t7NQ/edit?usp=sharing), where I've been logging my up-to-date finidngs (this is a noisy channel, both in the sense that there's a lot of content there and that the signal-to-noise ratio is low)
+- [Analytic solution](https://jesseli2002.github.io/blog/blog/activation_obfuscation_analytic/), a writeup giving an explicit construction of an activation obfuscation method the model could learn
