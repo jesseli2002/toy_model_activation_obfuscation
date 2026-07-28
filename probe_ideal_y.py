@@ -2,7 +2,7 @@
 
 No trained model involved -- this tests the data-generating process directly:
 x ~ U[x_low, x_high]^num_x, y = clamp(x, -c, c) elementwise, c pinned at c_lo/c_hi
-(mirrors train_probe.py's binary_dataset). Since x is symmetric about 0, y|c is
+(mirrors the probe harness's binary dataset construction). Since x is symmetric about 0, y|c is
 a zero-mean symmetric distribution for every c, so no single linear direction
 (raw DoM or logistic regression) should separate c_lo from c_hi above chance --
 the class-conditional means coincide. Contrast this with a trivial nonlinear

@@ -50,7 +50,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from model import ResidualMLP, ResidualMLPConfig
-from train_probe import capture_layers
+from probe_lib import capture_layers
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 generator = torch.Generator(device=device).manual_seed(64865313)
