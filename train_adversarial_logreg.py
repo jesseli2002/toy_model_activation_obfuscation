@@ -692,7 +692,15 @@ def train_steps(
             # steps (see adv_config.explode_window_iters).
             baseline_loss = min([loss_before_step] + list(recent_losses))
 
-            if loss_after_step > adv_config.explode_factor * baseline_loss:
+            # Also require the step to have made this iteration's own loss
+            # worse, not just left it above the historical window baseline --
+            # otherwise a step that's recovering from an earlier arrested
+            # spike (elevated relative to baseline_loss but still improving)
+            # gets needlessly re-clipped.
+            if (
+                loss_after_step > adv_config.explode_factor * baseline_loss
+                and loss_after_step > loss_before_step
+            ):
                 n_exploded += 1
                 print(
                     f"[explode] iter={it} loss {baseline_loss:.3e} -> "
