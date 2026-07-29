@@ -122,6 +122,7 @@ from sklearn.linear_model import LinearRegression
 from sklearn.metrics import r2_score, roc_auc_score
 from tqdm import tqdm
 
+from analytic import reference_task_losses
 from data import sample_batch, sample_fixed_c
 from model import ResidualMLP
 from paths import ckpt_dir, log_dir
@@ -439,9 +440,20 @@ def _plot_training_traces(
 
     ax_loss.semilogy(its, [h["l_task"] for h in pts], label="L_task")
     ax_loss.semilogy(its, [max(h["l_probe"], 1e-30) for h in pts], label="L_probe")
+    ref_losses = reference_task_losses(
+        config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH
+    )
+    for key, style in [
+        ("do_nothing", ":"),
+        ("linreg", "--"),
+        ("clamp", "-."),
+    ]:
+        ax_loss.axhline(
+            ref_losses[key], color="gray", ls=style, lw=1, label=key, zorder=0
+        )
     ax_loss.set_title("loss terms")
     ax_loss.set_xlabel("iter")
-    ax_loss.legend(fontsize=8)
+    ax_loss.legend(fontsize=7)
     ax_loss.grid(True, alpha=0.3)
 
     fig.suptitle(f"adversarial training traces ({tag})")
