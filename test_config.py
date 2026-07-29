@@ -30,6 +30,7 @@ def _make_logreg_config() -> LogregAdversarialConfig:
     config classes below, `LogregAdversarialConfig()` alone isn't a valid
     construction, so the generic tests need a fully-specified instance."""
     return LogregAdversarialConfig(
+        lam=0.5,
         penalty_layers=[1, 2],
         lam_warmup_iters=0,
         seed=1,
@@ -49,6 +50,7 @@ def _make_logreg_config() -> LogregAdversarialConfig:
         lr=3e-3,
         adam_eps=1e-8,
         adam_beta2=0.999,
+        optimizer_kind="adamw",
         explode_factor=0.0,
         explode_clip_divisor=5.0,
     )
@@ -108,11 +110,12 @@ class TestLogregAdversarialConfigRequiredFields:
         with pytest.raises(TypeError):
             LogregAdversarialConfig(**kwargs)
 
-    def test_lam_has_a_default(self):
-        # the one CLI-common field must NOT require a value.
+    def test_missing_lam_raises_type_error(self):
+        # lam is config-file-only like every other field here -- no default.
         kwargs = dataclasses.asdict(_make_logreg_config())
         del kwargs["lam"]
-        LogregAdversarialConfig(**kwargs)  # must not raise
+        with pytest.raises(TypeError):
+            LogregAdversarialConfig(**kwargs)
 
     def test_missing_penalty_layers_raises_type_error(self):
         kwargs = dataclasses.asdict(_make_logreg_config())

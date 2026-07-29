@@ -1,4 +1,5 @@
 {
+  "lam": 0.5,
   "penalty_layers": [
     2
   ],

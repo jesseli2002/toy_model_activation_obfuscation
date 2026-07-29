@@ -134,17 +134,15 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     """Training-hyperparameter metadata for train_adversarial_logreg.py,
     stored verbatim (as a dict) alongside the model's own ResidualMLPConfig.
 
-    Fields split two ways (see plans/rare_flags_config_plan.md): `lam` is
-    touched often enough to stay a CLI flag, so it keeps an ordinary default
-    here. Everything else has NO default -- it's a required key in the
-    --config JSON file, so omitting it fails loudly (a TypeError from this
-    constructor) instead of silently taking on a value.
+    Every field here is config-file-only: no default, no CLI flag, a
+    required key in the --config JSON file, so omitting it fails loudly (a
+    TypeError from this constructor) instead of silently taking on a value.
+    See train_adversarial_logreg.py's module docstring for the rationale
+    behind this split (architecture vs. config-file vs. bookkeeping).
     """
 
-    # CLI-common: touched often, so exposed as a flag with a default here.
-    lam: float = 0.5
-
-    # Config-file-only: no default -- required key in --config JSON.
+    # No default -- required key in --config JSON.
+    lam: float
     penalty_layers: list | str  # "all", or an explicit list of layer indices
     lam_warmup_iters: int
     seed: int
