@@ -690,11 +690,7 @@ def train_steps(
             # iterations, plus this iteration's own pre-step loss -- catches
             # both a single-step spike and gradual creep across several
             # steps (see adv_config.explode_window_iters).
-            baseline_loss = (
-                min(loss_before_step, *recent_losses)
-                if recent_losses
-                else loss_before_step
-            )
+            baseline_loss = min([loss_before_step] + list(recent_losses))
 
             if loss_after_step > adv_config.explode_factor * baseline_loss:
                 n_exploded += 1
