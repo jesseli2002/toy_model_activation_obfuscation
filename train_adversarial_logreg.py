@@ -372,10 +372,19 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
     so there's no single optimizer state (shape, momentum) that's guaranteed
     to still make sense -- the caller builds a fresh optimizer from that
     freshly-resolved adv_config instead. --resume, by contrast, keeps the same
-    adv_config as the checkpoint, so restoring optimizer state is exact."""
+    adv_config as the checkpoint, so restoring optimizer state is exact. This
+    also means only restore_optimizer=True requires rck to have an
+    `adv_config` key -- --fork-from can still restore an (architecture,
+    weights, iter count) checkpoint that predates that field."""
     model, rck = ResidualMLP.load(ckpt_path, map_location=device)
     model = model.to(device)
     if restore_optimizer:
+        if "adv_config" not in rck:
+            raise SystemExit(
+                f"[error] {ckpt_path} predates the nested adv_config checkpoint "
+                f"layout and cannot be --resume'd. Start a fresh run, or "
+                f"--fork-from it instead."
+            )
         # The checkpoint's OWN historical config -- not the caller's
         # freshly-resolved adv_config, which for --fork-from may differ.
         hist_adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
@@ -758,13 +767,9 @@ def main(args):
     hist_path = _history_path(args.tag)
 
     if args.resume:
+        # (raises if last_path predates the nested adv_config checkpoint
+        # layout -- see _restore_checkpoint)
         model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
-        if "adv_config" not in rck:
-            raise SystemExit(
-                f"[error] {last_path} predates the nested adv_config checkpoint "
-                f"layout and cannot be --resume'd. Start a fresh run, or "
-                f"--fork-from it instead."
-            )
         adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
         hidden_layers = adv_config.penalty_layers
         # history.jsonl is append-only: this run's earlier entries are
