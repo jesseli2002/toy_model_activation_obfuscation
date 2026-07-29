@@ -22,6 +22,7 @@ def _logreg_config_file_fields(**overrides) -> dict:
     so `LogregAdversarialConfig()` alone isn't a valid construction and
     tests need a fully-specified set of fields."""
     d = dict(
+        lam=0.5,
         penalty_layers=[1, 2],
         lam_warmup_iters=0,
         seed=1,
@@ -50,12 +51,10 @@ def _logreg_config_file_fields(**overrides) -> dict:
 
 
 def _make_logreg_config(**overrides) -> LogregAdversarialConfig:
-    """`lam` has a default, so it's left out of `_logreg_config_file_fields`
-    -- pass it explicitly as an override if a test needs a specific value."""
     return LogregAdversarialConfig(**_logreg_config_file_fields(**overrides))
 
 
 def _make_adv_config(**overrides) -> LogregAdversarialConfig:
-    d = {"lam": 0.5, **_logreg_config_file_fields()}
+    d = _logreg_config_file_fields()
     d.update(overrides)
     return LogregAdversarialConfig(**d)

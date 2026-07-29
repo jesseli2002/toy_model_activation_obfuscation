@@ -172,8 +172,7 @@ def test_missing_arch_flag_on_fresh_run_exits_naming_the_flag(tmp_path):
 class TestLoadRunConfig:
     def test_round_trip(self):
         cfg, hidden_layers = load_run_config(
-            _logreg_config_file_fields(),
-            lam=0.7,
+            _logreg_config_file_fields(lam=0.7),
             num_blocks=4,
             config_path="unused.json",
         )
@@ -186,7 +185,6 @@ class TestLoadRunConfig:
     def test_all_resolves_against_num_blocks(self):
         cfg, hidden_layers = load_run_config(
             _logreg_config_file_fields(penalty_layers="all"),
-            lam=0.5,
             num_blocks=4,
             config_path="unused.json",
         )
@@ -197,7 +195,6 @@ class TestLoadRunConfig:
         with pytest.raises(SystemExit):
             load_run_config(
                 _logreg_config_file_fields(penalty_layers=[0]),
-                lam=0.5,
                 num_blocks=4,
                 config_path="unused.json",
             )
@@ -206,25 +203,19 @@ class TestLoadRunConfig:
         file_fields = _logreg_config_file_fields()
         del file_fields["penalty_layers"]
         with pytest.raises(SystemExit, match="penalty_layers"):
-            load_run_config(
-                file_fields, lam=0.5, num_blocks=4, config_path="my_config.json"
-            )
+            load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
     def test_missing_key_raises_system_exit_naming_the_key(self):
         file_fields = _logreg_config_file_fields()
         del file_fields["probe_C"]
         with pytest.raises(SystemExit, match="probe_C"):
-            load_run_config(
-                file_fields, lam=0.5, num_blocks=4, config_path="my_config.json"
-            )
+            load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
     def test_missing_key_error_names_config_path(self):
         file_fields = _logreg_config_file_fields()
         del file_fields["seed"]
         with pytest.raises(SystemExit, match="my_config.json"):
-            load_run_config(
-                file_fields, lam=0.5, num_blocks=4, config_path="my_config.json"
-            )
+            load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
 
 def _write_input_config(path: Path, **overrides) -> Path:
@@ -306,7 +297,7 @@ class TestConfigJsonPersistence:
         assert input_copy.read_bytes() == input_path.read_bytes()
 
         resolved = json.loads((tmp_path / "runs" / "t3" / "config.json").read_text())
-        assert "lam" not in json.loads(input_copy.read_text())
+        assert json.loads(input_copy.read_text())["lam"] == 0.5
         assert resolved["adversarial"]["lam"] == 0.5
         assert "model" in resolved
         assert resolved["adversarial"]["penalty_layers"] == [1, 2]
@@ -458,12 +449,12 @@ class TestNoiseBlobReplay:
 
         adv_config, hidden_layers = load_run_config(
             _logreg_config_file_fields(
+                lam=0.0,
                 penalty_layers=[1, 2],
                 resid_noise_std=0.1,
                 explode_factor=1e-6,  # any step counts as an explosion
                 batch_size=8,
             ),
-            lam=0.0,
             num_blocks=3,
             config_path="unused.json",
         )

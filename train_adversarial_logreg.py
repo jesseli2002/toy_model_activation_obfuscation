@@ -21,12 +21,12 @@ review.
 
 Three run modes (see plans/rare_flags_config_plan.md for the full design):
   - fresh run: hyperparameters are freshly resolved from `--config`'s JSON
-    file plus CLI-common flags. Writes `runs/<tag>/config.json` once.
+    file. Writes `runs/<tag>/config.json` once.
   - `--resume <tag>`: strictly continues the same experiment. All
-    hyperparameters (CLI-common and config-file) are restored from the
-    checkpoint, never re-read from `--config` or CLI. `runs/<tag>/config.json`
-    is read once for a sanity check against the restored config (a mismatch
-    warns but never rewrites the file) -- not for resolving hyperparameters.
+    hyperparameters are restored from the checkpoint, never re-read from
+    `--config`. `runs/<tag>/config.json` is read once for a sanity check
+    against the restored config (a mismatch warns but never rewrites the
+    file) -- not for resolving hyperparameters.
   - `--fork-from <source_tag>` (with `--tag <new_tag>`): branches a new
     experiment off `source_tag`'s checkpoint -- architecture, weights, and
     iteration count come from there, same as `--resume` -- but the optimizer
@@ -41,6 +41,27 @@ the `--config` file, kept reusable as a later `--config` argument (e.g. for
 `--fork-from`); `runs/<tag>/config.json` is the fully-resolved run config.
 Hand-editing either after creation has no effect except tripping the
 mismatch warning on a later `--resume`.
+
+Configuration is split two ways, and the split is a near-invariant worth
+naming: a setting lives in the `--config` JSON file (i.e. on
+`LogregAdversarialConfig`) if and only if it can change across a
+`--fork-from`. Concretely:
+  - Architecture (`ResidualMLPConfig`: `--num-x`/`--d-model`/`--d-mlp`/
+    `--num-blocks`) is pinned once, at from-scratch init, and is never in the
+    config file -- `--resume`/`--fork-from` always inherit it from the source
+    checkpoint rather than letting it be re-specified.
+  - Everything else that affects training is config-file-only, with no CLI
+    flag at all, so a `--fork-from`'s exact hyperparameters live in one
+    reviewable/diffable JSON file rather than split across CLI history and a
+    file. `lam` used to be the sole exception (a CLI flag with a Python
+    default, since it's the most frequently tuned value) -- that carve-out
+    caused enough confusion to not be worth it, so `lam` moved into the
+    config file too.
+  - Bookkeeping flags (`--tag`, `--resume`, `--fork-from`, `--tag-force`,
+    `--probe-backend`, `--log-interval`, `--ckpt-interval`, `--save-every-n`,
+    `--max-iters`) sit outside this split entirely: they're run control that
+    never varies within one tag's lineage and is never persisted to
+    `config.json`.
 """
 
 import argparse
@@ -88,20 +109,6 @@ def parse_args():
     g_init.add_argument("--d-mlp", type=int, default=None)
     g_init.add_argument("--num-blocks", type=int, default=None)
 
-    g_adv = p.add_argument_group(
-        "adversarial objective (CLI-common)",
-        "Touched often enough to stay CLI flags; every other hyperparameter "
-        "lives in --config's JSON file instead -- see LogregAdversarialConfig.",
-    )
-    g_adv.add_argument(
-        "--lam",
-        type=float,
-        default=LogregAdversarialConfig.lam,
-        help="convex-combination weight: loss = lam * L_probe + (1-lam) * L_task. "
-        "lam=1 optimizes purely for hiding c (task loss ignored). lam=0 is "
-        "plain task training.",
-    )
-
     g_book = p.add_argument_group("bookkeeping")
     g_book.add_argument(
         "--config",
@@ -124,7 +131,7 @@ def parse_args():
         "weights, optimizer state, iteration count, and history -- continued for "
         "continuous loss curves). Unlike --resume, the adversarial-objective "
         "hyperparameters are freshly resolved from this invocation's "
-        "--config/--lam, not inherited from SOURCE_TAG. Mutually exclusive "
+        "--config, not inherited from SOURCE_TAG. Mutually exclusive "
         "with --resume.",
     )
     g_book.add_argument(
@@ -245,7 +252,7 @@ def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
 
 def _read_config_file(path: str) -> dict:
     """Read --config's JSON file. Required-key validation happens later, in
-    load_run_config, once lam is known too."""
+    load_run_config."""
     try:
         with open(path) as f:
             return json.load(f)
@@ -256,24 +263,23 @@ def _read_config_file(path: str) -> dict:
 
 
 def load_run_config(
-    file_fields: dict, *, lam: float, num_blocks: int, config_path: str
+    file_fields: dict, *, num_blocks: int, config_path: str
 ) -> tuple[LogregAdversarialConfig, list[int]]:
-    """Merge --config's file_fields with this invocation's --lam into one
-    LogregAdversarialConfig, resolving `penalty_layers` (a config-file value
-    of "all" or an explicit list) against num_blocks first -- so a missing/
-    invalid `penalty_layers` surfaces the same as any other bad --config key.
-    A missing required key in the file surfaces as the dataclass
-    constructor's TypeError; re-raised here as a SystemExit naming the
-    specific key(s), per this module's [error] convention. Returns
-    (adv_config, hidden_layers) -- the latter is what callers actually index
-    caches with."""
+    """Build a LogregAdversarialConfig from --config's file_fields, resolving
+    `penalty_layers` (a config-file value of "all" or an explicit list)
+    against num_blocks first -- so a missing/invalid `penalty_layers`
+    surfaces the same as any other bad --config key. A missing required key
+    in the file surfaces as the dataclass constructor's TypeError; re-raised
+    here as a SystemExit naming the specific key(s), per this module's
+    [error] convention. Returns (adv_config, hidden_layers) -- the latter is
+    what callers actually index caches with."""
     fields = dict(file_fields)
     if "penalty_layers" in fields:
         fields["penalty_layers"] = _resolve_hidden_layers(
             fields["penalty_layers"], num_blocks
         )
     try:
-        adv_config = LogregAdversarialConfig(lam=lam, **fields)
+        adv_config = LogregAdversarialConfig(**fields)
     except TypeError:
         required = {
             f.name
@@ -779,8 +785,8 @@ def main(args):
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
         _check_config_json(args.tag, model.config, adv_config)
     else:
-        # Hyperparameters are freshly resolved from --config + --lam (never
-        # read from the checkpoint, unlike --resume above).
+        # Hyperparameters are freshly resolved from --config (never read from
+        # the checkpoint, unlike --resume above).
         file_fields = _read_config_file(args.config)
         if "seed" in file_fields:
             # Needed before the scratch init below is reproducible. (Under
@@ -819,7 +825,6 @@ def main(args):
 
         adv_config, hidden_layers = load_run_config(
             file_fields,
-            lam=args.lam,
             num_blocks=model.config.num_blocks,
             config_path=args.config,
         )

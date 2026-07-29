@@ -69,11 +69,12 @@ class TestLogregAdversarialConfigRequiredFields:
         with pytest.raises(TypeError):
             LogregAdversarialConfig(**kwargs)
 
-    def test_lam_has_a_default(self):
-        # the one CLI-common field must NOT require a value.
+    def test_missing_lam_raises_type_error(self):
+        # lam is config-file-only like every other field here -- no default.
         kwargs = dataclasses.asdict(_make_logreg_config())
         del kwargs["lam"]
-        LogregAdversarialConfig(**kwargs)  # must not raise
+        with pytest.raises(TypeError):
+            LogregAdversarialConfig(**kwargs)
 
     def test_missing_penalty_layers_raises_type_error(self):
         kwargs = dataclasses.asdict(_make_logreg_config())
