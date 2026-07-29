@@ -192,16 +192,22 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # in place of grad_clip/adam_eps/adam_beta2 band-aids) -- both consume
     # adam_eps/adam_beta2 above with the same meaning.
     optimizer_kind: str
-    # Same-iteration revert-and-retry: after each step, re-check the loss on
-    # the same batch, and if it jumped by more than explode_factor x, undo
-    # the step (model + optimizer state) and redo it with grad_clip divided
-    # by explode_clip_divisor. This only catches genuine large-gradient-norm
-    # events -- adam_eps/adam_beta2 above are the fix for the small-gradient
-    # -norm spikes this retry can't affect (confirmed empirically: redoing
-    # with a tighter clip is a no-op when the original gradient norm was
-    # already below the tighter threshold). 0 = disabled.
+    # Revert-and-retry: after each step, re-check the loss on the same batch,
+    # and if it jumped by more than explode_factor x the smallest loss seen
+    # in the last explode_window_iters iterations (explode_window_iters=1
+    # compares only against this iteration's own pre-step loss), undo the
+    # step (model + optimizer state) and redo it with grad_clip divided by
+    # explode_clip_divisor. Comparing against a window rather than just this
+    # iteration's own pre-step loss catches gradual multi-step creep (e.g.
+    # loss roughly doubling on several consecutive steps, each one under
+    # explode_factor on its own). This only catches genuine large-gradient
+    # -norm events -- adam_eps/adam_beta2 above are the fix for the small
+    # -gradient-norm spikes this retry can't affect (confirmed empirically:
+    # redoing with a tighter clip is a no-op when the original gradient norm
+    # was already below the tighter threshold). explode_factor=0 disables.
     explode_factor: float
     explode_clip_divisor: float
+    explode_window_iters: int
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
@@ -227,6 +233,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "optimizer_kind": "adamw",  # legacy runs predate StableAdamW support
         "explode_factor": 0.0,  # legacy runs had no explode-detection
         "explode_clip_divisor": 5.0,  # inert when explode_factor is 0
+        "explode_window_iters": 1,  # legacy runs only compared to the immediately preceding step
     }
 
 

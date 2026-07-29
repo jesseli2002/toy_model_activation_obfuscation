@@ -44,6 +44,7 @@ def _logreg_config_file_fields(**overrides) -> dict:
         adam_beta2=0.999,
         explode_factor=0.0,
         explode_clip_divisor=5.0,
+        explode_window_iters=1,
         optimizer_kind="adamw",
     )
     d.update(overrides)

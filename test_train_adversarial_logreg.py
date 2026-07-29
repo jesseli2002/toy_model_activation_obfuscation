@@ -489,3 +489,95 @@ class TestNoiseBlobReplay:
         assert len(seen_noise) == 3
         for noise in seen_noise[1:]:
             assert torch.equal(seen_noise[0], noise)
+
+
+class TestExplodeWindow:
+    """explode_window_iters (config.py's LogregAdversarialConfig): comparing
+    against the smallest loss in a window of recent iterations, not just this
+    iteration's own pre-step loss, so a run that creeps up by a sub-threshold
+    factor on several consecutive steps still gets caught."""
+
+    def _run(self, monkeypatch, desired_losses, explode_window_iters):
+        """Drive train_steps for len(desired_losses)//2-ish iterations with
+        model.forward replaced by a stub that returns exactly
+        sqrt(desired_losses[call_index]) each call (in call order), against
+        an all-zero task target -- so l_task == desired_losses[call_index]
+        exactly, independent of real model/gradient dynamics. Returns the
+        list of n_exploded seen after each iteration."""
+        import torch
+
+        import train_adversarial_logreg as tal
+        from model import ResidualMLP
+
+        num_x = 1
+        batch_size = 4
+
+        def fake_sample_batch(batch_size, num_x, **kwargs):
+            return (
+                torch.zeros(batch_size, num_x),
+                torch.zeros(batch_size, num_x),
+            )
+
+        monkeypatch.setattr(tal, "sample_batch", fake_sample_batch)
+
+        call_idx = [0]
+
+        def fake_forward(x_task, noise=None, **kwargs):
+            val = desired_losses[call_idx[0]]
+            call_idx[0] += 1
+            return torch.full((x_task.shape[0], num_x), val**0.5, requires_grad=True)
+
+        model_config = _make_model_config(num_x=num_x, d_model=4, d_mlp=4, num_blocks=2)
+        model = ResidualMLP(model_config)
+        model.forward = fake_forward
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        gen = torch.Generator().manual_seed(0)
+
+        adv_config, hidden_layers = load_run_config(
+            _logreg_config_file_fields(
+                lam=0.0,
+                penalty_layers=[1],
+                batch_size=batch_size,
+                explode_factor=2.0,
+                explode_window_iters=explode_window_iters,
+            ),
+            num_blocks=2,
+            config_path="unused.json",
+        )
+
+        gen_iter = train_steps(
+            model,
+            opt,
+            gen,
+            probe=None,
+            adv_config=adv_config,
+            max_iters=2,
+            hidden_layers=hidden_layers,
+            start_iter=0,
+            affine=(torch.zeros(1), torch.zeros(1)),
+            probe_x=torch.zeros(1, 3),
+            probe_label=torch.zeros(1, dtype=torch.bool),
+            device="cpu",
+        )
+        return [record.n_exploded for record in gen_iter]
+
+    def test_window_1_never_flags_gradual_creep(self, monkeypatch):
+        # Each step's own before/after ratio is 1.9x, under explode_factor=2.0,
+        # so a same-iteration-only check (explode_window_iters=1) never fires
+        # even though iter 1's loss (3.6) is 3.6x iter 0's starting loss (1.0).
+        n_exploded = self._run(
+            monkeypatch, desired_losses=[1.0, 1.9, 1.9, 3.6], explode_window_iters=1
+        )
+        assert n_exploded == [0, 0]
+
+    def test_wider_window_flags_the_same_creep(self, monkeypatch):
+        # Same loss trajectory as above, but explode_window_iters=3 compares
+        # iter 1's after-step loss (3.6) against the smallest loss over the
+        # last 3 iterations (1.0, from iter 0), catching what the 1-step
+        # check above missed.
+        n_exploded = self._run(
+            monkeypatch,
+            desired_losses=[1.0, 1.9, 1.9, 3.6, 1.95],
+            explode_window_iters=3,
+        )
+        assert n_exploded == [0, 1]

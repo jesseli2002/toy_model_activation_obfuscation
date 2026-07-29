@@ -23,5 +23,6 @@
   "adam_beta2": 0.99,
   "optimizer_kind": "stableadamw",
   "explode_factor": 3.0,
-  "explode_clip_divisor": 20
+  "explode_clip_divisor": 20,
+  "explode_window_iters": 10
 }
