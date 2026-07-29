@@ -40,3 +40,9 @@ current code before reusing it.
       --fork-from <tag> flag (branch a new experiment off an existing run's checkpoint
       with freshly-specified hyperparameters, vs. --resume which now strictly continues
       the same experiment unchanged).
+- logreg_run_config_plan.md
+    - Stop splatting the adversarial config into the checkpoint's top level (which made
+      --resume warn on every state key); give each run directory two artifacts -- a verbatim
+      copy of the --config input and a fully-resolved config.json that finally includes the
+      model architecture -- with the schema owned by one new dataclass in config.py.
+      Also makes architecture flags an error under --resume/--fork-from.
