@@ -188,10 +188,16 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # (e.g. 1e-5) alone.
     adam_eps: float
     adam_beta2: float
-    # "adamw" or "stableadamw" (optimi.StableAdamW's per-tensor update-clipping
-    # in place of grad_clip/adam_eps/adam_beta2 band-aids) -- both consume
-    # adam_eps/adam_beta2 above with the same meaning.
+    # "adamw" or "stableadamw" (per-tensor update-clipping in place of
+    # grad_clip/adam_eps/adam_beta2 band-aids) -- both consume adam_eps
+    # /adam_beta2 above with the same meaning.
     optimizer_kind: str
+    # StableAdamW's update-clipping threshold (Adafactor's `d`): a tensor's
+    # step is scaled down only once its RMS exceeds this, so lowering it
+    # clips more aggressively while leaving quiet steps untouched. 1.0 is
+    # what every off-the-shelf implementation hard-codes. Ignored by
+    # optimizer_kind="adamw".
+    stableadamw_d: float
     # Revert-and-retry: after each step, re-check the loss on the same batch,
     # and if it jumped by more than explode_factor x the smallest loss seen
     # in the last explode_window_iters iterations (explode_window_iters=1
@@ -231,6 +237,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "adam_eps": 1e-8,  # legacy runs used AdamW's plain default
         "adam_beta2": 0.999,  # legacy runs used AdamW's plain default
         "optimizer_kind": "adamw",  # legacy runs predate StableAdamW support
+        "stableadamw_d": 1.0,  # legacy runs predate the threshold being tunable
         "explode_factor": 0.0,  # legacy runs had no explode-detection
         "explode_clip_divisor": 5.0,  # inert when explode_factor is 0
         "explode_window_iters": 1,  # legacy runs only compared to the immediately preceding step
