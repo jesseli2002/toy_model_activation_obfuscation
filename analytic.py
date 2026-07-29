@@ -45,6 +45,7 @@ of num_x+1). Sketch, using L_a(z) = LeakyReLU(z, negative_slope=a):
 First MLP block erases c by construction.
 """
 
+import sympy as sp
 import torch
 from jaxtyping import Float
 from torch import Tensor
@@ -124,6 +125,80 @@ def build_exact_obfuscator(
         m.blocks[0].b_out[c_dir] = 10
 
     return m
+
+
+def reference_task_losses(
+    x_low: float, x_high: float, c_low: float, c_high: float
+) -> dict[str, float]:
+    """Analytic L_task (MSE against sat(x,-c,c)) for reference solutions the
+    model tends to pass through early in training, under x ~ U[x_low,x_high],
+    c ~ U[c_low,c_high] (requires x_low == -x_high, 0 < c_low <= c_high <= x_high):
+
+    - do_nothing: pred = x
+    - linreg: pred = k*x, with k chosen to minimize the loss (best linear fit)
+    - clamp: pred = clip(x, -c_avg, c_avg), c_avg = mean(c)
+
+    Used as reference lines on the training-loss plot in adversarial_report.py.
+    """
+    assert x_low == -x_high and 0 < c_low <= c_high <= x_high
+    x, c = sp.symbols("x c", real=True)
+    xl, xh = sp.nsimplify(x_low), sp.nsimplify(x_high)
+    cl, ch = sp.nsimplify(c_low), sp.nsimplify(c_high)
+    norm = (xh - xl) * (ch - cl)
+
+    def int_x(expr, lo, hi):
+        return sp.integrate(expr, (x, lo, hi))
+
+    def avg_c(expr_of_c, lo, hi):
+        return sp.integrate(sp.simplify(expr_of_c), (c, lo, hi)) / norm
+
+    # do_nothing: pred=x. Nonzero only outside [-c,c].
+    do_nothing_of_c = int_x((x + c) ** 2, xl, -c) + int_x((x - c) ** 2, c, xh)
+    do_nothing = sp.nsimplify(sp.simplify(avg_c(do_nothing_of_c, cl, ch)))
+
+    # linreg: pred=k*x, k*=E[xy]/E[x^2] (least-squares slope, no intercept).
+    Exy_of_c = int_x(-c * x, xl, -c) + int_x(x * x, -c, c) + int_x(c * x, c, xh)
+    Ex2_of_c = int_x(x * x, xl, xh)
+    Ey2_of_c = int_x(c**2, xl, -c) + int_x(x * x, -c, c) + int_x(c**2, c, xh)
+    Exy, Ex2, Ey2 = (
+        sp.nsimplify(sp.simplify(avg_c(e, cl, ch)))
+        for e in (Exy_of_c, Ex2_of_c, Ey2_of_c)
+    )
+    k_star = sp.simplify(Exy / Ex2)
+    linreg = sp.nsimplify(sp.simplify(Ey2 - k_star**2 * Ex2))
+
+    # clamp: pred=clip(x,-a,a), a=mean(c). c-integral splits at a since the two
+    # region layouts (whether -c/c fall inside or outside [-a,a]) swap there.
+    a = (cl + ch) / 2
+
+    def clamp_terms_c_above_a(c_):
+        return (
+            int_x((-a + c_) ** 2, xl, -c_)
+            + int_x((-a - x) ** 2, -c_, -a)
+            + int_x(0, -a, a)
+            + int_x((a - x) ** 2, a, c_)
+            + int_x((a - c_) ** 2, c_, xh)
+        )
+
+    def clamp_terms_c_below_a(c_):
+        return (
+            int_x((-a + c_) ** 2, xl, -a)
+            + int_x((x + c_) ** 2, -a, -c_)
+            + int_x(0, -c_, c_)
+            + int_x((x - c_) ** 2, c_, a)
+            + int_x((a - c_) ** 2, a, xh)
+        )
+
+    integral_below = sp.integrate(sp.simplify(clamp_terms_c_below_a(c)), (c, cl, a))
+    integral_above = sp.integrate(sp.simplify(clamp_terms_c_above_a(c)), (c, a, ch))
+    clamp = sp.nsimplify(sp.simplify((integral_below + integral_above) / norm))
+
+    return {
+        "do_nothing": float(do_nothing),
+        "linreg": float(linreg),
+        "clamp": float(clamp),
+        "linreg_k": float(k_star),
+    }
 
 
 def _verify_model(
