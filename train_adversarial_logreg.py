@@ -215,7 +215,6 @@ if __name__ == "__main__":
 
 import warnings
 
-import optimi
 import torch
 from sklearn.exceptions import ConvergenceWarning
 
@@ -223,6 +222,7 @@ from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, fit_probe, resolve_probe_backend
+from stableadamw import StableAdamW
 
 
 def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
@@ -350,18 +350,19 @@ def _check_config_json(
 
 
 def _make_optimizer(
-    params, optimizer_kind: str, *, lr: float, eps: float, beta2: float
+    params,
+    optimizer_kind: str,
+    *,
+    lr: float,
+    eps: float,
+    beta2: float,
+    stableadamw_d: float,
 ) -> torch.optim.Optimizer:
     """Construct the optimizer named by `LogregAdversarialConfig.optimizer_kind`."""
     if optimizer_kind == "adamw":
         return torch.optim.AdamW(params, lr=lr, eps=eps, betas=(0.9, beta2))
     elif optimizer_kind == "stableadamw":
-        # triton/kahan_sum are irrelevant here (plain fp32 training, not
-        # low-precision) -- disabled explicitly rather than left to
-        # autodetection.
-        return optimi.StableAdamW(
-            params, lr=lr, eps=eps, betas=(0.9, beta2), triton=False, kahan_sum=False
-        )
+        return StableAdamW(params, lr=lr, eps=eps, betas=(0.9, beta2), d=stableadamw_d)
     else:
         raise ValueError(f"unknown optimizer_kind {optimizer_kind!r}")
 
@@ -401,6 +402,7 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
             lr=hist_adv_config.lr,
             eps=hist_adv_config.adam_eps,
             beta2=hist_adv_config.adam_beta2,
+            stableadamw_d=hist_adv_config.stableadamw_d,
         )
         opt.load_state_dict(rck["opt"])
     else:
@@ -862,6 +864,7 @@ def main(args):
             lr=adv_config.lr,
             eps=adv_config.adam_eps,
             beta2=adv_config.adam_beta2,
+            stableadamw_d=adv_config.stableadamw_d,
         )
         _write_run_config(
             args.tag,
@@ -919,6 +922,7 @@ def main(args):
         f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
         f"lr={adv_config.lr} adam_eps={adv_config.adam_eps} "
         f"adam_beta2={adv_config.adam_beta2} optimizer_kind={adv_config.optimizer_kind} "
+        f"stableadamw_d={adv_config.stableadamw_d} "
         f"explode_factor={adv_config.explode_factor} "
         f"explode_clip_divisor={adv_config.explode_clip_divisor} "
         f"device={device} iters {start_iter}->{args.max_iters}"
