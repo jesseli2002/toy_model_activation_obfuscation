@@ -65,6 +65,7 @@ naming: a setting lives in the `--config` JSON file (i.e. on
 """
 
 import argparse
+import collections
 import copy
 import dataclasses
 import json
@@ -543,6 +544,14 @@ def train_steps(
     task batch below which resamples fresh each iteration."""
     num_x = model.config.num_x
     n_exploded = 0
+    # Losses from the explode_window_iters-1 completed iterations before the
+    # current one (post revert-and-retry if one happened), oldest first --
+    # combined with the current iteration's own pre-step loss below, this
+    # gives a window of explode_window_iters iterations total. See
+    # adv_config.explode_window_iters.
+    recent_losses: collections.deque[float] = collections.deque(
+        maxlen=max(0, adv_config.explode_window_iters - 1)
+    )
     # lam=0 means the probe penalty never enters the loss (see lam_eff below,
     # which is always 0 too regardless of --lam-warmup-iters) -- skip probe
     # resampling/refitting/scoring entirely rather than paying for a value
@@ -677,11 +686,17 @@ def train_steps(
                 )
                 loss_after_step = loss_after.item()
 
-            if loss_after_step > adv_config.explode_factor * loss_before_step:
+            # The smallest loss over the last explode_window_iters completed
+            # iterations, plus this iteration's own pre-step loss -- catches
+            # both a single-step spike and gradual creep across several
+            # steps (see adv_config.explode_window_iters).
+            baseline_loss = min([loss_before_step] + list(recent_losses))
+
+            if loss_after_step > adv_config.explode_factor * baseline_loss:
                 n_exploded += 1
                 print(
-                    f"[explode] iter={it} loss {loss_before_step:.3e} -> "
-                    f"{loss_after_step:.3e} ({loss_after_step / loss_before_step:.1f}x)"
+                    f"[explode] iter={it} loss {baseline_loss:.3e} -> "
+                    f"{loss_after_step:.3e} ({loss_after_step / baseline_loss:.1f}x)"
                     f" -- reverting and redoing with a tighter clip"
                 )
                 model.load_state_dict(pre_model_state)
@@ -696,6 +711,8 @@ def train_steps(
                 optimizer_step(
                     loss, adv_config.grad_clip / adv_config.explode_clip_divisor
                 )
+
+            recent_losses.append(loss.item())
 
         yield TrainRecord(
             iter=it,

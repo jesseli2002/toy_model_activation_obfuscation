@@ -33,5 +33,6 @@
   "adam_eps": 1e-5,
   "adam_beta2": 0.99,
   "explode_factor": 3.0,
-  "explode_clip_divisor": 20
+  "explode_clip_divisor": 20,
+  "explode_window_iters": 10
 }
