@@ -187,11 +187,13 @@ definition (caches `1..num_blocks-1`).
 5. **Config + metadata.** Add `LogregAdversarialConfig` to `config.py`; save it in
    the checkpoint; add `--probe-C`, `--probe-init-iters`, and (if built)
    `--probe-loss-kind`.
-6. **Smoke test + cleanup.** Tiny run (`--max-iters ~50`, small
-   `--penalty-layers 1`) against `runs/nx32/checkpoints/best.pt` to confirm: probe
-   loss trends down, `probe_dt << model_dt`, checkpoint + history written,
-   `--help` still fast. `/home/jesse/v/bin/black --check` the file. (Agent may fold
-   this into the prior commits.)
+6. **Smoke test + cleanup.** Tiny run (`--max-iters ~50`, small `penalty_layers`)
+   against any existing run's checkpoint (no canonical checkpoint exists) to
+   confirm: probe loss trends down, `probe_dt << model_dt`, checkpoint + history
+   written, `--help` still fast. `/home/jesse/v/bin/black --check` the file. (Agent
+   may fold this into the prior commits.)
+   [Note: `--penalty-layers` was later moved from a CLI flag into the `--config`
+   JSON's `penalty_layers` field — see `rare_flags_config_plan.md`.]
 
 Commits 3–4 could merge if the agent prefers, but keeping the pure-helper commit
 (3) separate makes review of the sklearn plumbing easier.

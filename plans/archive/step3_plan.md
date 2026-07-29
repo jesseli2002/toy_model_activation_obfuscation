@@ -25,6 +25,12 @@ per the original spec, run once, then stop and review together.
 
 ## What's already in place (reuse, don't rebuild)
 
+> **Historical, not current:** this section describes the codebase as it existed when
+> this plan was written (2026-07-18). `train_probe.py` and `train_model.py` no longer
+> exist (the latter survives only under `.archive/`), and there is no canonical
+> checkpoint — `runs/nx32/` was never preserved; read a run's own config instead.
+> Nothing below is a live pointer to reuse; it's kept for the rationale only.
+
 - `model.py` — `ResidualMLP(num_x, d_model, d_mlp, num_blocks=...)`, fixed
   `W_E=[I;0]`/`W_U=W_E^T`, returns `y` and per-layer residual cache via
   `forward(x, return_cache=True)` → `caches[0..num_blocks]` (0 = embedding,
