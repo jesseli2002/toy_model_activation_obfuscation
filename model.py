@@ -179,17 +179,14 @@ class ResidualMLP(nn.Module):
         :param generator: RNG generator for the fresh-draw (float `noise`)
             path; unused otherwise.
         """
+        if isinstance(noise, float):
+            noise = self.generate_noise(x_full.shape[0], noise, generator)
         r: Float[Tensor, "batch d_model"] = x_full @ self.W_E
         caches = [r]
         for i, block in enumerate(self.blocks):
             r = r + block(r)
             if noise is not None and i + 1 < self.num_blocks:
-                if isinstance(noise, torch.Tensor):
-                    r = r + noise[i]
-                else:
-                    r = r + noise * torch.randn(
-                        r.shape, device=r.device, dtype=r.dtype, generator=generator
-                    )
+                r = r + noise[i]
             caches.append(r)
         y: Float[Tensor, "batch d_in"] = r @ self.W_U
         if return_cache:
