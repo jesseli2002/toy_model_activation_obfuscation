@@ -21,6 +21,7 @@ MAX_ITERS = 100_000
 
 ACTIVATION_CHOICES = ["leaky_relu", "gelu"]
 PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch"]
+OPTIMIZER_KIND_CHOICES = ["adamw", "stableadamw"]
 
 
 class _CheckpointConfigMixin:
@@ -189,6 +190,10 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # (e.g. 1e-5) alone.
     adam_eps: float
     adam_beta2: float
+    # "adamw" or "stableadamw" (optimi.StableAdamW's per-tensor update-clipping
+    # in place of grad_clip/adam_eps/adam_beta2 band-aids) -- both consume
+    # adam_eps/adam_beta2 above with the same meaning.
+    optimizer_kind: str
     # Same-iteration revert-and-retry: after each step, re-check the loss on
     # the same batch, and if it jumped by more than explode_factor x, undo
     # the step (model + optimizer state) and redo it with grad_clip divided
@@ -221,6 +226,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "lr": 3e-3,  # legacy runs took this from a CLI default
         "adam_eps": 1e-8,  # legacy runs used AdamW's plain default
         "adam_beta2": 0.999,  # legacy runs used AdamW's plain default
+        "optimizer_kind": "adamw",  # legacy runs predate StableAdamW support
         "explode_factor": 0.0,  # legacy runs had no explode-detection
         "explode_clip_divisor": 5.0,  # inert when explode_factor is 0
     }
