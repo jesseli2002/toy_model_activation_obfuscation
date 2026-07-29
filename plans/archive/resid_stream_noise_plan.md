@@ -111,8 +111,9 @@ sub-batch, so the split is free:
 Smoke-level only — the real script takes several hours, so no end-to-end run and
 no σ sweep here; hand off to the user to run and inspect.
 
-1. **Quick calibration.** On `runs/nx32/checkpoints/best.pt`, print per-layer
-   clean activation RMS and `‖Δμ‖` between c=1 and c=2 (one forward pass, seconds).
+1. **Quick calibration.** On any existing run's checkpoint (no canonical checkpoint
+   exists; read the run's own config), print per-layer clean activation RMS and
+   `‖Δμ‖` between c=1 and c=2 (one forward pass, seconds).
    Confirm σ=0.1 sits well below `‖Δμ‖` (expected O(1)); report the numbers rather
    than silently changing the default if the measured scale is far off.
 2. `--help` on both training scripts; `black --check` on all touched files.

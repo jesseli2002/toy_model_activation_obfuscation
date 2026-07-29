@@ -85,9 +85,9 @@ for the general mechanism instead of re-deriving it.
   - unknown-key handling: a dict with an extra unrecognized key trips
     `warnings.warn` (`pytest.warns`) and the key is absent from the
     reconstructed object.
-- Load an existing real checkpoint (e.g. the canonical `runs/nx32` checkpoint)
-  through `ResidualMLP.load` before and after the refactor and diff the
-  resulting `model.config` -- must be identical.
+- Load an existing real checkpoint (there is no canonical checkpoint; use any
+  run under `runs/`) through `ResidualMLP.load` before and after the refactor
+  and diff the resulting `model.config` -- must be identical.
 - `black --check config.py`.
 - `python -m pytest test_torch_logreg.py` (unaffected, but cheap regression
   check that nothing else in the module broke on import).

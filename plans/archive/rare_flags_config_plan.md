@@ -12,6 +12,12 @@ mid-lineage without losing training progress, which became `--fork-from`.
 This plan is the settled result of that conversation -- it supersedes the
 "ask the user" scaffolding of the original version of this file wholesale.
 
+> **Update (post-PR #82):** `--warmstart`/`--no-warmstart` has since been retired
+> entirely (no longer a CLI flag at all) now that `--fork-from` covers the same
+> need. The "stays CLI" decision below and the `--warmstart`-exists check
+> mentioned in the implementation steps are historical rationale, not current
+> behavior.
+
 ## Settled design decisions
 
 **File format:** JSON. `config.py` dataclasses already round-trip through
