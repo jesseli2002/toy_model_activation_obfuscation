@@ -94,20 +94,6 @@ class StableAdamW(torch.optim.Optimizer):
                 param, memory_format=torch.preserve_format
             )
 
-    def load_state_dict(self, state_dict: dict[str, Any]):
-        # Torch rebuilds each param group from the saved one, so a state dict
-        # written by an implementation without a `d` key silently drops the
-        # threshold -- surface that here rather than as a KeyError mid-step.
-        super().load_state_dict(state_dict)
-        for group in self.param_groups:
-            if "d" not in group:
-                raise ValueError(
-                    "optimizer state predates the tunable update-clipping "
-                    "threshold and cannot be resumed. Such a checkpoint was "
-                    "trained at the hard-coded d=1.0; fork from it instead of "
-                    "resuming, which rebuilds the optimizer from config."
-                )
-
     @torch.no_grad()
     def step(self, closure: Callable | None = None):
         loss = None

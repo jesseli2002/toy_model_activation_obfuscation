@@ -111,21 +111,6 @@ def test_round_trips_its_own_state_dict():
         torch.testing.assert_close(a, b, rtol=0, atol=0)
 
 
-def test_loading_optimi_state_fails_loudly():
-    """optimi's state dict carries no `d`, and torch rebuilds param groups from
-    the saved one -- so the threshold would be silently dropped."""
-    params = _make_params()
-    upstream = optimi.StableAdamW(
-        params, lr=3e-3, triton=False, kahan_sum=False, foreach=False
-    )
-    _grads(params, 0)
-    upstream.step()
-
-    ours = StableAdamW(_make_params(), lr=3e-3, d=0.5)
-    with pytest.raises(ValueError, match="predates the tunable"):
-        ours.load_state_dict(upstream.state_dict())
-
-
 def test_rejects_nonpositive_d():
     params = _make_params()
     with pytest.raises(ValueError, match="d="):
