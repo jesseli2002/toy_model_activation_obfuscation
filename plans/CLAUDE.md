@@ -12,3 +12,6 @@ index short. They document design rationale as of when they were written, not
 current project state -- file paths, flags, and checkpoints they mention may no
 longer exist. Only open one if you specifically need the history behind a past
 decision, and verify anything you find against current code before reusing it.
+
+When a plan is executed, don't forget to update this directory accordingly: move
+the completed plan into `plans/archive/` and update its entry (or remove it) here.
