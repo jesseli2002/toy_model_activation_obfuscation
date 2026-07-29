@@ -184,6 +184,66 @@ def test_overflow_falls_back_to_last_good_coefficients_when_warm_started(monkeyp
     np.testing.assert_array_equal(model.intercept_.numpy(), good_intercept.numpy())
 
 
+def _corrupt_params_then(exc: Exception | None):
+    """A fake LBFGS.step that trashes its parameters in place before failing --
+    what a real overflowing line search does, since it mutates w/b as it
+    searches. `exc=None` models LBFGS leaving non-finite params behind without
+    raising at all."""
+
+    def step(self, closure):
+        with torch.no_grad():
+            for p in self.param_groups[0]["params"]:
+                p.mul_(float("nan"))
+        if exc is not None:
+            raise exc
+
+    return step
+
+
+def test_overflow_fallback_survives_in_place_param_corruption(monkeypatch):
+    """The fallback's "last-good coefficients" must be an independent snapshot.
+    A warm-started optimizer reuses the same w/b tensors across fits and
+    mutates them in place, so a failed step corrupts them *before* it raises --
+    coefficients merely detached from those tensors would alias them and come
+    back NaN. See PR #108."""
+    X, y = make_binary_data(n=200, d=5, seed=13)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=True)
+    model.fit(Xt, yt)
+    good_coef = model.coef_.clone()
+    good_intercept = model.intercept_.clone()
+
+    overflow = RuntimeError("value cannot be converted to type float without overflow")
+    monkeypatch.setattr(torch.optim.LBFGS, "step", _corrupt_params_then(overflow))
+
+    with pytest.warns(RuntimeWarning, match="overflow"):
+        model.fit(Xt, yt)
+
+    assert torch.isfinite(model.coef_).all()
+    np.testing.assert_array_equal(model.coef_.numpy(), good_coef.numpy())
+    np.testing.assert_array_equal(model.intercept_.numpy(), good_intercept.numpy())
+
+
+def test_silently_non_finite_step_falls_back(monkeypatch):
+    """LBFGS carries no non-finite guard of its own, so a bad trial step can
+    leave w/b NaN and return normally. That has to take the same fallback as a
+    raised overflow, or the NaN is stored and every later warm-started fit
+    inherits it. See PR #108."""
+    X, y = make_binary_data(n=200, d=5, seed=13)
+    Xt, yt = to_torch(X, y)
+    model = TorchLogisticRegression(C=1.0, max_iter=5, warm_start=True)
+    model.fit(Xt, yt)
+    good_coef = model.coef_.clone()
+
+    monkeypatch.setattr(torch.optim.LBFGS, "step", _corrupt_params_then(None))
+
+    with pytest.warns(RuntimeWarning, match="overflow"):
+        model.fit(Xt, yt)
+
+    assert model._optimizer is None
+    np.testing.assert_array_equal(model.coef_.numpy(), good_coef.numpy())
+
+
 def test_overflow_reraises_without_prior_fit(monkeypatch):
     """No previous successful fit means there's nothing safe to fall back
     on (e.g. a one-shot eval fit with no warm start history) -- the overflow
