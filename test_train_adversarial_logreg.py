@@ -32,6 +32,7 @@ from train_adversarial_logreg import (
     _resolve_hidden_layers,
     _write_run_config,
     load_run_config,
+    train_steps,
 )
 
 
@@ -478,3 +479,66 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
     )
     assert result.returncode != 0
     assert "adv_config" in result.stderr + result.stdout
+
+
+class TestNoiseBlobReplay:
+    """The property the model-owned noise blob buys over the old gen-state
+    snapshot/reset dance (plans/model_noise_blob_plan.md): every forward_loss
+    call within one iteration -- including the explode-check and
+    explode-redo passes -- sees bit-identical noise, assertable directly
+    instead of relying on `gen` replay discipline."""
+
+    def test_explode_check_and_redo_see_identical_noise(self):
+        import torch
+
+        from model import ResidualMLP
+
+        model_config = _make_model_config(num_x=2, d_model=4, d_mlp=4, num_blocks=3)
+        model = ResidualMLP(model_config)
+        opt = torch.optim.AdamW(
+            model.parameters(), lr=1e3
+        )  # huge lr -> guaranteed explode
+        gen = torch.Generator().manual_seed(0)
+
+        adv_config, hidden_layers = load_run_config(
+            _file_fields(
+                penalty_layers=[1, 2],
+                resid_noise_std=0.1,
+                explode_factor=1e-6,  # any step counts as an explosion
+                batch_size=8,
+            ),
+            lam=0.0,
+            num_blocks=3,
+            config_path="unused.json",
+        )
+
+        seen_noise = []
+        real_forward = model.forward
+
+        def spy_forward(x_full, *args, noise=None, **kwargs):
+            seen_noise.append(noise)
+            return real_forward(x_full, *args, noise=noise, **kwargs)
+
+        model.forward = spy_forward
+
+        gen_iter = train_steps(
+            model,
+            opt,
+            gen,
+            probe=None,
+            adv_config=adv_config,
+            max_iters=1,
+            hidden_layers=hidden_layers,
+            start_iter=0,
+            affine=(torch.zeros(1), torch.zeros(1)),
+            probe_x=torch.zeros(1, 3),
+            probe_label=torch.zeros(1, dtype=torch.bool),
+            device="cpu",
+        )
+        record = next(gen_iter)
+
+        assert record.n_exploded == 1, "test expects the huge-lr step to explode"
+        # initial pass, explode-check pass, explode-redo pass.
+        assert len(seen_noise) == 3
+        for noise in seen_noise[1:]:
+            assert torch.equal(seen_noise[0], noise)

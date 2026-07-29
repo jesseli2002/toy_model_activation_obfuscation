@@ -503,6 +503,7 @@ def train_steps(
         lam_eff: float,
         probe_x: torch.Tensor,
         probe_label: torch.Tensor,
+        noise: torch.Tensor,
         *,
         retrain_probe: bool,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
@@ -510,17 +511,18 @@ def train_steps(
         (loss, l_task, l_probe).
 
         task: noisy pass -- this is what forbids shrinking c's encoding below
-        the noise floor (see plans/resid_stream_noise_plan.md). probe: clean
-        pass over the probe set, full resolution, so the probe can still
-        out-resolve the model; `retrain_probe` first advances the probe on
-        those activations and updates `affine`. Under lam=0 the probe pass is
-        skipped entirely (l_probe is nan) rather than paying for a value that
-        gets multiplied by zero.
+        the noise floor (see plans/resid_stream_noise_plan.md); `noise` is a
+        pre-drawn blob (see `model.generate_noise`) rather than a generator,
+        so callers can replay the identical noise across multiple calls
+        within one iteration (see the explode-check/redo passes below). probe:
+        clean pass over the probe set, full resolution, so the probe can
+        still out-resolve the model; `retrain_probe` first advances the probe
+        on those activations and updates `affine`. Under lam=0 the probe pass
+        is skipped entirely (l_probe is nan) rather than paying for a value
+        that gets multiplied by zero.
         """
         nonlocal affine
-        y_pred_full = model.forward(
-            x_task, noise_std=adv_config.resid_noise_std, generator=gen
-        )
+        y_pred_full = model.forward(x_task, noise=noise)
         l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
         if skip_probe:
             return l_task, l_task, torch.tensor(float("nan"))
@@ -585,19 +587,20 @@ def train_steps(
         else:
             lam_eff = adv_config.lam
 
-        # Snapshotted right before the first noise draw, so a detected
-        # explosion (below) can replay the IDENTICAL noise on the check/redo
-        # forwards by resetting to this state first, instead of consuming extra
-        # draws from `gen` that would desync every later iteration's noise from
-        # a run with --explode-factor disabled. Everything that draws for other
-        # purposes (batches above) must stay outside that replay window.
-        noise_gen_state = gen.get_state()
+        # Drawn once per iteration and reused verbatim across every
+        # forward_loss call below (initial, explode-check, explode-redo) --
+        # an explicit, replayable blob instead of snapshotting/resetting
+        # `gen`'s RNG state around the draw (see plans/model_noise_blob_plan.md).
+        noise = model.generate_noise(
+            adv_config.batch_size, adv_config.resid_noise_std, gen
+        )
         loss, l_task, l_probe = forward_loss(
             x_task,
             y,
             lam_eff,
             probe_x,
             probe_label,
+            noise,
             retrain_probe=it % adv_config.probe_retrain_interval == 0,
         )
         loss_before_step = loss.item()
@@ -614,10 +617,9 @@ def train_steps(
         optimizer_step(loss, adv_config.grad_clip)
 
         if adv_config.explode_factor > 0:
-            gen.set_state(noise_gen_state)  # replay the same noise as above
             with torch.no_grad():
                 loss_after, _, _ = forward_loss(
-                    x_task, y, lam_eff, probe_x, probe_label, retrain_probe=False
+                    x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=False
                 )
                 loss_after_step = loss_after.item()
 
@@ -630,13 +632,12 @@ def train_steps(
                 )
                 model.load_state_dict(pre_model_state)
                 opt.load_state_dict(pre_opt_state)
-                gen.set_state(noise_gen_state)  # redo must see the same noise too
 
                 # Fresh forward: the previous graph was freed by backward()
                 # above, and this is otherwise numerically the same
                 # pre-step state already used for l_task/l_probe/loss.
                 loss, l_task, l_probe = forward_loss(
-                    x_task, y, lam_eff, probe_x, probe_label, retrain_probe=False
+                    x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=False
                 )
                 optimizer_step(
                     loss, adv_config.grad_clip / adv_config.explode_clip_divisor

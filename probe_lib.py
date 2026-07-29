@@ -52,9 +52,10 @@ def capture_layers_dict(
 ) -> dict[int, torch.Tensor]:
     """Returns each requested layer's residual-stream activations, keyed by
     layer index, from a single shared forward pass. `noise_std`/`generator`
-    are passed straight through to `ResidualMLP.forward`."""
+    are passed straight through to `ResidualMLP.forward` (as its `noise`/
+    `generator` params)."""
     _, caches = model.forward(
-        x_full, return_cache=True, noise_std=noise_std, generator=generator
+        x_full, return_cache=True, noise=noise_std, generator=generator
     )
     return {i: caches[i] for i in layers}
 
