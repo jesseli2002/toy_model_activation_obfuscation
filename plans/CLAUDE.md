@@ -8,10 +8,8 @@ This directory contains plans for agents.
       Also makes architecture flags an error under --resume/--fork-from.
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
-index short. They document design rationale as of when they were written, not
-current project state -- file paths, flags, and checkpoints they mention may no
-longer exist. Only open one if you specifically need the history behind a past
-decision, and verify anything you find against current code before reusing it.
+index short. Only open one if you specifically need the history behind a past
+decision.
 
 When a plan is executed, don't forget to update this directory accordingly: move
-the completed plan into `plans/archive/` and update its entry (or remove it) here.
+the completed plan and entry into `plans/archive/`.
