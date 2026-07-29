@@ -715,7 +715,7 @@ def _linear_y_reconstruction(
     def _sample(n, noise_std=0.0):
         x_full, _ = sample_batch(n, num_x, generator=g, device=device)
         pred, caches = model.forward(
-            x_full, return_cache=True, noise_std=noise_std, generator=g
+            x_full, return_cache=True, noise=noise_std, generator=g
         )
         y = pred[:, :num_x]
         return {lyr: caches[lyr].cpu().numpy() for lyr in layers}, y.cpu().numpy()

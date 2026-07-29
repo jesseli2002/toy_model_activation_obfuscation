@@ -137,11 +137,29 @@ class ResidualMLP(nn.Module):
         model.load_state_dict(ck["model"])
         return model, ck
 
+    def generate_noise(
+        self,
+        batch_size: int,
+        noise_std: float,
+        generator: torch.Generator | None = None,
+    ) -> Float[Tensor, "num_blocks-1 batch d_model"]:
+        """Draw one noise blob covering every injection point (after each
+        block except the last -- see `forward`), pre-scaled by `noise_std` so
+        the caller can pass it straight to `forward`'s `noise` param and
+        replay it verbatim across multiple forward passes."""
+        param = next(self.parameters())
+        return noise_std * torch.randn(
+            (max(self.num_blocks - 1, 0), batch_size, self.d_model),
+            device=param.device,
+            dtype=param.dtype,
+            generator=generator,
+        )
+
     def forward(
         self,
         x_full: Float[Tensor, "batch d_in"],
         return_cache: bool = False,
-        noise_std: float = 0.0,
+        noise: Float[Tensor, "num_blocks-1 batch d_model"] | float | None = None,
         generator: torch.Generator | None = None,
     ) -> (
         Float[Tensor, "batch d_in"]
@@ -150,19 +168,28 @@ class ResidualMLP(nn.Module):
         """
         :param x_full: input batch.
         :param return_cache: also return the per-layer residual-stream caches.
-        :param noise_std: if > 0, adds absolute Gaussian noise to the residual
-            stream after every block except the last (caches 1..num_blocks-1).
-            0.0 (default) is bit-identical to the pre-noise forward.
-        :param generator: optional RNG generator for the noise.
+        :param noise: residual-stream noise added after every block except
+            the last (caches 1..num_blocks-1). `None` (default): no noise,
+            bit-identical to the pre-noise forward. A tensor (from
+            `generate_noise`): added directly, injection point i uses
+            `noise[i]` -- lets a caller replay the identical noise across
+            several forward passes. A float: treated as `noise_std` and drawn
+            fresh in-call via `generator` -- a quick-hack path for when
+            replayability doesn't matter.
+        :param generator: RNG generator for the fresh-draw (float `noise`)
+            path; unused otherwise.
         """
         r: Float[Tensor, "batch d_model"] = x_full @ self.W_E
         caches = [r]
         for i, block in enumerate(self.blocks):
             r = r + block(r)
-            if noise_std > 0.0 and i + 1 < self.num_blocks:
-                r = r + noise_std * torch.randn(
-                    r.shape, device=r.device, dtype=r.dtype, generator=generator
-                )
+            if noise is not None and i + 1 < self.num_blocks:
+                if isinstance(noise, torch.Tensor):
+                    r = r + noise[i]
+                else:
+                    r = r + noise * torch.randn(
+                        r.shape, device=r.device, dtype=r.dtype, generator=generator
+                    )
             caches.append(r)
         y: Float[Tensor, "batch d_in"] = r @ self.W_U
         if return_cache:
@@ -172,10 +199,8 @@ class ResidualMLP(nn.Module):
     def task_output(
         self,
         x_full: Float[Tensor, "batch d_in"],
-        noise_std: float = 0.0,
+        noise: Float[Tensor, "num_blocks-1 batch d_model"] | float | None = None,
         generator: torch.Generator | None = None,
     ) -> Float[Tensor, "batch num_x"]:
         """The first num_x outputs (the part the loss constrains)."""
-        return self.forward(x_full, noise_std=noise_std, generator=generator)[
-            :, : self.num_x
-        ]
+        return self.forward(x_full, noise=noise, generator=generator)[:, : self.num_x]
