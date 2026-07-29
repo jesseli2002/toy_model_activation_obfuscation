@@ -143,6 +143,10 @@ class TorchLogisticRegression:
 
         try:
             optimizer.step(closure)
+            # LBFGS has no non-finite guard of its own, so a bad trial step can
+            # leave w/b NaN and return normally -- same failure, same recovery.
+            if not (torch.isfinite(w).all() and torch.isfinite(b)):
+                raise RuntimeError("LBFGS step produced non-finite values (overflow)")
         except RuntimeError as e:
             if "overflow" not in str(e):
                 raise
@@ -160,8 +164,12 @@ class TorchLogisticRegression:
             self._optimizer = None  # so the next call builds a fresh one
             return self
 
-        self.coef_ = w.detach()
-        self.intercept_ = b.detach()
+        # clone(), not a bare detach(): a warm start reuses these very tensors
+        # as the optimizer's parameters and mutates them in place, so an
+        # aliasing coef_ would be corrupted by the failed step it is meant to
+        # be the fallback for. See PR #108.
+        self.coef_ = w.detach().clone()
+        self.intercept_ = b.detach().clone()
         return self
 
     def decision_function(self, X: Float[Tensor, "n d"]) -> Float[Tensor, " n"]:

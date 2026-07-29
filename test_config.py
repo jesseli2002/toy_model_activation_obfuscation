@@ -13,48 +13,7 @@ from config import (
     LogregRunConfig,
     ResidualMLPConfig,
 )
-
-
-def _make_model_config(**overrides) -> ResidualMLPConfig:
-    """ResidualMLPConfig's num_x/d_model/d_mlp/num_blocks have no Python
-    default (every caller must pin the architecture explicitly), so the
-    generic tests need a fully-specified instance."""
-    d = dict(num_x=4, d_model=8, d_mlp=4, num_blocks=3)
-    d.update(overrides)
-    return ResidualMLPConfig(**d)
-
-
-def _make_logreg_config() -> LogregAdversarialConfig:
-    """LogregAdversarialConfig's config-file-only fields have no Python
-    default (see plans/rare_flags_config_plan.md) -- unlike the other two
-    config classes below, `LogregAdversarialConfig()` alone isn't a valid
-    construction, so the generic tests need a fully-specified instance."""
-    return LogregAdversarialConfig(
-        lam=0.5,
-        penalty_layers=[1, 2],
-        lam_warmup_iters=0,
-        seed=1,
-        probe_C=1.0,
-        probe_init_iters=1000,
-        class_threshold=1.5,
-        probe_loss_kind="meandiff-relu",
-        probe_subsample=8,
-        probe_retrain_interval=16,
-        probe_resample_interval=512,
-        probe_loss_trim_frac=0.05,
-        resid_noise_std=0.1,
-        grad_clip=1.0,
-        x_p_outer=None,
-        x_threshold=1.0,
-        batch_size=4096,
-        lr=3e-3,
-        adam_eps=1e-8,
-        adam_beta2=0.999,
-        optimizer_kind="adamw",
-        explode_factor=0.0,
-        explode_clip_divisor=5.0,
-    )
-
+from conftest import _make_logreg_config, _make_model_config
 
 # (config class, a field whose _LEGACY_DEFAULTS value diverges from the
 # dataclass field default -- used to distinguish "backfilled from legacy"

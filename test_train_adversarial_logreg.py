@@ -15,12 +15,8 @@ from pathlib import Path
 
 import pytest
 
-from config import (
-    ForkedFrom,
-    LogregAdversarialConfig,
-    LogregRunConfig,
-    ResidualMLPConfig,
-)
+from config import ForkedFrom, LogregAdversarialConfig
+from conftest import _logreg_config_file_fields, _make_adv_config, _make_model_config
 from train_adversarial_logreg import (
     TrainRecord,
     _append_history,
@@ -34,14 +30,6 @@ from train_adversarial_logreg import (
     load_run_config,
     train_steps,
 )
-
-
-def _make_model_config(**overrides) -> ResidualMLPConfig:
-    """ResidualMLPConfig's num_x/d_model/d_mlp/num_blocks have no Python
-    default -- every caller must pin the architecture explicitly."""
-    d = dict(num_x=4, d_model=8, d_mlp=4, num_blocks=3)
-    d.update(overrides)
-    return ResidualMLPConfig(**d)
 
 
 def _make_record(**overrides):
@@ -181,41 +169,12 @@ def test_missing_arch_flag_on_fresh_run_exits_naming_the_flag(tmp_path):
     assert "--num-x" in result.stderr + result.stdout
 
 
-def _file_fields(**overrides) -> dict:
-    """A valid --config JSON file's contents (all config-file-only keys)."""
-    d = dict(
-        lam=0.5,
-        penalty_layers=[1, 2],
-        lam_warmup_iters=0,
-        seed=1,
-        probe_C=1.0,
-        probe_init_iters=1000,
-        class_threshold=1.5,
-        probe_loss_kind="meandiff-relu",
-        probe_subsample=8,
-        probe_retrain_interval=16,
-        probe_resample_interval=512,
-        probe_loss_trim_frac=0.05,
-        resid_noise_std=0.1,
-        grad_clip=1.0,
-        x_p_outer=None,
-        x_threshold=1.0,
-        batch_size=4096,
-        lr=3e-3,
-        adam_eps=1e-8,
-        adam_beta2=0.999,
-        optimizer_kind="adamw",
-        explode_factor=0.0,
-        explode_clip_divisor=5.0,
-    )
-    d.update(overrides)
-    return d
-
-
 class TestLoadRunConfig:
     def test_round_trip(self):
         cfg, hidden_layers = load_run_config(
-            _file_fields(lam=0.7), num_blocks=4, config_path="unused.json"
+            _logreg_config_file_fields(lam=0.7),
+            num_blocks=4,
+            config_path="unused.json",
         )
         assert cfg.lam == 0.7
         assert cfg.penalty_layers == [1, 2]
@@ -225,7 +184,7 @@ class TestLoadRunConfig:
 
     def test_all_resolves_against_num_blocks(self):
         cfg, hidden_layers = load_run_config(
-            _file_fields(penalty_layers="all"),
+            _logreg_config_file_fields(penalty_layers="all"),
             num_blocks=4,
             config_path="unused.json",
         )
@@ -235,38 +194,32 @@ class TestLoadRunConfig:
     def test_invalid_penalty_layer_raises_system_exit(self):
         with pytest.raises(SystemExit):
             load_run_config(
-                _file_fields(penalty_layers=[0]),
+                _logreg_config_file_fields(penalty_layers=[0]),
                 num_blocks=4,
                 config_path="unused.json",
             )
 
     def test_missing_penalty_layers_raises_system_exit_naming_the_key(self):
-        file_fields = _file_fields()
+        file_fields = _logreg_config_file_fields()
         del file_fields["penalty_layers"]
         with pytest.raises(SystemExit, match="penalty_layers"):
             load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
     def test_missing_key_raises_system_exit_naming_the_key(self):
-        file_fields = _file_fields()
+        file_fields = _logreg_config_file_fields()
         del file_fields["probe_C"]
         with pytest.raises(SystemExit, match="probe_C"):
             load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
     def test_missing_key_error_names_config_path(self):
-        file_fields = _file_fields()
+        file_fields = _logreg_config_file_fields()
         del file_fields["seed"]
         with pytest.raises(SystemExit, match="my_config.json"):
             load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
 
-def _make_adv_config(**overrides) -> LogregAdversarialConfig:
-    d = _file_fields()
-    d.update(overrides)
-    return LogregAdversarialConfig(**d)
-
-
 def _write_input_config(path: Path, **overrides) -> Path:
-    d = _file_fields(**overrides)
+    d = _logreg_config_file_fields(**overrides)
     path.write_text(json.dumps(d))
     return path
 
@@ -430,7 +383,7 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
     key) must fail loudly under --resume, not raise a raw KeyError."""
     script = Path(__file__).parent / "train_adversarial_logreg.py"
     config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps(_file_fields()))
+    config_path.write_text(json.dumps(_logreg_config_file_fields()))
     fresh = subprocess.run(
         [
             sys.executable,
@@ -495,7 +448,7 @@ class TestNoiseBlobReplay:
         gen = torch.Generator().manual_seed(0)
 
         adv_config, hidden_layers = load_run_config(
-            _file_fields(
+            _logreg_config_file_fields(
                 lam=0.0,
                 penalty_layers=[1, 2],
                 resid_noise_std=0.1,
