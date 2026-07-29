@@ -28,11 +28,11 @@ Three run modes (see plans/rare_flags_config_plan.md for the full design):
     is read once for a sanity check against the restored config (a mismatch
     warns but never rewrites the file) -- not for resolving hyperparameters.
   - `--fork-from <source_tag>` (with `--tag <new_tag>`): branches a new
-    experiment off `source_tag`'s checkpoint -- architecture, weights,
-    optimizer, and iteration count all come from there, same as `--resume` --
-    but the adversarial-objective hyperparameters are freshly resolved
-    exactly like a fresh run. `runs/<new_tag>/config.json` additionally
-    records `forked_from`.
+    experiment off `source_tag`'s checkpoint -- architecture, weights, and
+    iteration count come from there, same as `--resume` -- but the optimizer
+    (including its state, not just its hyperparameters) and the rest of the
+    adversarial-objective hyperparameters are freshly resolved exactly like a
+    fresh run. `runs/<new_tag>/config.json` additionally records `forked_from`.
 
 Two run-directory artifacts are written once, at tag-creation time, and are
 read-only thereafter for the lifetime of that tag (see `LogregRunConfig` for
@@ -207,6 +207,7 @@ if __name__ == "__main__":
 
 import warnings
 
+import optimi
 import torch
 from sklearn.exceptions import ConvergenceWarning
 
@@ -341,17 +342,62 @@ def _check_config_json(
         )
 
 
-def _restore_checkpoint(ckpt_path: str, device):
-    """Load a full checkpoint -- architecture, weights, optimizer state, and
-    iteration count -- shared by --resume (source: args.tag) and --fork-from
-    (source: args.fork_from). The two differ only in WHICH tag's checkpoint
-    feeds this, not in what gets restored here. Returns (model, opt,
-    start_iter, best_loss, rck) so callers can pull any other checkpoint
-    field they need (e.g. --resume rebuilds adv_config from rck)."""
+def _make_optimizer(
+    params, optimizer_kind: str, *, lr: float, eps: float, beta2: float
+) -> torch.optim.Optimizer:
+    """Construct the optimizer named by `LogregAdversarialConfig.optimizer_kind`."""
+    if optimizer_kind == "adamw":
+        return torch.optim.AdamW(params, lr=lr, eps=eps, betas=(0.9, beta2))
+    elif optimizer_kind == "stableadamw":
+        # triton/kahan_sum are irrelevant here (plain fp32 training, not
+        # low-precision) -- disabled explicitly rather than left to
+        # autodetection.
+        return optimi.StableAdamW(
+            params, lr=lr, eps=eps, betas=(0.9, beta2), triton=False, kahan_sum=False
+        )
+    else:
+        raise ValueError(f"unknown optimizer_kind {optimizer_kind!r}")
+
+
+def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = True):
+    """Load a full checkpoint -- architecture, weights, and iteration count,
+    plus (if `restore_optimizer`) optimizer state -- shared by --resume
+    (source: args.tag) and --fork-from (source: args.fork_from). Returns
+    (model, opt, start_iter, best_loss, rck) so callers can pull any other
+    checkpoint field they need (e.g. --resume rebuilds adv_config from rck).
+
+    `restore_optimizer=False` for --fork-from: like every other adversarial
+    hyperparameter (lr, adam_eps, adam_beta2, ...), optimizer_kind is freshly
+    resolved from the new --config rather than inherited from the source tag,
+    so there's no single optimizer state (shape, momentum) that's guaranteed
+    to still make sense -- the caller builds a fresh optimizer from that
+    freshly-resolved adv_config instead. --resume, by contrast, keeps the same
+    adv_config as the checkpoint, so restoring optimizer state is exact. This
+    also means only restore_optimizer=True requires rck to have an
+    `adv_config` key -- --fork-from can still restore an (architecture,
+    weights, iter count) checkpoint that predates that field."""
     model, rck = ResidualMLP.load(ckpt_path, map_location=device)
     model = model.to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=1.0)  # lr/eps/betas set by caller
-    opt.load_state_dict(rck["opt"])
+    if restore_optimizer:
+        if "adv_config" not in rck:
+            raise SystemExit(
+                f"[error] {ckpt_path} predates the nested adv_config checkpoint "
+                f"layout and cannot be --resume'd. Start a fresh run, or "
+                f"--fork-from it instead."
+            )
+        # The checkpoint's OWN historical config -- not the caller's
+        # freshly-resolved adv_config, which for --fork-from may differ.
+        hist_adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
+        opt = _make_optimizer(
+            model.parameters(),
+            hist_adv_config.optimizer_kind,
+            lr=hist_adv_config.lr,
+            eps=hist_adv_config.adam_eps,
+            beta2=hist_adv_config.adam_beta2,
+        )
+        opt.load_state_dict(rck["opt"])
+    else:
+        opt = None
     start_iter = rck["iter"]
     best_loss = rck.get("best_loss", float("inf"))
     return model, opt, start_iter, best_loss, rck
@@ -555,9 +601,11 @@ def train_steps(
             # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
             for block in model.blocks:
                 torch.nn.utils.clip_grad_norm_(block.parameters(), grad_clip)
-        # TODO(perf/quality): grad_clip/adam_eps/adam_beta2 are band-aids
-        # for instability; StableAdamW (update clipping) might be a
-        # cleaner fix -- see PR #77.
+        # grad_clip/adam_eps/adam_beta2 are band-aids for instability;
+        # optimizer_kind="stableadamw" (update clipping) is a cleaner fix --
+        # see PR #77 for the original discussion. Whether grad_clip/adam_eps
+        # /adam_beta2 can now be relaxed under stableadamw is still an open,
+        # empirical question (not addressed by adding the option itself).
         opt.step()
 
     for it in range(start_iter, max_iters):
@@ -720,13 +768,9 @@ def main(args):
     hist_path = _history_path(args.tag)
 
     if args.resume:
+        # (raises if last_path predates the nested adv_config checkpoint
+        # layout -- see _restore_checkpoint)
         model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
-        if "adv_config" not in rck:
-            raise SystemExit(
-                f"[error] {last_path} predates the nested adv_config checkpoint "
-                f"layout and cannot be --resume'd. Start a fresh run, or "
-                f"--fork-from it instead."
-            )
         adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
         hidden_layers = adv_config.penalty_layers
         # history.jsonl is append-only: this run's earlier entries are
@@ -747,8 +791,8 @@ def main(args):
 
         if args.fork_from is not None:
             source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
-            model, opt, start_iter, best_loss, rck = _restore_checkpoint(
-                source_ckpt_path, device
+            model, _, start_iter, best_loss, rck = _restore_checkpoint(
+                source_ckpt_path, device, restore_optimizer=False
             )
             # One-time seed write (not per-iteration, so no quadratic cost):
             # copy source_tag's pre-fork entries into the new tag's own
@@ -779,13 +823,16 @@ def main(args):
             num_blocks=model.config.num_blocks,
             config_path=args.config,
         )
-        if args.fork_from is None:
-            opt = torch.optim.AdamW(
-                model.parameters(),
-                lr=adv_config.lr,
-                eps=adv_config.adam_eps,
-                betas=(0.9, adv_config.adam_beta2),
-            )
+        # Always freshly built (never inherited from a --fork-from source),
+        # same as every other adversarial hyperparameter above -- see
+        # `_restore_checkpoint`'s restore_optimizer=False note.
+        opt = _make_optimizer(
+            model.parameters(),
+            adv_config.optimizer_kind,
+            lr=adv_config.lr,
+            eps=adv_config.adam_eps,
+            beta2=adv_config.adam_beta2,
+        )
         _write_run_config(
             args.tag,
             model.config,
@@ -801,16 +848,6 @@ def main(args):
             f"layers). Nothing to hide against."
         )
 
-    # --resume/--fork-from restore the optimizer's own state_dict, which
-    # includes the SOURCE run's lr/eps/betas -- override with this
-    # invocation's adv_config, the only case where these differ (--fork-from
-    # with a new --config). A no-op for a fresh run (opt was already built
-    # with them) and for --resume (adv_config comes from this same
-    # checkpoint, so the values are identical either way).
-    for pg in opt.param_groups:
-        pg["lr"] = adv_config.lr
-        pg["eps"] = adv_config.adam_eps
-        pg["betas"] = (0.9, adv_config.adam_beta2)
     torch.manual_seed(adv_config.seed)
 
     gen = torch.Generator(device=device).manual_seed(adv_config.seed + 1)
@@ -851,7 +888,8 @@ def main(args):
         f"probe_loss_trim_frac={adv_config.probe_loss_trim_frac} "
         f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
         f"lr={adv_config.lr} adam_eps={adv_config.adam_eps} "
-        f"adam_beta2={adv_config.adam_beta2} explode_factor={adv_config.explode_factor} "
+        f"adam_beta2={adv_config.adam_beta2} optimizer_kind={adv_config.optimizer_kind} "
+        f"explode_factor={adv_config.explode_factor} "
         f"explode_clip_divisor={adv_config.explode_clip_divisor} "
         f"device={device} iters {start_iter}->{args.max_iters}"
     )

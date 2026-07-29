@@ -3,7 +3,7 @@
     2
   ],
   "lam_warmup_iters": 0,
-  "seed": 913768,
+  "seed": 10000,
   "probe_C": 1.0,
   "probe_init_iters": 1000,
   "class_threshold": 1.5,
@@ -20,6 +20,7 @@
   "lr": 0.003,
   "adam_eps": 1e-5,
   "adam_beta2": 0.99,
+  "optimizer_kind": "stableadamw",
   "explode_factor": 3.0,
   "explode_clip_divisor": 20
 }
