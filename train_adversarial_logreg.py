@@ -550,6 +550,10 @@ def train_steps(
     task batch below which resamples fresh each iteration."""
     num_x = model.config.num_x
     n_exploded = 0
+    # Hysteresis for explode_reset_first_moment (config.py): the iteration of
+    # the last first-moment reset, or None if none has happened yet this
+    # process invocation. See adv_config.explode_reset_cooldown_iters.
+    last_reset_iter: int | None = None
     # Losses from the explode_window_iters-1 completed iterations before the
     # current one (post revert-and-retry if one happened), oldest first --
     # combined with the current iteration's own pre-step loss below, this
@@ -732,8 +736,13 @@ def train_steps(
                 loss, l_task, l_probe = forward_loss(
                     x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=False
                 )
-                if adv_config.explode_reset_first_moment:
+                do_reset = adv_config.explode_reset_first_moment and (
+                    last_reset_iter is None
+                    or it - last_reset_iter >= adv_config.explode_reset_cooldown_iters
+                )
+                if do_reset:
                     optimizer_step(loss, adv_config.grad_clip, reset_first_moment=True)
+                    last_reset_iter = it
                 else:
                     optimizer_step(
                         loss, adv_config.grad_clip / adv_config.explode_clip_divisor
@@ -945,6 +954,7 @@ def main(args):
         f"explode_factor={adv_config.explode_factor} "
         f"explode_clip_divisor={adv_config.explode_clip_divisor} "
         f"explode_reset_first_moment={adv_config.explode_reset_first_moment} "
+        f"explode_reset_cooldown_iters={adv_config.explode_reset_cooldown_iters} "
         f"device={device} iters {start_iter}->{args.max_iters}"
     )
 

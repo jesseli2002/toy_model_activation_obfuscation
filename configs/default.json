@@ -26,5 +26,6 @@
   "explode_factor": 3.0,
   "explode_clip_divisor": 20,
   "explode_window_iters": 10,
-  "explode_reset_first_moment": false
+  "explode_reset_first_moment": false,
+  "explode_reset_cooldown_iters": 50
 }

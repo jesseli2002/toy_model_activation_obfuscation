@@ -222,6 +222,12 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # stale exp_avg built up before the spike can itself push the redo in a
     # bad direction, which tighter clipping alone doesn't fix.
     explode_reset_first_moment: bool
+    # Hysteresis on the above: a reset only happens if the last one (if any)
+    # was at least this many iterations ago; otherwise the redo falls back to
+    # the tighter-clip strategy. Guards against repeated resets thrashing the
+    # momentum estimate if explosions cluster close together. Ignored when
+    # explode_reset_first_moment is False.
+    explode_reset_cooldown_iters: int
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
@@ -251,6 +257,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "explode_clip_divisor": 5.0,  # inert when explode_factor is 0
         "explode_window_iters": 1,  # legacy runs only compared to the immediately preceding step
         "explode_reset_first_moment": False,  # legacy runs predate this redo strategy
+        "explode_reset_cooldown_iters": 50,  # inert when explode_reset_first_moment is False
     }
 
 

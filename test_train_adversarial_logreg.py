@@ -554,6 +554,105 @@ class TestExplodeResetFirstMoment:
             if p.grad is not None:
                 assert torch.equal(opt.state[p]["exp_avg"], p.grad)
 
+    def test_cooldown_skips_reset_until_it_elapses(self, monkeypatch):
+        """explode_reset_cooldown_iters: a reset only happens once enough
+        iterations have passed since the last one; otherwise the redo falls
+        back to the tighter-clip strategy. Verified by recording the
+        max_norm each redo-pass clip_grad_norm_ call uses -- the reset
+        strategy redoes with the original grad_clip, the fallback with
+        grad_clip / explode_clip_divisor -- across 3 forced-explode
+        iterations with cooldown=2 (reset, fallback, reset)."""
+        import torch
+
+        import train_adversarial_logreg as tal
+        from model import ResidualMLP
+
+        num_x = 1
+        batch_size = 4
+        num_blocks = 2
+
+        def fake_sample_batch(batch_size, num_x, **kwargs):
+            return (
+                torch.zeros(batch_size, num_x),
+                torch.zeros(batch_size, num_x),
+            )
+
+        monkeypatch.setattr(tal, "sample_batch", fake_sample_batch)
+
+        # Every iteration: initial forward (loss_before=1.0), explode-check
+        # forward (loss_after=100.0, always over explode_factor=2.0), redo
+        # forward (value unused by explode-detection).
+        desired_losses = [1.0, 100.0, 50.0] * 3
+        call_idx = [0]
+
+        def fake_forward(x_task, noise=None, **kwargs):
+            val = desired_losses[call_idx[0]]
+            call_idx[0] += 1
+            return torch.full((x_task.shape[0], num_x), val**0.5, requires_grad=True)
+
+        clip_calls = []
+        real_clip = torch.nn.utils.clip_grad_norm_
+
+        def spy_clip(parameters, max_norm, *args, **kwargs):
+            clip_calls.append(max_norm)
+            return real_clip(parameters, max_norm, *args, **kwargs)
+
+        monkeypatch.setattr(torch.nn.utils, "clip_grad_norm_", spy_clip)
+
+        model_config = _make_model_config(
+            num_x=num_x, d_model=4, d_mlp=4, num_blocks=num_blocks
+        )
+        model = ResidualMLP(model_config)
+        model.forward = fake_forward
+        opt = torch.optim.AdamW(model.parameters(), lr=1e-3)
+        gen = torch.Generator().manual_seed(0)
+
+        adv_config, hidden_layers = load_run_config(
+            _logreg_config_file_fields(
+                lam=0.0,
+                penalty_layers=[1],
+                batch_size=batch_size,
+                explode_factor=2.0,
+                grad_clip=1.0,
+                explode_clip_divisor=10.0,
+                explode_reset_first_moment=True,
+                explode_reset_cooldown_iters=2,
+            ),
+            num_blocks=num_blocks,
+            config_path="unused.json",
+        )
+
+        gen_iter = train_steps(
+            model,
+            opt,
+            gen,
+            probe=None,
+            adv_config=adv_config,
+            max_iters=3,
+            hidden_layers=hidden_layers,
+            start_iter=0,
+            affine=(torch.zeros(1), torch.zeros(1)),
+            probe_x=torch.zeros(1, 3),
+            probe_label=torch.zeros(1, dtype=torch.bool),
+            device="cpu",
+        )
+        records = list(gen_iter)
+        assert [r.n_exploded for r in records] == [1, 2, 3], (
+            "test expects every iteration to explode"
+        )
+
+        # 4 clip_grad_norm_ calls/iteration (num_blocks initial + num_blocks
+        # redo); the redo-pass max_norm is what distinguishes the strategy.
+        assert len(clip_calls) == 3 * 2 * num_blocks
+        redo_clips_per_iter = [
+            clip_calls[4 * it + num_blocks] for it in range(3)
+        ]
+        assert redo_clips_per_iter == [
+            1.0,  # iter 0: no prior reset -> reset, original grad_clip
+            0.1,  # iter 1: 1 - 0 = 1 < cooldown(2) -> tighter-clip fallback
+            1.0,  # iter 2: 2 - 0 = 2 >= cooldown(2) -> reset again
+        ]
+
 
 class TestExplodeWindow:
     """explode_window_iters (config.py's LogregAdversarialConfig): comparing
