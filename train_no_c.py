@@ -15,8 +15,10 @@ uses the true c. Residual-stream noise is on, unlike the analytic derivation:
 noise can only raise the achievable loss, so the bound stays one-sided.
 
 There is no probe and no adversarial penalty here -- pure task training. The
-output is the per-iteration loss log; there's no checkpoint and no pass/fail
-check.
+output is the per-iteration loss log plus a periodic `last.pt` checkpoint
+(same on-disk layout as `train_adversarial_logreg.py`'s minus the
+adversarial-only fields, so `adversarial_report.py --tag <tag>` still loads
+it); there's no pass/fail check.
 
 Deliberately standalone rather than a mode of train_adversarial_logreg.py:
 every hyperparameter besides the architecture is a module-level constant
@@ -30,13 +32,15 @@ import json
 import os
 
 # --- hyperparameters (edit here; deliberately not configurable, see docstring) ---
-SEED = 913768
+SEED = 10000
 BATCH_SIZE = 4096 * 4
 LR = 3e-3
 ADAM_EPS = 1e-5
-ADAM_BETA2 = 0.99
+ADAM_BETA1 = 0.7
+ADAM_BETA2 = 0.97
 GRAD_CLIP = 1.0  # per-block grad-norm clip; 0 disables
 RESID_NOISE_STD = 0.1
+STABLEADAMW_D = 1
 # Architecture knobs other than the four CLI dimensions.
 ACTIVATION = "gelu"
 LEAKY_RELU_SLOPE = 0.0
@@ -62,6 +66,7 @@ def parse_args():
     p.add_argument("--num-blocks", type=int, required=True)
     p.add_argument("--max-iters", type=int, default=20_000)
     p.add_argument("--log-interval", type=int, default=100)
+    p.add_argument("--ckpt-interval", type=int, default=1000)
     p.add_argument("--tag", type=str, default="no-c")
     return p.parse_args()
 
@@ -78,7 +83,9 @@ import config
 from analytic import no_c_task_loss
 from data import sample_batch
 from model import ResidualMLP
-from paths import log_dir
+from paths import ckpt_dir, log_dir
+
+from stableadamw import StableAdamW
 
 
 def blind_c(
@@ -138,8 +145,12 @@ def main(args):
             layer_norm=LAYER_NORM,
         )
     ).to(device)
-    opt = torch.optim.AdamW(
-        model.parameters(), lr=LR, eps=ADAM_EPS, betas=(0.9, ADAM_BETA2)
+    opt = StableAdamW(
+        model.parameters(),
+        lr=LR,
+        eps=ADAM_EPS,
+        betas=(ADAM_BETA1, ADAM_BETA2),
+        d=STABLEADAMW_D,
     )
 
     bound = no_c_task_loss(
@@ -155,6 +166,9 @@ def main(args):
     out_dir = log_dir(args.tag)
     os.makedirs(out_dir, exist_ok=True)
     hist_path = os.path.join(out_dir, "no_c_history.jsonl")
+    out_ckpt_dir = ckpt_dir(args.tag)
+    os.makedirs(out_ckpt_dir, exist_ok=True)
+    last_path = os.path.join(out_ckpt_dir, "last.pt")
     print(f"[run] tag={args.tag} device={device} iters={args.max_iters}")
 
     best = float("inf")
@@ -190,8 +204,13 @@ def main(args):
                 )
             hist.write(json.dumps(entry) + "\n")
 
+            if it % args.ckpt_interval == 0 and it > 0:
+                model.save(last_path, iter=it, best_loss=best)
+
+    model.save(last_path, iter=args.max_iters - 1, best_loss=best)
     print(f"[done] best per-iter loss {best:.6e}  vs bound {bound:.6e}")
-    print(f"[done] loss log in {hist_path}")
+    print(f"[done] loss log in {hist_path}, checkpoint in {last_path}")
+    print(f"[next] python adversarial_report.py --tag {args.tag}")
 
 
 if __name__ == "__main__":
