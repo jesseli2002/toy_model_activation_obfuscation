@@ -25,5 +25,6 @@
   "stableadamw_d": 1.0,
   "explode_factor": 3.0,
   "explode_clip_divisor": 20,
-  "explode_window_iters": 10
+  "explode_window_iters": 10,
+  "explode_reset_first_moment": false
 }

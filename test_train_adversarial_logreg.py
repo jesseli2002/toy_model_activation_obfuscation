@@ -491,6 +491,70 @@ class TestNoiseBlobReplay:
             assert torch.equal(seen_noise[0], noise)
 
 
+class TestExplodeResetFirstMoment:
+    """explode_reset_first_moment (config.py's LogregAdversarialConfig): on an
+    explode-redo, reset each param's Adam exp_avg to the freshly computed
+    gradient and redo with the original grad_clip, instead of redoing with a
+    tighter clip."""
+
+    def test_redo_sets_exp_avg_to_current_grad(self):
+        import torch
+
+        from model import ResidualMLP
+
+        model_config = _make_model_config(num_x=2, d_model=4, d_mlp=4, num_blocks=3)
+        model = ResidualMLP(model_config)
+        opt = torch.optim.AdamW(
+            model.parameters(), lr=1e3
+        )  # huge lr -> guaranteed explode
+        gen = torch.Generator().manual_seed(0)
+
+        # Pre-populate optimizer state as if a prior (non-exploding) step had
+        # already run -- otherwise the explode-redo below hits AdamW's
+        # lazy-init path (len(state) == 0), which reinitializes exp_avg to
+        # its usual (1 - beta1) * grad rather than exercising the reset.
+        # Every real explosion happens on iteration >= 1, where this is
+        # already the case.
+        for p in model.parameters():
+            opt.state[p]["exp_avg"] = torch.zeros_like(p)
+            opt.state[p]["exp_avg_sq"] = torch.zeros_like(p)
+            opt.state[p]["step"] = torch.tensor(0.0)
+
+        adv_config, hidden_layers = load_run_config(
+            _logreg_config_file_fields(
+                lam=0.0,
+                penalty_layers=[1, 2],
+                resid_noise_std=0.1,
+                explode_factor=1e-6,  # any step counts as an explosion
+                batch_size=8,
+                explode_reset_first_moment=True,
+            ),
+            num_blocks=3,
+            config_path="unused.json",
+        )
+
+        gen_iter = train_steps(
+            model,
+            opt,
+            gen,
+            probe=None,
+            adv_config=adv_config,
+            max_iters=1,
+            hidden_layers=hidden_layers,
+            start_iter=0,
+            affine=(torch.zeros(1), torch.zeros(1)),
+            probe_x=torch.zeros(1, 3),
+            probe_label=torch.zeros(1, dtype=torch.bool),
+            device="cpu",
+        )
+        record = next(gen_iter)
+
+        assert record.n_exploded == 1, "test expects the huge-lr step to explode"
+        for p in model.parameters():
+            if p.grad is not None:
+                assert torch.equal(opt.state[p]["exp_avg"], p.grad)
+
+
 class TestExplodeWindow:
     """explode_window_iters (config.py's LogregAdversarialConfig): comparing
     against the smallest loss in a window of recent iterations, not just this

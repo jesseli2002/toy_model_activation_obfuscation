@@ -215,6 +215,13 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     explode_factor: float
     explode_clip_divisor: float
     explode_window_iters: int
+    # Redo strategy when an explosion is detected. If True, redo the step
+    # with the optimizer's first-moment estimate (exp_avg) reset to the
+    # freshly computed gradient, using the original (undivided) grad_clip,
+    # instead of dividing grad_clip by explode_clip_divisor. Rationale: a
+    # stale exp_avg built up before the spike can itself push the redo in a
+    # bad direction, which tighter clipping alone doesn't fix.
+    explode_reset_first_moment: bool
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
@@ -243,6 +250,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "explode_factor": 0.0,  # legacy runs had no explode-detection
         "explode_clip_divisor": 5.0,  # inert when explode_factor is 0
         "explode_window_iters": 1,  # legacy runs only compared to the immediately preceding step
+        "explode_reset_first_moment": False,  # legacy runs predate this redo strategy
     }
 
 

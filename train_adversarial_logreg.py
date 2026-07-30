@@ -615,13 +615,23 @@ def train_steps(
         )
         return lam_eff * l_probe + (1 - lam_eff) * l_task, l_task, l_probe
 
-    def optimizer_step(loss: torch.Tensor, grad_clip: float) -> None:
+    def optimizer_step(
+        loss: torch.Tensor, grad_clip: float, reset_first_moment: bool = False
+    ) -> None:
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if grad_clip > 0:
             # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
             for block in model.blocks:
                 torch.nn.utils.clip_grad_norm_(block.parameters(), grad_clip)
+        if reset_first_moment:
+            # Explode-redo alternative to a tighter clip -- see
+            # LogregAdversarialConfig.explode_reset_first_moment. "exp_avg" is
+            # the first-moment key both torch.optim.AdamW and StableAdamW use.
+            for group in opt.param_groups:
+                for p in group["params"]:
+                    if p.grad is not None and p in opt.state:
+                        opt.state[p]["exp_avg"].copy_(p.grad)
         # grad_clip/adam_eps/adam_beta2 are band-aids for instability;
         # optimizer_kind="stableadamw" (update clipping) is a cleaner fix --
         # see PR #77 for the original discussion. Whether grad_clip/adam_eps
@@ -722,9 +732,12 @@ def train_steps(
                 loss, l_task, l_probe = forward_loss(
                     x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=False
                 )
-                optimizer_step(
-                    loss, adv_config.grad_clip / adv_config.explode_clip_divisor
-                )
+                if adv_config.explode_reset_first_moment:
+                    optimizer_step(loss, adv_config.grad_clip, reset_first_moment=True)
+                else:
+                    optimizer_step(
+                        loss, adv_config.grad_clip / adv_config.explode_clip_divisor
+                    )
 
             recent_losses.append(loss.item())
 
@@ -931,6 +944,7 @@ def main(args):
         f"stableadamw_d={adv_config.stableadamw_d} "
         f"explode_factor={adv_config.explode_factor} "
         f"explode_clip_divisor={adv_config.explode_clip_divisor} "
+        f"explode_reset_first_moment={adv_config.explode_reset_first_moment} "
         f"device={device} iters {start_iter}->{args.max_iters}"
     )
 
