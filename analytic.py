@@ -201,6 +201,80 @@ def reference_task_losses(
     }
 
 
+def no_c_task_loss(
+    x_low: float,
+    x_high: float,
+    c_low: float,
+    c_high: float,
+    x_p_outer: float | None = None,
+    x_threshold: float = 1.0,
+) -> float:
+    """Analytic minimum per-coordinate L_task over ALL predictors that see x
+    but not c -- i.e. a floor no c-blind function can beat, so a model scoring
+    below it demonstrably reads c.
+
+    Since c is independent of x, the best such predictor is f(x) = E_c[y] and
+    its loss is E_x[Var_c(sat(x,-c,c))], which this integrates exactly (no
+    residual-stream noise in the model; the first block can scale the signal
+    up arbitrarily, so noise imposes no extra floor here). Compare `clamp` in
+    reference_task_losses, which is the same idea restricted to the
+    best-single-threshold clip and hence strictly worse.
+
+    x_p_outer/x_threshold mirror data.sample_batch's optional |x|-biased
+    sampling (None = plain uniform); they reweight x's density and so change
+    the floor.
+    """
+    assert x_low == -x_high and 0 < c_low <= c_high <= x_high
+    x, c = sp.symbols("x c", real=True)
+    xh = sp.nsimplify(x_high)
+    cl, ch = sp.nsimplify(c_low), sp.nsimplify(c_high)
+
+    def avg_c(expr, lo, hi):
+        """E over the sub-range [lo,hi] of c ~ U[cl,ch] (unnormalized by the
+        sub-range's own width -- the pieces below sum to a full expectation)."""
+        return sp.integrate(expr, (c, lo, hi)) / (ch - cl)
+
+    # sat(x,-c,c) is odd in x, so Var_c is even: integrate over x >= 0 and
+    # double. There sat = min(x,c), splitting on where x sits w.r.t. [cl,ch].
+    regions = []  # (x_lo, x_hi, Var_c(min(x,c)))
+    for lo, hi, mean, sq in [
+        (sp.Integer(0), cl, x, x**2),
+        (
+            cl,
+            ch,
+            avg_c(c, cl, x) + avg_c(x, x, ch),
+            avg_c(c**2, cl, x) + avg_c(x**2, x, ch),
+        ),
+        (ch, xh, avg_c(c, cl, ch), avg_c(c**2, cl, ch)),
+    ]:
+        regions.append((lo, hi, sp.simplify(sq - mean**2)))
+
+    # x's density on x > 0 (symmetric), piecewise-constant; `breaks` are where
+    # it switches, so the x-integrals below can be split there.
+    if x_p_outer is None:
+        breaks = []
+
+        def density(_lo, _hi):
+            return 1 / (2 * xh)
+
+    else:
+        assert 0.0 <= x_p_outer <= 1.0 and 0 < x_threshold < x_high
+        p_out = sp.nsimplify(x_p_outer)
+        t = sp.nsimplify(x_threshold)
+        breaks = [t]
+
+        def density(lo, hi):
+            inner = (lo + hi) / 2 < t
+            return (1 - p_out) / (2 * t) if inner else p_out / (2 * (xh - t))
+
+    total = sp.Integer(0)
+    for lo, hi, var in regions:
+        edges = sorted({lo, hi} | {b for b in breaks if lo < b < hi})
+        for a, b in zip(edges, edges[1:]):
+            total += 2 * density(a, b) * sp.integrate(var, (x, a, b))
+    return float(sp.simplify(total))
+
+
 def _verify_model(
     num_x: int = 32,
     d_model: int = 512,
