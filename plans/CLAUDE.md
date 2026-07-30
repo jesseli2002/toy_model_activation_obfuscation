@@ -1,5 +1,11 @@
 This directory contains plans for agents.
 
+- dummy_plan.md
+    - Not actually a real plan, just an example to show syntax of this index: list the
+      plan's filename, then one to three sentences about it indented below.
+      KEEP this entry even once every plan below is finished/archived and this
+      list is otherwise empty -- it's the format documentation, not a stale
+      leftover.
 - adversarial_report_docs_plan.md
     - Drop the stale "Step 3" framing from `adversarial_report.py`'s module
       docstring and report header; trim two docstrings that narrate
