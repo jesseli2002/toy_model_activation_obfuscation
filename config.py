@@ -203,7 +203,8 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # and if it jumped by more than explode_factor x the smallest loss seen
     # in the last explode_window_iters iterations (explode_window_iters=1
     # compares only against this iteration's own pre-step loss), undo the
-    # step (model + optimizer state) and redo it with grad_clip divided by
+    # step (model + optimizer state) and redo it with grad_clip (or, under
+    # optimizer_kind="stableadamw", stableadamw_d) divided by
     # explode_clip_divisor. Comparing against a window rather than just this
     # iteration's own pre-step loss catches gradual multi-step creep (e.g.
     # loss roughly doubling on several consecutive steps, each one under

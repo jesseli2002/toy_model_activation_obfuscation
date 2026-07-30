@@ -615,7 +615,9 @@ def train_steps(
         )
         return lam_eff * l_probe + (1 - lam_eff) * l_task, l_task, l_probe
 
-    def optimizer_step(loss: torch.Tensor, grad_clip: float) -> None:
+    def optimizer_step(
+        loss: torch.Tensor, grad_clip: float, d_override: float | None = None
+    ) -> None:
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if grad_clip > 0:
@@ -627,7 +629,18 @@ def train_steps(
         # see PR #77 for the original discussion. Whether grad_clip/adam_eps
         # /adam_beta2 can now be relaxed under stableadamw is still an open,
         # empirical question (not addressed by adding the option itself).
-        opt.step()
+        if d_override is not None:
+            # Temporarily tighten StableAdamW's update-clipping threshold for
+            # just this step (used by the explode-redo below), rather than
+            # falling back to grad_clip -- see LogregAdversarialConfig.explode_factor.
+            prev_ds = [group["d"] for group in opt.param_groups]
+            for group in opt.param_groups:
+                group["d"] = d_override
+            opt.step()
+            for group, prev_d in zip(opt.param_groups, prev_ds):
+                group["d"] = prev_d
+        else:
+            opt.step()
 
     for it in range(start_iter, max_iters):
         x_task, y = sample_batch(
@@ -722,9 +735,17 @@ def train_steps(
                 loss, l_task, l_probe = forward_loss(
                     x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=False
                 )
-                optimizer_step(
-                    loss, adv_config.grad_clip / adv_config.explode_clip_divisor
-                )
+                if adv_config.optimizer_kind == "stableadamw":
+                    optimizer_step(
+                        loss,
+                        adv_config.grad_clip,
+                        d_override=adv_config.stableadamw_d
+                        / adv_config.explode_clip_divisor,
+                    )
+                else:
+                    optimizer_step(
+                        loss, adv_config.grad_clip / adv_config.explode_clip_divisor
+                    )
 
             recent_losses.append(loss.item())
 

@@ -491,6 +491,62 @@ class TestNoiseBlobReplay:
             assert torch.equal(seen_noise[0], noise)
 
 
+class TestExplodeRedoStableAdamW:
+    """On explosion, optimizer_kind="stableadamw" tightens stableadamw_d for
+    the redo step instead of grad_clip (see LogregAdversarialConfig.
+    explode_factor and stableadamw_d)."""
+
+    def test_redo_tightens_and_restores_d(self):
+        import torch
+
+        from model import ResidualMLP
+        from stableadamw import StableAdamW
+
+        model_config = _make_model_config(num_x=2, d_model=4, d_mlp=4, num_blocks=3)
+        model = ResidualMLP(model_config)
+        opt = StableAdamW(
+            model.parameters(), lr=1e3, d=1.0
+        )  # huge lr -> guaranteed explode
+        gen = torch.Generator().manual_seed(0)
+
+        adv_config, hidden_layers = load_run_config(
+            _logreg_config_file_fields(
+                lam=0.0,
+                penalty_layers=[1, 2],
+                resid_noise_std=0.1,
+                explode_factor=1e-6,  # any step counts as an explosion
+                explode_clip_divisor=5.0,
+                batch_size=8,
+                optimizer_kind="stableadamw",
+                stableadamw_d=1.0,
+            ),
+            num_blocks=3,
+            config_path="unused.json",
+        )
+
+        gen_iter = train_steps(
+            model,
+            opt,
+            gen,
+            probe=None,
+            adv_config=adv_config,
+            max_iters=1,
+            hidden_layers=hidden_layers,
+            start_iter=0,
+            affine=(torch.zeros(1), torch.zeros(1)),
+            probe_x=torch.zeros(1, 3),
+            probe_label=torch.zeros(1, dtype=torch.bool),
+            device="cpu",
+        )
+        record = next(gen_iter)
+
+        assert record.n_exploded == 1, "test expects the huge-lr step to explode"
+        # d must be restored to its configured value after the redo, not left
+        # tightened for subsequent (non-exploding) steps.
+        for group in opt.param_groups:
+            assert group["d"] == 1.0
+
+
 class TestExplodeWindow:
     """explode_window_iters (config.py's LogregAdversarialConfig): comparing
     against the smallest loss in a window of recent iterations, not just this
