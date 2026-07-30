@@ -128,6 +128,17 @@ def eval_loss(model: ResidualMLP, gen: torch.Generator, device: str) -> float:
     return total / EVAL_BATCHES
 
 
+@torch.no_grad()
+def eval_max_err(model: ResidualMLP, gen: torch.Generator, device: str) -> float:
+    """Same metric as `data.eval_max_err` (clean, no noise), but blinding c
+    first -- adversarial_report.py's training-trace plot reads this from
+    history.jsonl, and the model was trained without c, so scoring it with c
+    present would evaluate a distribution it never saw."""
+    x_full, y = sample_batch(EVAL_BATCH, model.num_x, generator=gen, device=device)
+    pred = model.task_output(blind_c(x_full))
+    return (pred - y).abs().max().item()
+
+
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(SEED)
@@ -165,7 +176,10 @@ def main(args):
 
     out_dir = log_dir(args.tag)
     os.makedirs(out_dir, exist_ok=True)
-    hist_path = os.path.join(out_dir, "no_c_history.jsonl")
+    # Same name/schema train_adversarial_logreg.py writes (minus the
+    # adversarial-only fields, nan/None instead), so
+    # adversarial_report.py's training-trace plot picks it up unmodified.
+    hist_path = os.path.join(out_dir, "history.jsonl")
     out_ckpt_dir = ckpt_dir(args.tag)
     os.makedirs(out_ckpt_dir, exist_ok=True)
     last_path = os.path.join(out_ckpt_dir, "last.pt")
@@ -193,16 +207,27 @@ def main(args):
                     torch.nn.utils.clip_grad_norm_(block.parameters(), GRAD_CLIP)
             opt.step()
 
-            entry = {"iter": it, "loss": loss.item()}
-            best = min(best, entry["loss"])
+            best = min(best, loss.item())
             if it % args.log_interval == 0 or it == args.max_iters - 1:
-                entry["eval_loss"] = eval_loss(model, gen, device)
+                ev_loss = eval_loss(model, gen, device)
                 print(
-                    f"iter {it:>6d}  loss {entry['loss']:.6e}  "
-                    f"eval {entry['eval_loss']:.6e}  "
-                    f"eval/bound {entry['eval_loss'] / bound:.4f}"
+                    f"iter {it:>6d}  loss {loss.item():.6e}  "
+                    f"eval {ev_loss:.6e}  "
+                    f"eval/bound {ev_loss / bound:.4f}"
                 )
-            hist.write(json.dumps(entry) + "\n")
+                # Same keys train_adversarial_logreg.py's history.jsonl
+                # entries have (see TrainRecord/_history_entry) -- no probe
+                # here, so l_probe/lam_eff/n_exploded are nan/None/0.
+                entry = {
+                    "iter": it,
+                    "loss": loss.item(),
+                    "l_task": ev_loss,
+                    "l_probe": float("nan"),
+                    "lam_eff": None,
+                    "n_exploded": 0,
+                    "max_err": eval_max_err(model, gen, device),
+                }
+                hist.write(json.dumps(entry) + "\n")
 
             if it % args.ckpt_interval == 0 and it > 0:
                 model.save(last_path, iter=it, best_loss=best)
