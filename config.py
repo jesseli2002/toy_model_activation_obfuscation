@@ -176,8 +176,8 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     x_threshold: float
     batch_size: int
     lr: float
-    # AdamW's eps/beta2 (PyTorch defaults: 1e-8, 0.999). A parameter whose
-    # gradient has been near-zero for a while (small running exp_avg_sq)
+    # AdamW's eps/beta1/beta2 (PyTorch defaults: 1e-8, 0.9, 0.999). A parameter
+    # whose gradient has been near-zero for a while (small running exp_avg_sq)
     # can take a disproportionately large adaptive step the moment its
     # gradient becomes non-trivial again, since exp_avg_sq hasn't caught up
     # yet -- a source of loss spikes grad_clip above can't touch, since
@@ -187,10 +187,11 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # 0.99) converged faster with fewer residual spikes than raising eps
     # (e.g. 1e-5) alone.
     adam_eps: float
+    adam_beta1: float
     adam_beta2: float
     # "adamw" or "stableadamw" (per-tensor update-clipping in place of
     # grad_clip/adam_eps/adam_beta2 band-aids) -- both consume adam_eps
-    # /adam_beta2 above with the same meaning.
+    # /adam_beta1/adam_beta2 above with the same meaning.
     optimizer_kind: str
     # StableAdamW's update-clipping threshold (Adafactor's `d`): a tensor's
     # step is scaled down only once its RMS exceeds this, so lowering it
@@ -235,6 +236,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "batch_size": 4096 * 4,  # legacy runs took this from a CLI default
         "lr": 3e-3,  # legacy runs took this from a CLI default
         "adam_eps": 1e-8,  # legacy runs used AdamW's plain default
+        "adam_beta1": 0.9,  # legacy runs used AdamW's plain default
         "adam_beta2": 0.999,  # legacy runs used AdamW's plain default
         "optimizer_kind": "adamw",  # legacy runs predate StableAdamW support
         "stableadamw_d": 1.0,  # legacy runs predate the threshold being tunable
