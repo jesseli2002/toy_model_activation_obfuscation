@@ -355,14 +355,17 @@ def _make_optimizer(
     *,
     lr: float,
     eps: float,
+    beta1: float,
     beta2: float,
     stableadamw_d: float,
 ) -> torch.optim.Optimizer:
     """Construct the optimizer named by `LogregAdversarialConfig.optimizer_kind`."""
     if optimizer_kind == "adamw":
-        return torch.optim.AdamW(params, lr=lr, eps=eps, betas=(0.9, beta2))
+        return torch.optim.AdamW(params, lr=lr, eps=eps, betas=(beta1, beta2))
     elif optimizer_kind == "stableadamw":
-        return StableAdamW(params, lr=lr, eps=eps, betas=(0.9, beta2), d=stableadamw_d)
+        return StableAdamW(
+            params, lr=lr, eps=eps, betas=(beta1, beta2), d=stableadamw_d
+        )
     else:
         raise ValueError(f"unknown optimizer_kind {optimizer_kind!r}")
 
@@ -375,7 +378,7 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
     checkpoint field they need (e.g. --resume rebuilds adv_config from rck).
 
     `restore_optimizer=False` for --fork-from: like every other adversarial
-    hyperparameter (lr, adam_eps, adam_beta2, ...), optimizer_kind is freshly
+    hyperparameter (lr, adam_eps, adam_beta1, adam_beta2, ...), optimizer_kind is freshly
     resolved from the new --config rather than inherited from the source tag,
     so there's no single optimizer state (shape, momentum) that's guaranteed
     to still make sense -- the caller builds a fresh optimizer from that
@@ -401,6 +404,7 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
             hist_adv_config.optimizer_kind,
             lr=hist_adv_config.lr,
             eps=hist_adv_config.adam_eps,
+            beta1=hist_adv_config.adam_beta1,
             beta2=hist_adv_config.adam_beta2,
             stableadamw_d=hist_adv_config.stableadamw_d,
         )
@@ -863,6 +867,7 @@ def main(args):
             adv_config.optimizer_kind,
             lr=adv_config.lr,
             eps=adv_config.adam_eps,
+            beta1=adv_config.adam_beta1,
             beta2=adv_config.adam_beta2,
             stableadamw_d=adv_config.stableadamw_d,
         )
@@ -921,7 +926,8 @@ def main(args):
         f"probe_loss_trim_frac={adv_config.probe_loss_trim_frac} "
         f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
         f"lr={adv_config.lr} adam_eps={adv_config.adam_eps} "
-        f"adam_beta2={adv_config.adam_beta2} optimizer_kind={adv_config.optimizer_kind} "
+        f"adam_beta1={adv_config.adam_beta1} adam_beta2={adv_config.adam_beta2} "
+        f"optimizer_kind={adv_config.optimizer_kind} "
         f"stableadamw_d={adv_config.stableadamw_d} "
         f"explode_factor={adv_config.explode_factor} "
         f"explode_clip_divisor={adv_config.explode_clip_divisor} "
