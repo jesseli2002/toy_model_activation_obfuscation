@@ -22,6 +22,7 @@ Two optional deep-dive diagnostics, each opt-in since they cost extra compute:
 """
 
 import argparse
+import dataclasses
 import glob
 import json
 import os
@@ -809,13 +810,21 @@ def _build_report(
     return lines
 
 
-# ----------------------------------------------------------------------------
-def main(args):
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+@dataclasses.dataclass
+class DiagnosticsResult:
+    """Everything computed in phase 1, needed by both the report (phase 2)
+    and the plots (phase 3)."""
 
-    model, ck = load_model(args.tag, args.ckpt, device)
-    num_x = model.num_x
-    num_blocks = model.num_blocks
+    me: float
+    gap: dict
+    gap_plot_inputs: dict
+    heldout: dict
+    linear_y_r2: dict | None
+
+
+def _resolve_run_config(ck, num_blocks, args):
+    """Derive the adversarial-config-dependent settings `main()` needs, with
+    the checkpoint's own fallback rule (see the `adv_ck` comment below)."""
     # ck may carry no adversarial config at all (a checkpoint from a
     # non-adversarial training run, e.g. train_no_c.py) -- that's the only
     # fallback case. Once adv_config exists (train_adversarial_logreg.py),
@@ -832,21 +841,29 @@ def main(args):
         adv_ck["resid_noise_std"] if adv_ck is not None else 0.0
     ) * args.eval_noise_mult
     class_threshold = adv_ck["class_threshold"] if adv_ck is not None else None
+    return penalty_layers, hidden_layers, eval_noise_std, class_threshold
 
-    if args.steer:
-        for lyr in args.steer:
-            assert lyr in hidden_layers, (
-                f"--steer layer {lyr} must be one of the hidden layers already "
-                f"probed at c in {{1,2}}: {hidden_layers}"
-            )
 
-    plot_dir = get_plot_dir(args.tag)
-    os.makedirs(plot_dir, exist_ok=True)
+def _validate_steer_layers(steer_layers, hidden_layers):
+    for lyr in steer_layers:
+        assert lyr in hidden_layers, (
+            f"--steer layer {lyr} must be one of the hidden layers already "
+            f"probed at c in {{1,2}}: {hidden_layers}"
+        )
 
-    g = torch.Generator(device=device).manual_seed(args.seed)
-    probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
-    # --- phase 1: generate all data ---
+def _run_diagnostics(
+    model,
+    hidden_layers,
+    num_x,
+    num_blocks,
+    args,
+    g,
+    device,
+    probe_backend_name,
+    eval_noise_std,
+) -> DiagnosticsResult:
+    """Phase 1: all data generation, no plotting or printing."""
     me = eval_max_err(model, g, device=device)
 
     gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
@@ -892,30 +909,29 @@ def main(args):
             device,
         )
 
-    # --- phase 2: build + write the report ---
-    lines = _build_report(
-        args,
-        num_x,
-        model,
-        ck,
-        num_blocks,
-        penalty_layers,
-        hidden_layers,
-        me,
-        gap,
-        heldout,
-        linear_y_r2,
-    )
-    print("\n".join(lines))
+    return DiagnosticsResult(me, gap, gap_plot_inputs, heldout, linear_y_r2)
+
+
+def _make_plots(
+    args,
+    model,
+    ck,
+    num_blocks,
+    penalty_layers,
+    hidden_layers,
+    class_threshold,
+    result: DiagnosticsResult,
+    plot_dir,
+    device,
+):
+    """Phase 3: everything currently after the report is written in main()."""
+    num_x = model.num_x
+    gap = result.gap
+    gap_plot_inputs = result.gap_plot_inputs
+    heldout = result.heldout
+    linear_y_r2 = result.linear_y_r2
 
     out_log = log_dir(args.tag)
-    os.makedirs(out_log, exist_ok=True)
-    report_path = os.path.join(out_log, "report.md")
-    with open(report_path, "w") as f:
-        f.write("\n".join(lines) + "\n")
-    print(f"[report] wrote {report_path}")
-
-    # --- phase 3: generate all plots ---
     hist_path = os.path.join(out_log, "history.jsonl")
     if os.path.exists(hist_path):
         with open(hist_path) as f:
@@ -985,6 +1001,68 @@ def main(args):
     if args.show:
         plt.show()
         plt.close("all")
+
+
+# ----------------------------------------------------------------------------
+def main(args):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    model, ck = load_model(args.tag, args.ckpt, device)
+    num_x, num_blocks = model.num_x, model.num_blocks
+    penalty_layers, hidden_layers, eval_noise_std, class_threshold = (
+        _resolve_run_config(ck, num_blocks, args)
+    )
+    if args.steer:
+        _validate_steer_layers(args.steer, hidden_layers)
+    plot_dir = get_plot_dir(args.tag)
+    os.makedirs(plot_dir, exist_ok=True)
+    g = torch.Generator(device=device).manual_seed(args.seed)
+    probe_backend_name = resolve_probe_backend(args.probe_backend, device)
+
+    result = _run_diagnostics(
+        model,
+        hidden_layers,
+        num_x,
+        num_blocks,
+        args,
+        g,
+        device,
+        probe_backend_name,
+        eval_noise_std,
+    )
+
+    lines = _build_report(
+        args,
+        num_x,
+        model,
+        ck,
+        num_blocks,
+        penalty_layers,
+        hidden_layers,
+        result.me,
+        result.gap,
+        result.heldout,
+        result.linear_y_r2,
+    )
+    print("\n".join(lines))
+    out_log = log_dir(args.tag)
+    os.makedirs(out_log, exist_ok=True)
+    report_path = os.path.join(out_log, "report.md")
+    with open(report_path, "w") as f:
+        f.write("\n".join(lines) + "\n")
+    print(f"[report] wrote {report_path}")
+
+    _make_plots(
+        args,
+        model,
+        ck,
+        num_blocks,
+        penalty_layers,
+        hidden_layers,
+        class_threshold,
+        result,
+        plot_dir,
+        device,
+    )
 
 
 if __name__ == "__main__":
