@@ -1,7 +1,7 @@
 """Diagnostics for an adversarially-trained checkpoint: does it hide c or erase it?
 
-Loads an adversarial checkpoint (from train_adversarial.py) and produces a
-report distinguishing the two outcomes:
+Loads an adversarial checkpoint (from train_adversarial_logreg.py) and
+produces a report distinguishing the two outcomes:
 
   1. Task fidelity           — the PRICE of hiding (expected near-zero).
   2. Probe-strength gap at the probed points, per hidden layer.
@@ -754,15 +754,12 @@ def _build_report(
 
     emit(f"# Adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
     emit()
-    # adv_config fallback rule: see main(). `init` is AdversarialConfig-only
-    # (LogregAdversarialConfig has no such field), so it legitimately stays
-    # a soft `.get()`.
+    # adv_config fallback rule: see main().
     adv_ck = ck.get("adv_config")
     lam = adv_ck["lam"] if adv_ck is not None else None
-    init = adv_ck.get("init") if adv_ck is not None else None
     emit(
         f"config: num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
-        f"num_blocks={num_blocks} lam={lam} init={init} "
+        f"num_blocks={num_blocks} lam={lam} "
         f"penalty_layers={penalty_layers}"
     )
     emit()
@@ -820,23 +817,21 @@ def main(args):
     num_x = model.num_x
     num_blocks = model.num_blocks
     # ck may carry no adversarial config at all (a checkpoint from a
-    # non-adversarial training run) -- that's the only fallback case. Once
-    # adv_config exists, every AdversarialConfig/LogregAdversarialConfig
-    # field is always present, so fail loudly (direct indexing) on a missing
-    # key -- except fields that exist on only one of the two config classes
-    # (e.g. `init`), which stay a soft `.get()`.
+    # non-adversarial training run, e.g. train_no_c.py) -- that's the only
+    # fallback case. Once adv_config exists (train_adversarial_logreg.py),
+    # every LogregAdversarialConfig field is always present, so fail loudly
+    # (direct indexing) on a missing key.
     adv_ck = ck.get("adv_config")
-    penalty_layers = (adv_ck["penalty_layers"] if adv_ck is not None else None) or list(
-        range(1, num_blocks)
+    penalty_layers = (
+        adv_ck["penalty_layers"] if adv_ck is not None else list(range(1, num_blocks))
     )
     hidden_layers = list(range(1, num_blocks))
     # Multiplier on the model's OWN training-time noise, injected only when
-    # evaluating probes (see --eval-noise-mult help). class_threshold only
-    # exists on LogregAdversarialConfig checkpoints.
+    # evaluating probes (see --eval-noise-mult help).
     eval_noise_std = (
-        adv_ck.get("resid_noise_std", 0.0) if adv_ck is not None else 0.0
+        adv_ck["resid_noise_std"] if adv_ck is not None else 0.0
     ) * args.eval_noise_mult
-    class_threshold = adv_ck.get("class_threshold") if adv_ck is not None else None
+    class_threshold = adv_ck["class_threshold"] if adv_ck is not None else None
 
     if args.steer:
         for lyr in args.steer:
