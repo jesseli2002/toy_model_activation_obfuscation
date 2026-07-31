@@ -37,6 +37,8 @@ class NewtonLogisticRegression:
     count is the point, since any convergence test would reintroduce the
     host sync this solver exists to avoid. Warm-started across fits by
     default, which is what makes a small `steps` sufficient in steady state.
+    A cold fit has no such head start and gets `cold_steps` instead -- it
+    happens once, so buying a wide margin there is nearly free.
     """
 
     def __init__(
@@ -46,9 +48,11 @@ class NewtonLogisticRegression:
         warm_start: bool = True,
         step_sizes=ALPHAS,
         ridge: float = 1e-6,
+        cold_steps: int = 25,
     ):
         self.C = C
         self.steps = steps
+        self.cold_steps = cold_steps
         self.warm_start = warm_start
         self.step_sizes = step_sizes
         self.ridge = ridge
@@ -59,17 +63,19 @@ class NewtonLogisticRegression:
         self, X: Float[Tensor, "n d"], y: Bool[Tensor, " n"]
     ) -> "NewtonLogisticRegression":
         n, d = X.shape
-        if self.warm_start and self.coef_ is not None and self.coef_.shape[0] == d:
+        warm = self.warm_start and self.coef_ is not None and self.coef_.shape[0] == d
+        if warm:
             w, b = self.coef_.clone(), self.intercept_.clone()
         else:
             w = torch.zeros(d, device=X.device, dtype=X.dtype)
             b = torch.zeros((), device=X.device, dtype=X.dtype)
+        steps = self.steps if warm else max(self.steps, self.cold_steps)
         t = y.to(X.dtype)
         y_pm1 = torch.where(y, 1.0, -1.0).to(X.dtype)
         alphas = torch.tensor(self.step_sizes, device=X.device, dtype=X.dtype)
         eye = torch.eye(d + 1, device=X.device, dtype=X.dtype)
 
-        for _ in range(self.steps):
+        for _ in range(steps):
             p = torch.sigmoid(X @ w + b)
             r = p - t
             s = p * (1 - p)
@@ -105,7 +111,7 @@ class NewtonProbePipeline:
     """TorchStandardScaler + NewtonLogisticRegression, interface-compatible
     with probe_backend.TorchProbePipeline."""
 
-    def __init__(self, C: float, steps: int = 3):
+    def __init__(self, C: float, steps: int = 5):
         self._scaler = TorchStandardScaler()
         self._logreg = NewtonLogisticRegression(C=C, steps=steps)
 

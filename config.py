@@ -18,7 +18,7 @@ MAX_ITERS = 100_000
 
 
 ACTIVATION_CHOICES = ["leaky_relu", "gelu"]
-PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch"]
+PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch", "newton"]
 OPTIMIZER_KIND_CHOICES = ["adamw", "stableadamw"]
 
 
