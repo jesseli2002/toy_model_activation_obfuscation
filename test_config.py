@@ -1,13 +1,12 @@
 """pytest unit tests for the shared _CheckpointConfigMixin to_dict/from_dict
-backfill idiom in config.py, parametrized across all three config
-dataclasses that use it."""
+backfill idiom in config.py, parametrized across both config dataclasses
+that use it."""
 
 import dataclasses
 
 import pytest
 
 from config import (
-    AdversarialConfig,
     ForkedFrom,
     LogregAdversarialConfig,
     LogregRunConfig,
@@ -20,7 +19,6 @@ from conftest import _make_logreg_config, _make_model_config
 # from "backfilled from the field default", factory building a valid instance).
 CONFIGS_WITH_DIVERGENT_FIELD = [
     (ResidualMLPConfig, "num_blocks", _make_model_config),
-    (AdversarialConfig, "probe_loss", AdversarialConfig),
     (LogregAdversarialConfig, "probe_retrain_interval", _make_logreg_config),
 ]
 

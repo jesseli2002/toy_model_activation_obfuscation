@@ -9,8 +9,6 @@ import warnings
 from dataclasses import dataclass
 from typing import ClassVar
 
-SEED = 913768
-
 # Data distributions
 X_LOW, X_HIGH = -3.0, 3.0  # x ~ U[X_LOW, X_HIGH]
 C_LOW, C_HIGH = 1.0, 2.0  # c ~ U[X_LOW, X_HIGH]
@@ -94,38 +92,6 @@ class ResidualMLPConfig(_CheckpointConfigMixin):
         "activation": "leaky_relu",
         "leaky_relu_slope": 0.0,
         "layer_norm": False,
-    }
-
-
-@dataclass
-class AdversarialConfig(_CheckpointConfigMixin):
-    """Training-hyperparameter metadata for train_adversarial.py, stored
-    verbatim (as a dict) alongside the model's own ResidualMLPConfig."""
-
-    lam: float = 0.5
-    lam_warmup_iters: int = 0
-    penalty_layers: list | None = None
-    init: str = "scratch"
-    warmstart_path: str | None = "runs/nx32/checkpoints/best.pt"
-    seed: int = SEED
-    probe_loss: str = "lda"
-    probe_loss_eps: float = 1e-7
-    lda_shrinkage: float = 1e-3
-    probe_loss_detach_denom: bool = False
-    resid_noise_std: float = 0.1
-
-    _LEGACY_DEFAULTS: ClassVar[dict] = {
-        "lam": 0.5,
-        "lam_warmup_iters": 0,
-        "penalty_layers": None,
-        "init": "warmstart",
-        "warmstart_path": None,
-        "seed": 913768,
-        "probe_loss": "squared",  # legacy runs used the hardcoded squared penalty
-        "probe_loss_eps": 1e-7,
-        "lda_shrinkage": 1e-3,
-        "probe_loss_detach_denom": False,
-        "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
     }
 
 
