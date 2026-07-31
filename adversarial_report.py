@@ -680,30 +680,32 @@ def _plot_steer_comparison(
 
 
 @torch.no_grad()
-def _linear_y_reconstruction(
-    model, num_x, num_blocks, n_train, n_test, g, device, eval_noise_std=0.0
-):
+def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, device):
     """Fit a linear map residual[layer] -> model's own final task output y,
     for every residual-stream layer 0..num_blocks, with c ~ U[1,2] (the
     training distribution, not pinned pairs). Layer num_blocks should score
     ~1 (y is exactly linear in it); see module docstring for what an
     early-layer score implies.
 
-    `eval_noise_std` injects residual-stream noise into the TEST forward pass
-    only (fitting the linear map is unaffected), same as the binary probe
-    metrics above."""
+    Always fit and evaluate noise-free (unlike the binary probe metrics
+    above, which do inject eval-time noise): this diagnostic asks whether c's
+    contribution to y is linearly decodable at a given layer, which OLS
+    answers on its own (a genuinely nonlinear map just gets a low R²). Eval
+    noise the fit never saw at train time instead measures how much a
+    layer's fitted coefficients amplify an unrelated perturbation -- a
+    layer whose fit happens to need large coefficients (e.g. because its
+    encoding is scaled down) can swing to wildly negative R² for reasons
+    having nothing to do with linearity."""
     layers = list(range(0, num_blocks + 1))
 
-    def _sample(n, noise_std=0.0):
+    def _sample(n):
         x_full, _ = sample_batch(n, num_x, generator=g, device=device)
-        pred, caches = model.forward(
-            x_full, return_cache=True, noise=noise_std, generator=g
-        )
+        pred, caches = model.forward(x_full, return_cache=True, generator=g)
         y = pred[:, :num_x]
         return {lyr: caches[lyr].cpu().numpy() for lyr in layers}, y.cpu().numpy()
 
     train_caches, y_train = _sample(n_train)
-    test_caches, y_test = _sample(n_test, noise_std=eval_noise_std)
+    test_caches, y_test = _sample(n_test)
 
     r2 = {}
     for lyr in tqdm(layers, desc="linear-y per layer", leave=False):
@@ -912,7 +914,6 @@ def main(args):
             args.n_test,
             g,
             device,
-            eval_noise_std=eval_noise_std,
         )
 
     # --- phase 2: build + write the report ---
