@@ -733,19 +733,7 @@ def _plot_linear_y_reconstruction(tag, r2, penalty_layers, plot_dir):
 
 
 # ----------------------------------------------------------------------------
-def _build_report(
-    args,
-    num_x,
-    model,
-    ck,
-    num_blocks,
-    penalty_layers,
-    hidden_layers,
-    me,
-    gap,
-    heldout,
-    linear_y_r2,
-):
+def _build_report(args, model, adv_cfg, result: "AnalysisResult"):
     """Assemble the full report text from already-computed data. Returns the
     report as a list of lines; produces no side effects (no printing)."""
     lines = []
@@ -755,27 +743,37 @@ def _build_report(
 
     emit(f"# Adversarial analysis — tag={args.tag} ckpt={args.ckpt}")
     emit()
-    # adv_config fallback rule: see main().
-    adv_ck = ck.get("adv_config")
-    lam = adv_ck["lam"] if adv_ck is not None else None
+    lam = adv_cfg.lam if adv_cfg is not None else None
+    penalty_layers = adv_cfg.penalty_layers if adv_cfg is not None else "n/a"
     emit(
-        f"config: num_x={num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
-        f"num_blocks={num_blocks} lam={lam} "
+        f"config: num_x={model.num_x} d_model={model.d_model} d_mlp={model.d_mlp} "
+        f"num_blocks={model.num_blocks} lam={lam} "
         f"penalty_layers={penalty_layers}"
     )
     emit()
 
     # --- 1. task fidelity ---
     emit(f"## 1. Task fidelity")
-    emit(f"max abs elementwise error (c~U[1,2]): {me:.3e}")
+    emit(f"max abs elementwise error (c~U[1,2]): {result.me:.3e}")
     emit()
+
+    if adv_cfg is None:
+        emit(
+            "## 2+. Probe analysis skipped — c-blind demonstration run "
+            "(train_no_c.py): c was never given to the model, so there is "
+            "no c signal in its activations to probe for."
+        )
+        emit()
+        return lines
+
+    hidden_layers = list(range(1, model.num_blocks))
 
     # --- 2. probe-strength gap at c in {1,2} ---
     emit("## 2. Probe-strength gap at c in {1,2} (per hidden layer)")
     emit("layer | penalized | DoM ||Δμ|| |  DoM acc | logreg acc |  LDA acc")
     emit("------|-----------|-----------|----------|------------|---------")
     for lyr in hidden_layers:
-        m = gap[lyr]
+        m = result.gap[lyr]
         pen = "yes" if lyr in penalty_layers else "no"
         emit(
             f"  L{lyr}  |   {pen:>3s}     | {m['delta_norm']:.3e} | "
@@ -790,21 +788,21 @@ def _build_report(
         emit("-----------|-------|---------|------------|--------")
         for c_lo, c_hi in args.held_out_pairs:
             for lyr in hidden_layers:
-                m = heldout[(c_lo, c_hi, lyr)]
+                m = result.heldout[(c_lo, c_hi, lyr)]
                 emit(
                     f"{c_lo:.2f}/{c_hi:.2f} |  L{lyr}  | {m['dom']:.4f}  |  "
                     f"{m['logreg']:.4f}   | {m['lda']:.4f}"
                 )
         emit()
 
-    if linear_y_r2 is not None:
+    if result.linear_y_r2 is not None:
         # --- 4. linear reconstruction of final y from each layer ---
         emit("## 4. Linear reconstruction of final y (c ~ U[1,2], per layer)")
         emit("layer | penalized | R²")
         emit("------|-----------|-----")
-        for lyr in sorted(linear_y_r2):
+        for lyr in sorted(result.linear_y_r2):
             pen = "yes" if lyr in penalty_layers else "no"
-            emit(f"  L{lyr}  |   {pen:>3s}     | {linear_y_r2[lyr]:.4f}")
+            emit(f"  L{lyr}  |   {pen:>3s}     | {result.linear_y_r2[lyr]:.4f}")
         emit()
 
     return lines
@@ -813,35 +811,25 @@ def _build_report(
 @dataclasses.dataclass
 class AnalysisResult:
     """Everything computed in phase 1, needed by both the report (phase 2)
-    and the plots (phase 3)."""
+    and the plots (phase 3). The probe-derived fields are None for a c-blind
+    checkpoint (adv_cfg is None) -- see `_run_analysis`."""
 
     me: float
-    gap: dict
-    gap_plot_inputs: dict
-    heldout: dict
+    gap: dict | None
+    gap_plot_inputs: dict | None
+    heldout: dict | None
     linear_y_r2: dict | None
 
 
-def _resolve_run_config(ck, num_blocks, args):
-    """Derive the adversarial-config-dependent settings `main()` needs, with
-    the checkpoint's own fallback rule (see the `adv_ck` comment below)."""
-    # ck may carry no adversarial config at all (a checkpoint from a
-    # non-adversarial training run, e.g. train_no_c.py) -- that's the only
-    # fallback case. Once adv_config exists (train_adversarial_logreg.py),
-    # every LogregAdversarialConfig field is always present, so fail loudly
-    # (direct indexing) on a missing key.
+def _resolve_adv_config(ck) -> "config.LogregAdversarialConfig | None":
+    """The checkpoint's adversarial-training config, or None for a checkpoint
+    with no adversarial config at all -- e.g. a train_no_c.py c-blind
+    demonstration run, which has no probe or penalty to speak of since c was
+    withheld from the model entirely (its embedding coordinate is zeroed)."""
     adv_ck = ck.get("adv_config")
-    penalty_layers = (
-        adv_ck["penalty_layers"] if adv_ck is not None else list(range(1, num_blocks))
+    return (
+        config.LogregAdversarialConfig.from_dict(adv_ck) if adv_ck is not None else None
     )
-    hidden_layers = list(range(1, num_blocks))
-    # Multiplier on the model's OWN training-time noise, injected only when
-    # evaluating probes (see --eval-noise-mult help).
-    eval_noise_std = (
-        adv_ck["resid_noise_std"] if adv_ck is not None else 0.0
-    ) * args.eval_noise_mult
-    class_threshold = adv_ck["class_threshold"] if adv_ck is not None else None
-    return penalty_layers, hidden_layers, eval_noise_std, class_threshold
 
 
 def _validate_steer_layers(steer_layers, hidden_layers):
@@ -853,18 +841,23 @@ def _validate_steer_layers(steer_layers, hidden_layers):
 
 
 def _run_analysis(
-    model,
-    hidden_layers,
-    num_x,
-    num_blocks,
-    args,
-    g,
-    device,
-    probe_backend_name,
-    eval_noise_std,
+    model, adv_cfg, args, g, device, probe_backend_name
 ) -> AnalysisResult:
-    """Phase 1: all data generation, no plotting or printing."""
+    """Phase 1: all data generation, no plotting or printing.
+
+    A c-blind checkpoint (adv_cfg is None) has no c signal anywhere in its
+    activations to probe for (train_no_c.py zeroes c's input coordinate
+    entirely) -- only task fidelity is meaningful there, so the probe-derived
+    fields come back None."""
     me = eval_max_err(model, g, device=device)
+
+    if adv_cfg is None:
+        return AnalysisResult(me, None, None, None, None)
+
+    hidden_layers = list(range(1, model.num_blocks))
+    # Multiplier on the model's OWN training-time noise, injected only when
+    # evaluating probes (see --eval-noise-mult help).
+    eval_noise_std = adv_cfg.resid_noise_std * args.eval_noise_mult
 
     gap, gap_plot_inputs = _binary_probe_metrics_all_layers(
         model,
@@ -901,8 +894,8 @@ def _run_analysis(
     if args.detailed:
         linear_y_r2 = _linear_y_reconstruction(
             model,
-            num_x,
-            num_blocks,
+            model.num_x,
+            model.num_blocks,
             args.n_train,
             args.n_test,
             g,
@@ -912,24 +905,13 @@ def _run_analysis(
     return AnalysisResult(me, gap, gap_plot_inputs, heldout, linear_y_r2)
 
 
-def _make_plots(
-    args,
-    model,
-    ck,
-    num_blocks,
-    penalty_layers,
-    hidden_layers,
-    class_threshold,
-    result: AnalysisResult,
-    plot_dir,
-    device,
-):
-    """Phase 3: everything currently after the report is written in main()."""
-    num_x = model.num_x
-    gap = result.gap
-    gap_plot_inputs = result.gap_plot_inputs
-    heldout = result.heldout
-    linear_y_r2 = result.linear_y_r2
+def _make_plots(args, model, adv_cfg, result: AnalysisResult, plot_dir, device):
+    """Phase 3: everything currently after the report is written in main().
+
+    Plots that depend on probing c (probe gap, layer distributions,
+    separation, steering, held-out gap, linear-y reconstruction) are skipped
+    for a c-blind checkpoint (adv_cfg is None) -- see `_run_analysis`."""
+    class_threshold = adv_cfg.class_threshold if adv_cfg is not None else None
 
     out_log = log_dir(args.tag)
     hist_path = os.path.join(out_log, "history.jsonl")
@@ -947,26 +929,23 @@ def _make_plots(
         )
     plot_learned_curves(model, args.tag, plot_dir, show=args.show)
 
-    _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
-    _plot_layer_distributions(
-        args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir
-    )
-    for lyr in hidden_layers:
-        pi = gap_plot_inputs[lyr]
-        # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so
-        # its bias is the midpoint threshold negated.
-        b_dom = -pi["midpoint"]
-        plot_probe_separation(
-            "c1-2",
-            [lyr],
-            LinearBoundary(pi["w_dom"], b_dom),
-            LinearBoundary(pi["w_probe"], pi["b_probe"]),
-            pi["X_te"],
-            pi["y_te"],
-            plot_dir,
+    if adv_cfg is not None:
+        hidden_layers = list(range(1, model.num_blocks))
+        gap = result.gap
+        gap_plot_inputs = result.gap_plot_inputs
+        heldout = result.heldout
+        linear_y_r2 = result.linear_y_r2
+
+        _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
+        _plot_layer_distributions(
+            args.tag, 1.0, 2.0, hidden_layers, gap_plot_inputs, plot_dir
         )
-        if args.detailed:
-            plot_probe_pca_separation(
+        for lyr in hidden_layers:
+            pi = gap_plot_inputs[lyr]
+            # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so
+            # its bias is the midpoint threshold negated.
+            b_dom = -pi["midpoint"]
+            plot_probe_separation(
                 "c1-2",
                 [lyr],
                 LinearBoundary(pi["w_dom"], b_dom),
@@ -975,28 +954,40 @@ def _make_plots(
                 pi["y_te"],
                 plot_dir,
             )
-    if args.steer:
-        for lyr in args.steer:
-            pi = gap_plot_inputs[lyr]
-            _plot_steer_comparison(
-                args.tag,
-                lyr,
-                num_x,
-                model,
-                pi["w_dom"],
-                pi["w_probe"],
-                args.steer_scale,
-                plot_dir,
-                device,
+            if args.detailed:
+                plot_probe_pca_separation(
+                    "c1-2",
+                    [lyr],
+                    LinearBoundary(pi["w_dom"], b_dom),
+                    LinearBoundary(pi["w_probe"], pi["b_probe"]),
+                    pi["X_te"],
+                    pi["y_te"],
+                    plot_dir,
+                )
+        if args.steer:
+            for lyr in args.steer:
+                pi = gap_plot_inputs[lyr]
+                _plot_steer_comparison(
+                    args.tag,
+                    lyr,
+                    model.num_x,
+                    model,
+                    pi["w_dom"],
+                    pi["w_probe"],
+                    args.steer_scale,
+                    plot_dir,
+                    device,
+                )
+
+        if args.detailed:
+            _plot_heldout_gap(
+                args.tag, hidden_layers, args.held_out_pairs, gap, heldout, plot_dir
             )
 
-    if args.detailed:
-        _plot_heldout_gap(
-            args.tag, hidden_layers, args.held_out_pairs, gap, heldout, plot_dir
-        )
-
-    if linear_y_r2 is not None:
-        _plot_linear_y_reconstruction(args.tag, linear_y_r2, penalty_layers, plot_dir)
+        if linear_y_r2 is not None:
+            _plot_linear_y_reconstruction(
+                args.tag, linear_y_r2, adv_cfg.penalty_layers, plot_dir
+            )
 
     if args.show:
         plt.show()
@@ -1007,42 +998,22 @@ def _make_plots(
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     model, ck = load_model(args.tag, args.ckpt, device)
-    num_x, num_blocks = model.num_x, model.num_blocks
-    penalty_layers, hidden_layers, eval_noise_std, class_threshold = (
-        _resolve_run_config(ck, num_blocks, args)
-    )
+    adv_cfg = _resolve_adv_config(ck)
     if args.steer:
-        _validate_steer_layers(args.steer, hidden_layers)
+        assert adv_cfg is not None, (
+            "--steer needs probe directions from an adversarial-trained "
+            "checkpoint; this checkpoint has no adv_config (c-blind "
+            "demonstration run) so there's nothing to steer along."
+        )
+        _validate_steer_layers(args.steer, list(range(1, model.num_blocks)))
     plot_dir = get_plot_dir(args.tag)
     os.makedirs(plot_dir, exist_ok=True)
     g = torch.Generator(device=device).manual_seed(args.seed)
     probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
-    result = _run_analysis(
-        model,
-        hidden_layers,
-        num_x,
-        num_blocks,
-        args,
-        g,
-        device,
-        probe_backend_name,
-        eval_noise_std,
-    )
+    result = _run_analysis(model, adv_cfg, args, g, device, probe_backend_name)
 
-    lines = _build_report(
-        args,
-        num_x,
-        model,
-        ck,
-        num_blocks,
-        penalty_layers,
-        hidden_layers,
-        result.me,
-        result.gap,
-        result.heldout,
-        result.linear_y_r2,
-    )
+    lines = _build_report(args, model, adv_cfg, result)
     print("\n".join(lines))
     out_log = log_dir(args.tag)
     os.makedirs(out_log, exist_ok=True)
@@ -1051,18 +1022,7 @@ def main(args):
         f.write("\n".join(lines) + "\n")
     print(f"[report] wrote {report_path}")
 
-    _make_plots(
-        args,
-        model,
-        ck,
-        num_blocks,
-        penalty_layers,
-        hidden_layers,
-        class_threshold,
-        result,
-        plot_dir,
-        device,
-    )
+    _make_plots(args, model, adv_cfg, result, plot_dir, device)
 
 
 if __name__ == "__main__":
