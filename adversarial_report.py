@@ -1,18 +1,18 @@
-"""Diagnostics for an adversarially-trained checkpoint: does it hide c or erase it?
+"""Analysis of an adversarially-trained checkpoint's task fidelity and probe strength.
 
 Loads an adversarial checkpoint (from train_adversarial_logreg.py) and
-produces a report distinguishing the two outcomes:
+produces a report covering:
 
   1. Task fidelity           — the PRICE of hiding (expected near-zero).
   2. Probe-strength gap at the probed points, per hidden layer.
-  3. Held-out c recovery (the hidden-vs-erased test) — binary probes at
-     held-out c pairs chosen asymmetric about the training midpoint so an
-     affine cancellation can't masquerade as erasure.
+  3. Held-out c recovery — binary probes at held-out c pairs chosen
+     asymmetric about the training midpoint so an affine cancellation
+     can't masquerade as a genuinely weakened probe.
 
 The held-out-pairs table is the most expensive part of the script and is
 only printed/written with --detailed.
 
-Two optional deep-dive diagnostics, each opt-in since they cost extra compute:
+Two optional deep-dive analyses, each opt-in since they cost extra compute:
   --detailed        more detailed analysis.
   --steer L1,L2,...  causal test: inject the DoM- and logreg-discovered c=1->c=2
                      directions at each given layer and see whether the model's
@@ -50,7 +50,7 @@ def _parse_int_list(s: str) -> list[int]:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Adversarial diagnostics: hidden vs. erased c.",
+        description="Adversarial analysis: task fidelity vs. probe strength.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--tag", type=str, required=True)
@@ -672,7 +672,7 @@ def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, devic
     early-layer score implies.
 
     Always fit and evaluate noise-free (unlike the binary probe metrics
-    above, which do inject eval-time noise): this diagnostic asks whether c's
+    above, which do inject eval-time noise): this analysis asks whether c's
     contribution to y is linearly decodable at a given layer, which OLS
     answers on its own (a genuinely nonlinear map just gets a low R²). Eval
     noise the fit never saw at train time instead measures how much a
@@ -753,7 +753,7 @@ def _build_report(
     def emit(s=""):
         lines.append(s)
 
-    emit(f"# Adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
+    emit(f"# Adversarial analysis — tag={args.tag} ckpt={args.ckpt}")
     emit()
     # adv_config fallback rule: see main().
     adv_ck = ck.get("adv_config")
@@ -811,7 +811,7 @@ def _build_report(
 
 
 @dataclasses.dataclass
-class DiagnosticsResult:
+class AnalysisResult:
     """Everything computed in phase 1, needed by both the report (phase 2)
     and the plots (phase 3)."""
 
@@ -852,7 +852,7 @@ def _validate_steer_layers(steer_layers, hidden_layers):
         )
 
 
-def _run_diagnostics(
+def _run_analysis(
     model,
     hidden_layers,
     num_x,
@@ -862,7 +862,7 @@ def _run_diagnostics(
     device,
     probe_backend_name,
     eval_noise_std,
-) -> DiagnosticsResult:
+) -> AnalysisResult:
     """Phase 1: all data generation, no plotting or printing."""
     me = eval_max_err(model, g, device=device)
 
@@ -909,7 +909,7 @@ def _run_diagnostics(
             device,
         )
 
-    return DiagnosticsResult(me, gap, gap_plot_inputs, heldout, linear_y_r2)
+    return AnalysisResult(me, gap, gap_plot_inputs, heldout, linear_y_r2)
 
 
 def _make_plots(
@@ -920,7 +920,7 @@ def _make_plots(
     penalty_layers,
     hidden_layers,
     class_threshold,
-    result: DiagnosticsResult,
+    result: AnalysisResult,
     plot_dir,
     device,
 ):
@@ -1018,7 +1018,7 @@ def main(args):
     g = torch.Generator(device=device).manual_seed(args.seed)
     probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
-    result = _run_diagnostics(
+    result = _run_analysis(
         model,
         hidden_layers,
         num_x,
