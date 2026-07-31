@@ -1,8 +1,7 @@
-"""Step 3 diagnostics — did the adversarially-trained model HIDE c or ERASE it?
+"""Diagnostics for an adversarially-trained checkpoint: does it hide c or erase it?
 
-Loads an adversarial checkpoint (from train_adversarial.py) and produces the
-report that IS the Step-3 deliverable. It distinguishes the outcomes the plan
-cares about:
+Loads an adversarial checkpoint (from train_adversarial.py) and produces a
+report distinguishing the two outcomes:
 
   1. Task fidelity           — the PRICE of hiding (expected near-zero).
   2. Probe-strength gap at the probed points, per hidden layer.
@@ -50,7 +49,7 @@ def _parse_int_list(s: str) -> list[int]:
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Step 3 diagnostics: hidden vs. erased c.",
+        description="Adversarial diagnostics: hidden vs. erased c.",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
     p.add_argument("--tag", type=str, required=True)
@@ -254,16 +253,7 @@ def _binary_probe_metrics_all_layers(
     (c_lo, c_hi) pair -- returned unconditionally since the forward pass and
     the fit already happened regardless of whether the caller wants a plot.
 
-    The logreg probe is fit via `probe_backend` (sklearn or GPU-resident
-    torch, per `probe_backend_name`): X/y are kept as torch tensors on
-    `device` end-to-end for the torch backend, so it actually skips the numpy
-    round-trip rather than just wrapping the same CPU path under a new name.
-    LDA has no GPU variant and stays on the numpy/sklearn path.
-
-    `eval_noise_std` injects residual-stream noise into the TEST forward pass
-    only -- fitting a probe is a large-n limit that noise doesn't move, but
-    evaluating it should see the same noisy environment the model itself
-    trained under.
+    `eval_noise_std` only affects the test forward pass, not the fit.
     """
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -711,14 +701,10 @@ def _linear_y_reconstruction(
     model, num_x, num_blocks, n_train, n_test, g, device, eval_noise_std=0.0
 ):
     """Fit a linear map residual[layer] -> model's own final task output y,
-    for every residual-stream layer 0..num_blocks (embedding through the
-    final residual, inclusive). Layer num_blocks is a sanity anchor: y IS a
-    linear map of it (y = r_num_blocks @ W_U), so R^2 there should be ~1
-    regardless of anything else. Tests whether y is already linearly
-    recoverable well before that point -- if so, downstream blocks don't need
-    to keep encoding c, they can just carry y forward through always-on
-    neurons. Samples c ~ U[1,2] (the training distribution), not pinned pairs,
-    since this asks about the model's actual behavior, not a probe contrast.
+    for every residual-stream layer 0..num_blocks, with c ~ U[1,2] (the
+    training distribution, not pinned pairs). Layer num_blocks should score
+    ~1 (y is exactly linear in it); see module docstring for what an
+    early-layer score implies.
 
     `eval_noise_std` injects residual-stream noise into the TEST forward pass
     only (fitting the linear map is unaffected), same as the binary probe
@@ -801,7 +787,7 @@ def _build_report(
     def emit(s=""):
         lines.append(s)
 
-    emit(f"# Step 3 adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
+    emit(f"# Adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
     emit()
     # ck may be a train_probe.py/train_model_plot.py checkpoint with no
     # adversarial config at all -- that {} default is load-bearing. Once
