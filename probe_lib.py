@@ -96,6 +96,18 @@ def forward_steered(
     return y[:, : model.num_x]
 
 
+def save_plot(fig, plot_dir: str, filename: str, close: bool = True) -> str:
+    """Save a finished figure and log its path. Closes it by default; pass
+    close=False to leave it open for a later plt.show() (only the plots
+    adversarial_report.main wants --show to actually pop should do this)."""
+    path = os.path.join(plot_dir, filename)
+    fig.savefig(path, dpi=120)
+    if close:
+        plt.close(fig)
+    print(f"[plot] wrote {path}")
+    return path
+
+
 def plot_probe(
     tag,
     layers,
@@ -168,9 +180,7 @@ def plot_probe(
 
     fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_L{layer_str}_probe.png")
-    fig.savefig(path, dpi=120)
-    print(f"[plot] wrote {path}")
+    return save_plot(fig, plot_dir, f"{tag}_L{layer_str}_probe.png")
 
 
 def plot_probe_pca(
@@ -252,6 +262,4 @@ def plot_probe_pca(
 
     fig.suptitle(f"probe separation, PCA ({tag}, layers={layer_str})")
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_L{layer_str}_probe_pca.png")
-    fig.savefig(path, dpi=120)
-    print(f"[plot] wrote {path}")
+    return save_plot(fig, plot_dir, f"{tag}_L{layer_str}_probe_pca.png")

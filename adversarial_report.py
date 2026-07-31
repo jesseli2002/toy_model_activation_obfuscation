@@ -134,6 +134,7 @@ from probe_lib import (
     capture_layers_dict,
     forward_steered,
     load_model,
+    save_plot,
 )
 from probe_lib import plot_probe as plot_probe_separation
 from probe_lib import plot_probe_pca as plot_probe_pca_separation
@@ -145,6 +146,7 @@ def plot_learned_curves(
     tag,
     plot_dir,
     c_values=(1.0, 1.333, 1.667, 2.0),
+    show=False,
 ):
     """Plot learned y(x) per coordinate at fixed c, for an already-loaded model."""
     num_x = model.num_x
@@ -179,11 +181,7 @@ def plot_learned_curves(
     axes[0].set_ylabel("y")
     fig.suptitle(f"learned y(x) per coordinate, fixed c ({tag}); {num_x} lines/panel")
     fig.tight_layout()
-    p = os.path.join(plot_dir, f"{tag}_curves.png")
-    fig.savefig(p, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {p}")
-    return p
+    return save_plot(fig, plot_dir, f"{tag}_curves.png", close=not show)
 
 
 # ----------------------------------------------------------------------------
@@ -389,7 +387,7 @@ def _auroc_snapshots(
 
 
 def _plot_training_traces(
-    tag, history, plot_dir, device, class_threshold, eval_noise_mult
+    tag, history, plot_dir, device, class_threshold, eval_noise_mult, show=False
 ):
     pts = [h for h in history if h.get("l_task") is not None]
     if not pts:
@@ -449,10 +447,7 @@ def _plot_training_traces(
 
     fig.suptitle(f"adversarial training traces ({tag})")
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_training.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
+    save_plot(fig, plot_dir, f"{tag}_training.png", close=not show)
 
 
 def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
@@ -473,10 +468,7 @@ def _plot_probe_gap(tag, hidden_layers, gap, plot_dir):
     ax.legend(fontsize=8)
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_probe_gap.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
+    save_plot(fig, plot_dir, f"{tag}_probe_gap.png")
 
 
 def _plot_heldout_gap(
@@ -511,10 +503,7 @@ def _plot_heldout_gap(
     ax.legend(fontsize=8)
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_heldout_gap.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
+    save_plot(fig, plot_dir, f"{tag}_heldout_gap.png")
 
 
 def _plot_layer_distributions(tag, c_lo, c_hi, layers, plot_inputs, plot_dir):
@@ -619,10 +608,7 @@ def _plot_layer_distributions(tag, c_lo, c_hi, layers, plot_inputs, plot_dir):
     ax_bot.grid(True, alpha=0.3)
 
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_c{c_lo:g}-{c_hi:g}_layer_dist.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
+    save_plot(fig, plot_dir, f"{tag}_c{c_lo:g}-{c_hi:g}_layer_dist.png")
 
 
 def _steer_vectors(w_dom, w_probe, scale):
@@ -690,10 +676,7 @@ def _plot_steer_comparison(
         f"steering effectiveness, DoM vs logreg direction ({tag}, layer {steer_layer})"
     )
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_L{steer_layer}_steer_cmp.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
+    save_plot(fig, plot_dir, f"{tag}_L{steer_layer}_steer_cmp.png")
 
 
 @torch.no_grad()
@@ -760,10 +743,7 @@ def _plot_linear_y_reconstruction(tag, r2, penalty_layers, plot_dir):
     ax.legend(handles=handles, fontsize=8)
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
-    path = os.path.join(plot_dir, f"{tag}_linear_y.png")
-    fig.savefig(path, dpi=120)
-    plt.close(fig)
-    print(f"[plot] wrote {path}")
+    save_plot(fig, plot_dir, f"{tag}_linear_y.png")
 
 
 # ----------------------------------------------------------------------------
@@ -964,9 +944,15 @@ def main(args):
         with open(hist_path) as f:
             history = [json.loads(line) for line in f if line.strip()]
         _plot_training_traces(
-            args.tag, history, plot_dir, device, class_threshold, args.eval_noise_mult
+            args.tag,
+            history,
+            plot_dir,
+            device,
+            class_threshold,
+            args.eval_noise_mult,
+            show=args.show,
         )
-    plot_learned_curves(model, args.tag, plot_dir)
+    plot_learned_curves(model, args.tag, plot_dir, show=args.show)
 
     _plot_probe_gap(args.tag, hidden_layers, gap, plot_dir)
     _plot_layer_distributions(
@@ -1021,6 +1007,7 @@ def main(args):
 
     if args.show:
         plt.show()
+        plt.close("all")
 
 
 if __name__ == "__main__":
