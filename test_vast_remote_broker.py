@@ -196,18 +196,19 @@ def test_timeout_is_reported_as_an_error(remote):
         "dd if=/dev/zero of=/workspace/x",
     ],
 )
-def test_destructive_commands_are_refused_by_default(remote, command):
+def test_destructive_commands_are_refused(remote, command):
     is_error, text = remote.exec(command)
     assert is_error
-    assert "confirm_destructive" in text
+    assert "cannot override" in text
 
 
-def test_destructive_commands_run_when_confirmed(remote):
+def test_destructive_commands_cannot_be_confirmed_away(remote):
+    """The guard is a wall, not a speed bump: no argument unlocks it."""
     target = remote.workdir_path / "runs"
     target.mkdir()
-    is_error, text = remote.exec("rm -rf runs", confirm_destructive=True)
-    assert not is_error, text
-    assert not target.exists()
+    is_error, _ = remote.exec("rm -rf runs", confirm_destructive=True)
+    assert is_error
+    assert target.exists()
 
 
 @pytest.mark.parametrize(
@@ -222,7 +223,7 @@ def test_destructive_commands_run_when_confirmed(remote):
 )
 def test_guard_does_not_block_ordinary_commands(remote, command):
     """The guard must not be so broad that it makes the tool annoying."""
-    vast_remote_broker._check_destructive(command, confirmed=False)
+    vast_remote_broker._check_destructive(command)
 
 
 def test_long_output_is_truncated_in_the_middle(remote):
@@ -246,7 +247,6 @@ def test_long_output_is_truncated_in_the_middle(remote):
         {"command": "ls", "timeout_s": "30"},
         {"command": "ls", "cwd": ""},
         {"command": "ls", "use_venv": "yes"},
-        {"command": "ls", "confirm_destructive": "yes"},
     ],
 )
 def test_invalid_arguments_are_rejected(remote, arguments):
