@@ -340,8 +340,7 @@ def _auroc_snapshots(
     for path in paths:
         model, ck = ResidualMLP.load(path, map_location=device)
         if "probe_w" not in ck:
-            continue  # not a logreg-probe checkpoint -- some checkpoints
-            # carry no adv_config at all, let alone probe_w/probe_b/probe_layers
+            continue  # not a logreg-probe checkpoint (some have no adv_config at all)
         model = model.to(device).eval()
         if eval_x is None:
             # "probe_w" present (checked above) guarantees this is a
@@ -821,13 +820,11 @@ def main(args):
     num_x = model.num_x
     num_blocks = model.num_blocks
     # ck may carry no adversarial config at all (a checkpoint from a
-    # non-adversarial training run) -- that's the only case that falls back
-    # to a default. Once adv_config exists, every field on
-    # AdversarialConfig/LogregAdversarialConfig is always present (this
-    # applies wherever adv_config is read below and in _build_report), so
-    # fail loudly (direct indexing) on a missing key there rather than
-    # silently defaulting -- except fields that exist on only one of the two
-    # config classes (e.g. `init`), which legitimately stay a soft `.get()`.
+    # non-adversarial training run) -- that's the only fallback case. Once
+    # adv_config exists, every AdversarialConfig/LogregAdversarialConfig
+    # field is always present, so fail loudly (direct indexing) on a missing
+    # key -- except fields that exist on only one of the two config classes
+    # (e.g. `init`), which stay a soft `.get()`.
     adv_ck = ck.get("adv_config")
     penalty_layers = (adv_ck["penalty_layers"] if adv_ck is not None else None) or list(
         range(1, num_blocks)
