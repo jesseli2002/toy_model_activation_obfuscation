@@ -1,10 +1,14 @@
-"""MCP stdio server exposing a single, narrow `git_push` tool.
+"""MCP stdio server exposing narrow branch-push tools.
 
 Runs as a host process launched from .mcp.json -- outside the sandboxed
 Bash-tool process tree entirely -- so it is the one place a GitHub PAT
 can live where a sandboxed agent has no path or syscall to reach it.
 The agent supplies only a local worktree path and a branch name; it
 never sees the token, the remote URL, or raw git argv.
+
+The force-push variant is gated on human approval of every single
+call, declared server-side so the guarantee travels with the server
+rather than depending on the client's permission config.
 
 The actual credential handoff to git happens through an inline
 `credential.helper` shell function that reads GIT_PUSH_BROKER_TOKEN
@@ -129,7 +133,22 @@ def _git_env() -> dict[str, str]:
     return env
 
 
-def git_push(config: Config, arguments: dict[str, Any]) -> str:
+@dataclass(frozen=True)
+class PushPlan:
+    """Everything both push variants need, after validation."""
+
+    worktree_path: str  # as supplied by the caller, for error/result text
+    resolved_worktree: str
+    branch: str
+    local_sha: str
+    remote_sha_before: str | None
+    env: dict[str, str]
+    cred_helper: str
+
+
+def _plan_push(
+    config: Config, arguments: dict[str, Any], *, require_expected_sha: bool
+) -> PushPlan:
     worktree_path = arguments.get("worktree_path")
     branch = arguments.get("branch")
     expected_remote_sha = arguments.get("expected_remote_sha")
@@ -138,7 +157,12 @@ def git_push(config: Config, arguments: dict[str, Any]) -> str:
         raise BrokerError("worktree_path is required and must be a non-empty string")
     if not isinstance(branch, str) or not branch:
         raise BrokerError("branch is required and must be a non-empty string")
-    if expected_remote_sha is not None and not isinstance(expected_remote_sha, str):
+    if require_expected_sha:
+        if not isinstance(expected_remote_sha, str) or not expected_remote_sha:
+            raise BrokerError(
+                "expected_remote_sha is required and must be a non-empty string for this tool"
+            )
+    elif expected_remote_sha is not None and not isinstance(expected_remote_sha, str):
         raise BrokerError("expected_remote_sha must be a string if given")
 
     _validate_branch(branch)
@@ -186,33 +210,87 @@ def git_push(config: Config, arguments: dict[str, Any]) -> str:
     )
 
     if expected_remote_sha is not None and remote_sha_before != expected_remote_sha:
+        if remote_sha_before is None:
+            raise BrokerError(
+                f"branch {branch!r} does not exist on the remote, so it cannot match "
+                f"expected_remote_sha {expected_remote_sha!r}"
+            )
         raise BrokerError(
             f"expected_remote_sha {expected_remote_sha!r} does not match actual remote tip "
             f"{remote_sha_before!r} for {branch!r} -- refusing to push on a stale assumption"
         )
 
-    push = _run_git(
-        [
-            "git",
-            "-C",
-            resolved_worktree,
-            "-c",
-            f"credential.helper={cred_helper}",
-            "push",
-            config.remote_url,
-            f"{local_sha}:refs/heads/{branch}",
-        ],
+    return PushPlan(
+        worktree_path=worktree_path,
+        resolved_worktree=resolved_worktree,
+        branch=branch,
+        local_sha=local_sha,
+        remote_sha_before=remote_sha_before,
         env=env,
+        cred_helper=cred_helper,
     )
+
+
+def _push_argv(plan: PushPlan, config: Config, extra_flags: list[str]) -> list[str]:
+    return [
+        "git",
+        "-C",
+        plan.resolved_worktree,
+        "-c",
+        f"credential.helper={plan.cred_helper}",
+        "push",
+        *extra_flags,
+        config.remote_url,
+        f"{plan.local_sha}:refs/heads/{plan.branch}",
+    ]
+
+
+def git_push(config: Config, arguments: dict[str, Any]) -> str:
+    plan = _plan_push(config, arguments, require_expected_sha=False)
+
+    push = _run_git(_push_argv(plan, config, []), env=plan.env)
     if push.returncode != 0:
         raise BrokerError(f"git push failed: {push.stderr.strip()}")
 
     return (
-        f"pushed {branch} ({worktree_path}) -> {local_sha}\n"
-        f"remote tip before: {remote_sha_before or '(branch did not exist)'}\n"
-        f"remote tip after: {local_sha}\n"
+        f"pushed {plan.branch} ({plan.worktree_path}) -> {plan.local_sha}\n"
+        f"remote tip before: {plan.remote_sha_before or '(branch did not exist)'}\n"
+        f"remote tip after: {plan.local_sha}\n"
         f"{push.stderr.strip()}"
     ).strip()
+
+
+def git_push_force(config: Config, arguments: dict[str, Any]) -> str:
+    # A required expected_remote_sha means _plan_push has already established
+    # that the remote branch exists and is at that sha.
+    plan = _plan_push(config, arguments, require_expected_sha=True)
+
+    # The lease turns the expected_remote_sha check above into an atomic one:
+    # a concurrent push landing between ls-remote and here loses the race
+    # rather than getting silently clobbered.
+    lease = f"--force-with-lease=refs/heads/{plan.branch}:{plan.remote_sha_before}"
+    push = _run_git(_push_argv(plan, config, [lease]), env=plan.env)
+    if push.returncode != 0:
+        raise BrokerError(f"git force-push failed: {push.stderr.strip()}")
+
+    return (
+        f"force-pushed {plan.branch} ({plan.worktree_path}) -> {plan.local_sha}\n"
+        f"remote tip before (now orphaned): {plan.remote_sha_before}\n"
+        f"remote tip after: {plan.local_sha}\n"
+        f"{push.stderr.strip()}"
+    ).strip()
+
+
+_SHARED_INPUT_PROPERTIES = {
+    "worktree_path": {
+        "type": "string",
+        "description": "Local path to the git working tree containing the commit to push.",
+    },
+    "branch": {
+        "type": "string",
+        "description": "Branch name to push (same name used locally and on the remote).",
+    },
+}
 
 
 TOOLS = [
@@ -227,14 +305,7 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
-                "worktree_path": {
-                    "type": "string",
-                    "description": "Local path to the git working tree containing the commit to push.",
-                },
-                "branch": {
-                    "type": "string",
-                    "description": "Branch name to push (same name used locally and on the remote).",
-                },
+                **_SHARED_INPUT_PROPERTIES,
                 "expected_remote_sha": {
                     "type": "string",
                     "description": (
@@ -245,8 +316,38 @@ TOOLS = [
             },
             "required": ["worktree_path", "branch"],
         },
-    }
+    },
+    {
+        "name": "git_push_force",
+        "description": (
+            "Force-push a local branch to the configured GitHub remote, discarding remote "
+            "commits that are not in the local branch. Every call requires explicit human "
+            "approval. Shares git_push's guards (refuses main/master, worktree must be under "
+            "the configured repo root) and additionally requires expected_remote_sha, which is "
+            "enforced as a --force-with-lease. Use git_push unless the remote genuinely needs "
+            "history rewritten; the discarded commits are recoverable only from the reported SHA."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                **_SHARED_INPUT_PROPERTIES,
+                "expected_remote_sha": {
+                    "type": "string",
+                    "description": (
+                        "Required: the remote branch tip this force-push expects to overwrite. "
+                        "The push is refused if the remote has moved off it."
+                    ),
+                },
+            },
+            "required": ["worktree_path", "branch", "expected_remote_sha"],
+        },
+        # Makes Claude Code prompt for approval on every call, ignoring allow
+        # rules and permission modes. See PR for the full permission analysis.
+        "_meta": {"anthropic/requiresUserInteraction": True},
+    },
 ]
+
+TOOL_HANDLERS = {"git_push": git_push, "git_push_force": git_push_force}
 
 
 def _write_message(out: IO[str], obj: dict[str, Any]) -> None:
@@ -282,7 +383,8 @@ def _handle_request(config: Config, msg: dict[str, Any]) -> dict[str, Any] | Non
         params = msg.get("params", {})
         name = params.get("name")
         arguments = params.get("arguments", {})
-        if name != "git_push":
+        handler = TOOL_HANDLERS.get(name)
+        if handler is None:
             return {
                 "jsonrpc": "2.0",
                 "id": msg_id,
@@ -292,7 +394,7 @@ def _handle_request(config: Config, msg: dict[str, Any]) -> dict[str, Any] | Non
                 },
             }
         try:
-            text = git_push(config, arguments)
+            text = handler(config, arguments)
             is_error = False
         except BrokerError as exc:
             text = str(exc)
