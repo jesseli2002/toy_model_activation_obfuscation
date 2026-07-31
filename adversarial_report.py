@@ -439,7 +439,7 @@ def _plot_training_traces(
     ax_auroc.grid(True, alpha=0.3)
 
     ax_loss.semilogy(its, [h["l_task"] for h in pts], label="L_task")
-    ax_loss.semilogy(its, [max(h["l_probe"], 1e-30) for h in pts], label="L_probe")
+    ax_loss.semilogy(its, [max(h["loss"], 1e-30) for h in pts], label="L_total")
     ref_losses = reference_task_losses(
         config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH
     )
@@ -453,6 +453,7 @@ def _plot_training_traces(
         )
     ax_loss.set_title("loss terms")
     ax_loss.set_xlabel("iter")
+    ax_loss.set_ylim(bottom=3e-3)
     ax_loss.legend(fontsize=7)
     ax_loss.grid(True, alpha=0.3)
 

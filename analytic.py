@@ -337,5 +337,7 @@ def _verify_obfuscator(
 
 
 if __name__ == "__main__":
-    _verify_model()
-    _verify_obfuscator()
+    # _verify_model()
+    # _verify_obfuscator()
+
+    print(no_c_task_loss(-3, 3, 1, 2))
