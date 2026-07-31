@@ -165,19 +165,23 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # what every off-the-shelf implementation hard-codes. Ignored by
     # optimizer_kind="adamw".
     stableadamw_d: float
-    # Revert-and-retry: after each step, re-check the loss on the same batch,
-    # and if it jumped by more than explode_factor x the smallest loss seen
-    # in the last explode_window_iters iterations (explode_window_iters=1
-    # compares only against this iteration's own pre-step loss), undo the
-    # step (model + optimizer state) and redo it with grad_clip divided by
-    # explode_clip_divisor. Comparing against a window rather than just this
-    # iteration's own pre-step loss catches gradual multi-step creep (e.g.
-    # loss roughly doubling on several consecutive steps, each one under
-    # explode_factor on its own). This only catches genuine large-gradient
-    # -norm events -- adam_eps/adam_beta2 above are the fix for the small
-    # -gradient-norm spikes this retry can't affect (confirmed empirically:
-    # redoing with a tighter clip is a no-op when the original gradient norm
-    # was already below the tighter threshold). explode_factor=0 disables.
+    # Revert-and-retry, checked with a one-iteration lag: rather than an
+    # extra same-batch re-forward every iteration, each step is checked
+    # against the *next* iteration's own (different-batch) pre-step loss --
+    # already being computed anyway -- and if that jumped by more than
+    # explode_factor x the smallest loss seen in the last
+    # explode_window_iters iterations (explode_window_iters=1 compares only
+    # against the checked iteration's own pre-step loss), that step is undone
+    # (model + optimizer state) and redone with grad_clip divided by
+    # explode_clip_divisor. Comparing against a window rather than just the
+    # checked iteration's own pre-step loss catches gradual multi-step creep
+    # (e.g. loss roughly doubling on several consecutive steps, each one
+    # under explode_factor on its own). This only catches genuine
+    # large-gradient-norm events -- adam_eps/adam_beta2 above are the fix for
+    # the small-gradient-norm spikes this retry can't affect (confirmed
+    # empirically: redoing with a tighter clip is a no-op when the original
+    # gradient norm was already below the tighter threshold).
+    # explode_factor=0 disables.
     explode_factor: float
     explode_clip_divisor: float
     explode_window_iters: int

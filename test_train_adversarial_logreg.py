@@ -431,11 +431,11 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
 class TestNoiseBlobReplay:
     """The property the model-owned noise blob buys over the old gen-state
     snapshot/reset dance (plans/model_noise_blob_plan.md): every forward_loss
-    call within one iteration -- including the explode-check and
-    explode-redo passes -- sees bit-identical noise, assertable directly
-    instead of relying on `gen` replay discipline."""
+    call touching a given iteration's batch -- including a later iteration's
+    explode-redo pass replaying it -- sees bit-identical noise, assertable
+    directly instead of relying on `gen` replay discipline."""
 
-    def test_explode_check_and_redo_see_identical_noise(self):
+    def test_explode_redo_sees_identical_noise_one_iteration_later(self):
         import torch
 
         from model import ResidualMLP
@@ -474,7 +474,7 @@ class TestNoiseBlobReplay:
             gen,
             probe=None,
             adv_config=adv_config,
-            max_iters=1,
+            max_iters=2,
             hidden_layers=hidden_layers,
             start_iter=0,
             affine=(torch.zeros(1), torch.zeros(1)),
@@ -482,13 +482,21 @@ class TestNoiseBlobReplay:
             probe_label=torch.zeros(1, dtype=torch.bool),
             device="cpu",
         )
-        record = next(gen_iter)
+        record0 = next(gen_iter)
+        record1 = next(gen_iter)
 
-        assert record.n_exploded == 1, "test expects the huge-lr step to explode"
-        # initial pass, explode-check pass, explode-redo pass.
-        assert len(seen_noise) == 3
-        for noise in seen_noise[1:]:
-            assert torch.equal(seen_noise[0], noise)
+        # Detection lags by one iteration: iter 0's step isn't judged until
+        # iter 1's own forward reveals it exploded.
+        assert record0.n_exploded == 0
+        assert record1.n_exploded == 1, "test expects the huge-lr step to explode"
+        # iter 0's own pass, iter 1's own pass, iter 0's explode-redo pass
+        # (replaying iter 0's batch/noise), iter 1's own pass redone after
+        # the revert moved the weights out from under its first pass.
+        assert len(seen_noise) == 4
+        iter0_noise, iter1_noise, redo0_noise, redo1_noise = seen_noise
+        assert torch.equal(iter0_noise, redo0_noise)
+        assert torch.equal(iter1_noise, redo1_noise)
+        assert not torch.equal(iter0_noise, iter1_noise)
 
 
 class TestExplodeWindow:
@@ -497,13 +505,20 @@ class TestExplodeWindow:
     iteration's own pre-step loss, so a run that creeps up by a sub-threshold
     factor on several consecutive steps still gets caught."""
 
-    def _run(self, monkeypatch, desired_losses, explode_window_iters):
-        """Drive train_steps for len(desired_losses)//2-ish iterations with
-        model.forward replaced by a stub that returns exactly
-        sqrt(desired_losses[call_index]) each call (in call order), against
-        an all-zero task target -- so l_task == desired_losses[call_index]
-        exactly, independent of real model/gradient dynamics. Returns the
-        list of n_exploded seen after each iteration."""
+    def _run(self, monkeypatch, desired_losses, explode_window_iters, max_iters):
+        """Drive train_steps for max_iters iterations with model.forward
+        replaced by a stub that returns exactly sqrt(desired_losses[call_index])
+        each call (in call order), against an all-zero task target -- so
+        l_task == desired_losses[call_index] exactly, independent of real
+        model/gradient dynamics. Returns the list of n_exploded seen after
+        each iteration.
+
+        Explode-detection is checked with a one-iteration lag (see `pending`
+        in train_steps): each iteration's own forward call is the "after"
+        signal for the PREVIOUS iteration's step, so with no explosions,
+        exactly one call happens per iteration; a detected explosion between
+        iterations N-1 and N consumes two extra calls (a redo of N-1's
+        forward, then a redo of N's own forward)."""
         import torch
 
         import train_adversarial_logreg as tal
@@ -551,7 +566,7 @@ class TestExplodeWindow:
             gen,
             probe=None,
             adv_config=adv_config,
-            max_iters=2,
+            max_iters=max_iters,
             hidden_layers=hidden_layers,
             start_iter=0,
             affine=(torch.zeros(1), torch.zeros(1)),
@@ -562,22 +577,32 @@ class TestExplodeWindow:
         return [record.n_exploded for record in gen_iter]
 
     def test_window_1_never_flags_gradual_creep(self, monkeypatch):
-        # Each step's own before/after ratio is 1.9x, under explode_factor=2.0,
-        # so a same-iteration-only check (explode_window_iters=1) never fires
-        # even though iter 1's loss (3.6) is 3.6x iter 0's starting loss (1.0).
-        n_exploded = self._run(
-            monkeypatch, desired_losses=[1.0, 1.9, 1.9, 3.6], explode_window_iters=1
-        )
-        assert n_exploded == [0, 0]
-
-    def test_wider_window_flags_the_same_creep(self, monkeypatch):
-        # Same loss trajectory as above, but explode_window_iters=3 compares
-        # iter 1's after-step loss (3.6) against the smallest loss over the
-        # last 3 iterations (1.0, from iter 0), catching what the 1-step
-        # check above missed.
+        # Iter 0's own pre-step loss (1.0) is checked, one iteration later,
+        # against iter 1's own pre-step loss (1.9, a 1.9x ratio, under
+        # explode_factor=2.0); iter 1's (1.9) is likewise checked against
+        # iter 2's (3.6, also 1.9x). Neither single-step ratio crosses 2.0x,
+        # so a same-pending-only check (explode_window_iters=1) never fires,
+        # even though 3.6 is 3.6x the run's starting loss.
         n_exploded = self._run(
             monkeypatch,
-            desired_losses=[1.0, 1.9, 1.9, 3.6, 1.95],
-            explode_window_iters=3,
+            desired_losses=[1.0, 1.9, 3.6],
+            explode_window_iters=1,
+            max_iters=3,
         )
-        assert n_exploded == [0, 1]
+        assert n_exploded == [0, 0, 0]
+
+    def test_wider_window_flags_the_same_creep(self, monkeypatch):
+        # Same loss trajectory as above, but explode_window_iters=3 checks
+        # iter 1's pending loss (1.9) against the smallest loss over the last
+        # 3 iterations (1.0, from iter 0) instead of just iter 1's own 1.9 --
+        # 3.6 is 3.6x that 1.0 baseline, catching what the 1-step check
+        # above missed. The extra two entries are the redo-forward calls the
+        # detected explosion triggers (see `_run`'s docstring); their values
+        # don't affect n_exploded.
+        n_exploded = self._run(
+            monkeypatch,
+            desired_losses=[1.0, 1.9, 3.6, 1.9, 1.5],
+            explode_window_iters=3,
+            max_iters=3,
+        )
+        assert n_exploded == [0, 0, 1]
