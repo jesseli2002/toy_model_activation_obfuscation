@@ -90,7 +90,7 @@ def main(args):
     dom_acc = float(((dom_scores > 0) == y_te).mean())
     dom_auroc = float(roc_auc_score(y_te, dom_scores))
 
-    clf = LogisticRegression().fit(X_tr, y_tr)
+    clf = LogisticRegression(C=1000).fit(X_tr, y_tr)
     logreg_acc = float(clf.score(X_te, y_te))
     w_lr, b_lr = clf.coef_[0], float(clf.intercept_[0])
     logreg_auroc = float(roc_auc_score(y_te, X_te @ w_lr + b_lr))
@@ -116,8 +116,8 @@ def main(args):
     # on (x1, v1, v2), so boundaries are planes; we show their 2D projection
     # at the mean x1 value (dashed/dotted lines indicate x1-dependence).
     fig, ax = plt.subplots(figsize=(6, 6))
-    ax.scatter(*X_te[y_te == 0, 1:].T, s=4, alpha=0.25, label=lo_label)
-    ax.scatter(*X_te[y_te == 1, 1:].T, s=4, alpha=0.25, label=hi_label)
+    ax.scatter(*X_te[y_te == 0, 1:].T, s=4, alpha=0.01, label=lo_label)
+    ax.scatter(*X_te[y_te == 1, 1:].T, s=4, alpha=0.01, label=hi_label)
     v1g = np.linspace(X_te[:, 1].min(), X_te[:, 1].max(), 200)
     x1_mean = X_te[:, 0].mean()
     for w, b, style, name in [
@@ -129,10 +129,7 @@ def main(args):
             ax.plot(v1g, v2g, style, label=name, alpha=0.7)
     ax.set_xlabel("v1")
     ax.set_ylabel("v2")
-    ax.set_title(
-        f"v1/v2 encoding, {lo_label} vs {hi_label}\n"
-        "(boundaries shown at mean x1; probes also see x1)"
-    )
+    ax.set_title(f"v1/v2 encoding, {lo_label} vs {hi_label}")
     ax.legend(fontsize=8)
     ax.grid(True, alpha=0.3)
     fig.tight_layout()
