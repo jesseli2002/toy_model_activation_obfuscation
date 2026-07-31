@@ -6,10 +6,6 @@ This directory contains plans for agents.
       KEEP this entry even once every plan below is finished/archived and this
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
-- adversarial_report_docs_plan.md
-    - Drop the stale "Step 3" framing from `adversarial_report.py`'s module
-      docstring and report header; trim two docstrings that narrate
-      implementation mechanics down to contract + pointer. No behavior change.
 - adversarial_report_save_plot_plan.md
     - Shared `save_plot` helper for `adversarial_report.py`'s and
       `probe_lib.py`'s ~9 plot functions, deduping the savefig/close/print
@@ -32,8 +28,8 @@ This directory contains plans for agents.
       this set of 5, after the others have already cleaned up the code it
       moves.
 
-Suggested landing order (each is an independently reviewable PR): docs,
-save_plot, dom_probe_refactor, checkpoint_access, main_decomposition.
+Suggested landing order (each is an independently reviewable PR): save_plot,
+dom_probe_refactor, checkpoint_access, main_decomposition. (docs already landed.)
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
 index short. Only open one if you specifically need the history behind a past
