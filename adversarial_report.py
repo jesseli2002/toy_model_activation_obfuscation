@@ -130,6 +130,7 @@ from data import eval_max_err
 from probe_backend import build_probe_pipeline, resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
+    _boundary_accuracy,
     capture_layers,
     capture_layers_dict,
     forward_steered,
@@ -187,19 +188,6 @@ def plot_learned_curves(
 # ----------------------------------------------------------------------------
 # Probe primitives (reuse probe_lib's harness where possible)
 # ----------------------------------------------------------------------------
-def _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te):
-    """Raw difference-of-means classifier (train direction, test accuracy)."""
-    mu_lo = r_lo_tr.mean(dim=0)
-    mu_hi = r_hi_tr.mean(dim=0)
-    w = (mu_hi - mu_lo).cpu().numpy()
-    midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w)
-    X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
-    y_te = np.concatenate([np.zeros(len(r_lo_te)), np.ones(len(r_hi_te))])
-    pred = (X_te @ w > midpoint).astype(float)
-    delta_norm = float(np.linalg.norm(w))
-    return float((pred == y_te).mean()), delta_norm
-
-
 def _raw_signed_distance(w_probe, b_probe, X):
     """Signed distance to the probe's decision boundary in raw (unstandardized)
     data units, boundary at 0 -- same fold as probe_lib.plot_probe's
@@ -267,7 +255,6 @@ def _binary_probe_metrics_all_layers(
     for layer in tqdm(layers, desc=desc, leave=False):
         r_lo_tr, r_hi_tr = train_ds[layer]
         r_lo_te, r_hi_te = test_ds[layer]
-        dom_acc, delta_norm = _dom_accuracy(r_lo_tr, r_hi_tr, r_lo_te, r_hi_te)
 
         X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
         y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
@@ -282,20 +269,11 @@ def _binary_probe_metrics_all_layers(
                 torch.ones(n_train, dtype=torch.bool, device=device),
             ]
         )
-        X_te_t = torch.cat([r_lo_te, r_hi_te], dim=0)
-        y_te_t = torch.cat(
-            [
-                torch.zeros(n_test, dtype=torch.bool, device=device),
-                torch.ones(n_test, dtype=torch.bool, device=device),
-            ]
-        )
         pipeline = build_probe_pipeline(
             C=PROBE_C, max_iter=2000, backend=probe_backend_name
         )
         pipeline.fit(X_tr_t, y_tr_t)
         w_probe_t, b_probe_t = pipeline.get_affine(device)
-        logreg_pred = (X_te_t @ w_probe_t + b_probe_t) > 0
-        logreg_acc = float((logreg_pred == y_te_t).float().mean())
         w_probe = w_probe_t.cpu().numpy()
         b_probe = float(b_probe_t.cpu())
 
@@ -303,6 +281,11 @@ def _binary_probe_metrics_all_layers(
         mu_hi = r_hi_tr.mean(dim=0)
         w_dom = (mu_hi - mu_lo).cpu().numpy()
         midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
+        dom_boundary = LinearBoundary(w_dom, -midpoint)
+        probe_boundary = LinearBoundary(w_probe, b_probe)
+        dom_acc = _boundary_accuracy(dom_boundary, X_te, y_te)
+        logreg_acc = _boundary_accuracy(probe_boundary, X_te, y_te)
+        delta_norm = float(np.linalg.norm(w_dom))
 
         metrics[layer] = {
             "dom": dom_acc,

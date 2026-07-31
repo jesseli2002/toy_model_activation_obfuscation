@@ -6,11 +6,6 @@ This directory contains plans for agents.
       KEEP this entry even once every plan below is finished/archived and this
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
-- adversarial_report_dom_probe_refactor_plan.md
-    - Unify DoM/logreg accuracy scoring in `_binary_probe_metrics_all_layers`
-      via `probe_lib.LinearBoundary`, removing a duplicated DoM mean-vector
-      computation. Deliberately leaves `main()`'s visible
-      `b_dom = -pi["midpoint"]` sign flip untouched.
 - adversarial_report_checkpoint_access_plan.md
     - Consolidate near-duplicate comments (not logic -- each check stays a
       1-2 line inline check) explaining `adversarial_report.py`'s
@@ -24,7 +19,7 @@ This directory contains plans for agents.
       moves.
 
 Suggested landing order (each is an independently reviewable PR):
-dom_probe_refactor, checkpoint_access, main_decomposition. (docs and save_plot
+checkpoint_access, main_decomposition. (docs, save_plot, and dom_probe_refactor
 already landed.)
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
