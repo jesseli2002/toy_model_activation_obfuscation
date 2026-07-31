@@ -40,6 +40,13 @@ current code before reusing it.
       --fork-from <tag> flag (branch a new experiment off an existing run's checkpoint
       with freshly-specified hyperparameters, vs. --resume which now strictly continues
       the same experiment unchanged).
+- adversarial_report_checkpoint_access_plan.md
+    - Consolidated three near-duplicate comments in adversarial_report.py
+      explaining the optional-adv_config checkpoint fallback rule into one
+      canonical statement (main()) plus pointers. While executing, fixed
+      stale references to since-removed scripts (train_adversarial.py,
+      train_probe.py, train_model_plot.py) that the plan's proposed comment
+      text still named.
 - logreg_run_config_plan.md
     - Stop splatting the adversarial config into the checkpoint's top level (which made
       --resume warn on every state key); give each run directory two artifacts -- a verbatim

@@ -340,7 +340,7 @@ def _auroc_snapshots(
     for path in paths:
         model, ck = ResidualMLP.load(path, map_location=device)
         if "probe_w" not in ck:
-            continue  # not a train_adversarial_logreg.py checkpoint
+            continue  # not a logreg-probe checkpoint (some have no adv_config at all)
         model = model.to(device).eval()
         if eval_x is None:
             # "probe_w" present (checked above) guarantees this is a
@@ -754,12 +754,9 @@ def _build_report(
 
     emit(f"# Adversarial diagnostics — tag={args.tag} ckpt={args.ckpt}")
     emit()
-    # ck may be a train_probe.py/train_model_plot.py checkpoint with no
-    # adversarial config at all -- that {} default is load-bearing. Once
-    # adv_config exists, `lam` is always present (both AdversarialConfig and
-    # LogregAdversarialConfig have it) so fail loudly there; `init` is
-    # AdversarialConfig-only (LogregAdversarialConfig has no such field), so
-    # it legitimately stays a soft .get.
+    # adv_config fallback rule: see main(). `init` is AdversarialConfig-only
+    # (LogregAdversarialConfig has no such field), so it legitimately stays
+    # a soft `.get()`.
     adv_ck = ck.get("adv_config")
     lam = adv_ck["lam"] if adv_ck is not None else None
     init = adv_ck.get("init") if adv_ck is not None else None
@@ -822,11 +819,12 @@ def main(args):
     model, ck = load_model(args.tag, args.ckpt, device)
     num_x = model.num_x
     num_blocks = model.num_blocks
-    # ck may carry no adversarial config at all (train_probe.py/
-    # train_model_plot.py checkpoint) -- that's the only case that falls
-    # back; once adv_config exists, penalty_layers is always a key in it
-    # (though its value may legitimately be None/"unset"), so fail loudly
-    # on a missing key rather than silently defaulting.
+    # ck may carry no adversarial config at all (a checkpoint from a
+    # non-adversarial training run) -- that's the only fallback case. Once
+    # adv_config exists, every AdversarialConfig/LogregAdversarialConfig
+    # field is always present, so fail loudly (direct indexing) on a missing
+    # key -- except fields that exist on only one of the two config classes
+    # (e.g. `init`), which stay a soft `.get()`.
     adv_ck = ck.get("adv_config")
     penalty_layers = (adv_ck["penalty_layers"] if adv_ck is not None else None) or list(
         range(1, num_blocks)
