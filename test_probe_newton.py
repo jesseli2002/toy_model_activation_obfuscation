@@ -9,7 +9,13 @@ import pytest
 import torch
 from sklearn.linear_model import LogisticRegression
 
-from probe_backend import TorchProbePipeline
+from probe_backend import (
+    PROBE_NEWTON_STEPS,
+    NewtonProbePipeline as _PipelineFromBackend,
+    TorchProbePipeline,
+    build_probe_pipeline,
+    resolve_probe_backend,
+)
 from probe_newton import NewtonLogisticRegression, NewtonProbePipeline
 
 torch.manual_seed(0)
@@ -91,6 +97,44 @@ def test_pipeline_affine_matches_torch_pipeline():
 
     torch.testing.assert_close(w_new, w_ref, rtol=2e-3, atol=2e-3)
     torch.testing.assert_close(b_new, b_ref, rtol=2e-3, atol=2e-3)
+
+
+def test_cold_fit_ignores_the_small_warm_step_budget():
+    """A warm-started fit gets `steps`; a cold one has no head start, so it
+    must fall back to the larger cold budget or it would return a
+    barely-moved solution."""
+    X, y = make_binary_data()
+    Xt, yt = to_torch(X, y)
+    ref = NewtonLogisticRegression(C=1.0, steps=40, warm_start=False).fit(Xt, yt)
+    cold = NewtonLogisticRegression(C=1.0, steps=1, cold_steps=30).fit(Xt, yt)
+    torch.testing.assert_close(cold.coef_, ref.coef_, rtol=1e-4, atol=1e-6)
+
+
+class TestBackendSelection:
+    def test_build_probe_pipeline_returns_newton(self):
+        p = build_probe_pipeline(C=1.0, max_iter=999, backend="newton")
+        assert isinstance(p, _PipelineFromBackend)
+        assert p._logreg.steps == PROBE_NEWTON_STEPS
+
+    def test_max_iter_does_not_drive_newtons_budget(self):
+        """fit_probe calls set_max_iter every retrain with the LBFGS iteration
+        ceiling; Newton must ignore it rather than reinterpret it as steps."""
+        p = build_probe_pipeline(C=1.0, max_iter=999, backend="newton")
+        p.set_max_iter(12345)
+        assert p._logreg.steps == PROBE_NEWTON_STEPS
+
+    def test_newton_steps_is_overridable(self):
+        p = build_probe_pipeline(C=1.0, max_iter=10, backend="newton", newton_steps=9)
+        assert p._logreg.steps == 9
+
+    def test_newton_is_opt_in_not_the_auto_choice(self):
+        assert resolve_probe_backend("auto", "cuda") == "torch"
+        assert resolve_probe_backend("newton", "cuda") == "newton"
+        assert resolve_probe_backend("newton", "cpu") == "newton"
+
+    def test_unknown_backend_still_rejected(self):
+        with pytest.raises(ValueError, match="unknown probe backend"):
+            build_probe_pipeline(C=1.0, max_iter=10, backend="auto")
 
 
 def test_get_affine_returns_detached():

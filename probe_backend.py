@@ -1,11 +1,18 @@
-"""CPU (sklearn) / GPU (torch) probe pipeline adapter for
+"""CPU (sklearn) / GPU (torch, newton) probe pipeline adapter for
 train_adversarial_logreg.py.
 
-Both pipelines expose the same duck-typed interface -- set_max_iter, fit,
+All pipelines expose the same duck-typed interface -- set_max_iter, fit,
 get_affine -- so the training loop stays backend-agnostic: it always hands
 over torch tensors (whatever device they're already on) and lets each
 pipeline decide how to consume them. `build_probe_pipeline` picks the
 backend; `"auto"` uses the GPU (torch) pipeline iff CUDA is available.
+
+"newton" is the other GPU backend: same objective, solved by damped Newton
+instead of torch.optim.LBFGS. It is much faster on launch-latency-bound
+hardware (the probe fit dominated the training loop) at equal-or-better
+accuracy -- see probe_newton.py. It is opt-in rather than the "auto" choice
+because switching solvers perturbs a run's trajectory, which is a research
+decision rather than a performance one.
 """
 
 import numpy as np
@@ -14,7 +21,14 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline, make_pipeline
 from sklearn.preprocessing import StandardScaler
 
+from probe_newton import NewtonProbePipeline
 from torch_logreg import TorchLogisticRegression, TorchStandardScaler
+
+# Newton steps per warm-started probe fit. Measured on the recorded fit
+# sequence of a real run: 5 steps reproduces the exact minimizer to float32
+# precision (better than the LBFGS backend's own residual), 3 leaves a
+# visible gap, and beyond 5 buys nothing. See PR #136.
+PROBE_NEWTON_STEPS = 5
 
 
 class SklearnProbePipeline:
@@ -100,16 +114,21 @@ def resolve_probe_backend(backend: str, device: str) -> str:
 
 
 def build_probe_pipeline(
-    C: float, max_iter: int, backend: str
-) -> "SklearnProbePipeline | TorchProbePipeline":
+    C: float, max_iter: int, backend: str, newton_steps: int = PROBE_NEWTON_STEPS
+) -> "SklearnProbePipeline | TorchProbePipeline | NewtonProbePipeline":
     if backend == "torch":
         return TorchProbePipeline(C, max_iter)
     elif backend == "sklearn":
         return SklearnProbePipeline(C, max_iter)
+    elif backend == "newton":
+        # max_iter is deliberately unused: Newton's budget is a fixed step
+        # count, not an iteration ceiling (see NewtonLogisticRegression).
+        return NewtonProbePipeline(C, steps=newton_steps)
     else:
         raise ValueError(
             f"unknown probe backend {backend!r} -- pass a resolved backend "
-            f"('sklearn' or 'torch'), not 'auto'; use resolve_probe_backend() first."
+            f"('sklearn', 'torch' or 'newton'), not 'auto'; use "
+            f"resolve_probe_backend() first."
         )
 
 

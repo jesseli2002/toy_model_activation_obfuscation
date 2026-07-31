@@ -6,8 +6,9 @@ one or more penalized hidden layers, advanced a few solver iterations per
 training step from the previous step's coefficients rather than refit from
 scratch (see the three run modes below for how the probe's initial
 coefficients are established). The probe backend is
-`sklearn.linear_model.LogisticRegression` (CPU) or a GPU-resident torch
-reimplementation, selected via `--probe-backend` (see probe_backend.py).
+`sklearn.linear_model.LogisticRegression` (CPU) or one of two GPU-resident
+torch reimplementations solving the same objective, selected via
+`--probe-backend` (see probe_backend.py).
 
 The training objective combines a probe-adversarial penalty with the task
 loss (see LogregAdversarialConfig for the weighting and probe hyperparameters).
@@ -145,9 +146,11 @@ def parse_args():
         choices=config.PROBE_BACKEND_CHOICES,
         default="auto",
         help="'auto' (default): torch (GPU-resident) probe iff CUDA is "
-        "available, else sklearn. 'sklearn'/'torch' force a backend "
-        "regardless of device -- e.g. to smoke-test the torch backend on a "
-        "CPU-only machine.",
+        "available, else sklearn. The others force a backend regardless of "
+        "device -- e.g. to smoke-test a GPU backend on a CPU-only machine. "
+        "'newton' solves the same probe objective by damped Newton instead "
+        "of L-BFGS: far cheaper per fit on launch-latency-bound hardware, at "
+        "equal-or-better accuracy (see probe_newton.py).",
     )
     g_book.add_argument("--log-interval", type=int, default=100)
     g_book.add_argument("--ckpt-interval", type=int, default=200)
