@@ -31,6 +31,13 @@ class LinearBoundary(NamedTuple):
         return X @ self.w + self.b
 
 
+def _boundary_accuracy(
+    b: LinearBoundary, X: Float[np.ndarray, "n d"], y: Bool[np.ndarray, "n"]
+) -> float:
+    """Fraction of (X, y) classified correctly by `b.score(X) > 0`."""
+    return float(((b.score(X) > 0) == y).mean())
+
+
 def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
     """Returns (model, full checkpoint dict) -- the dict carries any non-
     architecture fields (opt state, iter, adversarial-run metadata, ...) that
