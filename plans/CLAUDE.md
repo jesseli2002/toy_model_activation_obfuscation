@@ -6,11 +6,6 @@ This directory contains plans for agents.
       KEEP this entry even once every plan below is finished/archived and this
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
-- adversarial_report_checkpoint_access_plan.md
-    - Consolidate near-duplicate comments (not logic -- each check stays a
-      1-2 line inline check) explaining `adversarial_report.py`'s
-      optional-`adv_config` checkpoint fallback rule, currently restated at
-      3 call sites.
 - adversarial_report_main_decomposition_plan.md
     - Split `adversarial_report.py`'s ~170-line `main()` into
       `_run_diagnostics` (compute) / `_build_report` (existing) /
@@ -19,8 +14,8 @@ This directory contains plans for agents.
       moves.
 
 Suggested landing order (each is an independently reviewable PR):
-checkpoint_access, main_decomposition. (docs, save_plot, and dom_probe_refactor
-already landed.)
+main_decomposition. (checkpoint_access, docs, save_plot, and
+dom_probe_refactor already landed.)
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
 index short. Only open one if you specifically need the history behind a past
