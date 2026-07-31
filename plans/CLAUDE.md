@@ -6,9 +6,6 @@ This directory contains plans for agents.
       KEEP this entry even once every plan below is finished/archived and this
       list is otherwise empty -- it's the format documentation, not a stale
       leftover.
-Suggested landing order (each is an independently reviewable PR):
-(docs, save_plot, dom_probe_refactor, checkpoint_access, main_decomposition,
-and terminology already landed.)
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
 index short. Only open one if you specifically need the history behind a past
