@@ -435,6 +435,25 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
     return model, opt, start_iter, best_loss, rck
 
 
+def _restore_rng_state(rck: dict, device) -> torch.Generator:
+    """--resume counterpart to save_checkpoint's RNG snapshot: restores
+    torch's global default generator (and CUDA's, if present) in place, and
+    rebuilds `gen` -- the training loop's own generator -- from its saved
+    state, so the interrupted run's RNG stream continues rather than
+    reseeding a fresh one."""
+    if "rng_state" not in rck:
+        raise SystemExit(
+            "[error] checkpoint predates RNG-state checkpointing and cannot "
+            "be exactly --resume'd. Use --fork-from instead (reseeds fresh)."
+        )
+    torch.set_rng_state(rck["rng_state"])
+    if rck["cuda_rng_state"] is not None:
+        torch.cuda.set_rng_state(rck["cuda_rng_state"])
+    gen = torch.Generator(device=device)
+    gen.set_state(rck["gen_state"])
+    return gen
+
+
 def _history_path(tag: str) -> str:
     return os.path.join(log_dir(tag), "history.jsonl")
 
@@ -838,14 +857,7 @@ def main(args):
         model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
         adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
         hidden_layers = adv_config.penalty_layers
-        # Reseeds fresh from the checkpoint's own historical seed (`seed` is
-        # no longer a LogregAdversarialConfig field, so read it straight off
-        # the raw dict) rather than continuing the interrupted run's RNG
-        # stream in place -- exact RNG continuity across --resume is a
-        # separate follow-up.
-        gen = torch.Generator(device=device).manual_seed(
-            rck["adv_config"]["seed"] + 1
-        )
+        gen = _restore_rng_state(rck, device)
         # history.jsonl is append-only: this run's earlier entries are
         # already on disk, so resuming needs no read -- new entries just
         # keep appending to the same file.

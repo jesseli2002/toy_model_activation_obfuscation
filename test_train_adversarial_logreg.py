@@ -26,6 +26,7 @@ from train_adversarial_logreg import (
     _history_path,
     _read_history,
     _resolve_hidden_layers,
+    _restore_rng_state,
     _write_run_config,
     load_run_config,
     train_steps,
@@ -441,6 +442,81 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
     )
     assert result.returncode != 0
     assert "adv_config" in result.stderr + result.stdout
+
+
+def test_resume_missing_rng_state_exits_with_error(tmp_path):
+    """A checkpoint predating RNG-state checkpointing (no "rng_state" key)
+    must fail loudly under --resume, not raise a raw KeyError."""
+    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_logreg_config_file_fields()))
+    fresh = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--config",
+            str(config_path),
+            "--num-x",
+            "2",
+            "--d-model",
+            "4",
+            "--d-mlp",
+            "2",
+            "--num-blocks",
+            "2",
+            "--max-iters",
+            "1",
+            "--tag",
+            "t",
+            "--seed",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=tmp_path,
+    )
+    assert fresh.returncode == 0, fresh.stderr
+
+    import torch
+
+    ckpt_path = tmp_path / "runs" / "t" / "checkpoints" / "last.pt"
+    ck = torch.load(ckpt_path, weights_only=False)
+    del ck["rng_state"]
+    torch.save(ck, ckpt_path)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--resume", "--tag", "t", "--max-iters", "2"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+    assert result.returncode != 0
+    assert "RNG-state" in result.stderr + result.stdout
+
+
+def test_restore_rng_state_continues_gen_stream_not_reseeded():
+    """_restore_rng_state's `gen` must continue from where the snapshot left
+    off (next draw matches the original generator's next draw), not restart
+    a fresh stream at whatever seed originally produced that state."""
+    import torch
+
+    original_gen = torch.Generator().manual_seed(123)
+    original_gen.manual_seed(123)
+    torch.randn(5, generator=original_gen)  # advance past the initial state
+    snapshot_state = original_gen.get_state()
+    expected_next = torch.randn(3, generator=original_gen)
+
+    rck = {
+        "rng_state": torch.get_rng_state(),
+        "cuda_rng_state": None,
+        "gen_state": snapshot_state,
+    }
+    restored_gen = _restore_rng_state(rck, "cpu")
+    actual_next = torch.randn(3, generator=restored_gen)
+
+    assert torch.equal(actual_next, expected_next)
 
 
 class TestNoiseBlobReplay:
