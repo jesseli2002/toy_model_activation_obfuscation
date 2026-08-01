@@ -14,6 +14,7 @@ import warnings
 from pathlib import Path
 
 import pytest
+import torch
 
 from config import ForkedFrom, LogregAdversarialConfig
 from conftest import _logreg_config_file_fields, _make_adv_config, _make_model_config
@@ -28,6 +29,7 @@ from train_adversarial_logreg import (
     _resolve_hidden_layers,
     _restore_rng_state,
     _write_run_config,
+    clip_grad_norm_per_block_,
     load_run_config,
     train_steps,
 )
@@ -674,3 +676,89 @@ class TestExplodeWindow:
             explode_window_iters=3,
         )
         assert n_exploded == [0, 1]
+
+
+class TestClipGradNormPerBlock:
+    """`clip_grad_norm_per_block_` is a fused rewrite of a per-block
+    `clip_grad_norm_` loop, so it is pinned against that loop directly."""
+
+    @staticmethod
+    def _blocks(seed=0, widths=((8, 4), (5, 3), (2, 7))):
+        g = torch.Generator().manual_seed(seed)
+        blocks = []
+        for w in widths:
+            block = torch.nn.Module()
+            block.a = torch.nn.Parameter(torch.randn(*w, generator=g))
+            block.b = torch.nn.Parameter(torch.randn(w[0], generator=g))
+            blocks.append(block)
+        return torch.nn.ModuleList(blocks)
+
+    @staticmethod
+    def _set_grads(blocks, seed, scale):
+        g = torch.Generator().manual_seed(seed)
+        for i, block in enumerate(blocks):
+            for p in block.parameters():
+                # One block driven far harder, so clipping fires on some
+                # blocks and not others -- per-block means the untouched
+                # blocks must come through unscaled.
+                p.grad = (
+                    torch.randn(p.shape, generator=g) * scale * (50.0 if i else 1.0)
+                )
+
+    @pytest.mark.parametrize("scale", [1e-3, 1.0, 100.0])
+    def test_matches_per_block_clip_grad_norm_loop(self, scale):
+        max_norm = 1.0
+        ours = self._blocks()
+        theirs = self._blocks()
+        self._set_grads(ours, seed=7, scale=scale)
+        self._set_grads(theirs, seed=7, scale=scale)
+
+        clip_grad_norm_per_block_(ours, max_norm)
+        for block in theirs:
+            torch.nn.utils.clip_grad_norm_(block.parameters(), max_norm)
+
+        for a, b in zip(ours.parameters(), theirs.parameters()):
+            torch.testing.assert_close(a.grad, b.grad, rtol=1e-6, atol=1e-7)
+
+    def test_clips_only_the_blocks_that_exceed_max_norm(self):
+        """Guards the property the fused version could most plausibly break:
+        one shared scale leaking across block boundaries."""
+        blocks = self._blocks()
+        # Scaled so block 0 lands under max_norm and the rest well over it.
+        self._set_grads(blocks, seed=7, scale=0.1)
+        before = [p.grad.clone() for p in blocks.parameters()]
+        clip_grad_norm_per_block_(blocks, 1.0)
+
+        norms_before = [
+            torch.cat([g.flatten() for g in before[i * 2 : i * 2 + 2]]).norm()
+            for i in range(len(blocks))
+        ]
+        assert norms_before[0] < 1.0 and norms_before[1] > 1.0
+        for i, block in enumerate(blocks):
+            after = torch.cat([p.grad.flatten() for p in block.parameters()]).norm()
+            if norms_before[i] <= 1.0:
+                assert after == pytest.approx(norms_before[i].item(), rel=1e-6)
+            else:
+                assert after == pytest.approx(1.0, rel=1e-5)
+
+    def test_falls_back_when_blocks_have_unequal_grad_counts(self):
+        blocks = self._blocks()
+        self._set_grads(blocks, seed=7, scale=100.0)
+        blocks[1].b.grad = None  # ragged: cannot reshape into a rectangle
+
+        expected = self._blocks()
+        self._set_grads(expected, seed=7, scale=100.0)
+        expected[1].b.grad = None
+        for block in expected:
+            torch.nn.utils.clip_grad_norm_(block.parameters(), 1.0)
+
+        clip_grad_norm_per_block_(blocks, 1.0)
+        for a, b in zip(blocks.parameters(), expected.parameters()):
+            if b.grad is None:
+                assert a.grad is None
+            else:
+                torch.testing.assert_close(a.grad, b.grad, rtol=1e-6, atol=1e-7)
+
+    def test_no_grads_anywhere_is_a_noop(self):
+        clip_grad_norm_per_block_(self._blocks(), 1.0)
+        clip_grad_norm_per_block_(torch.nn.ModuleList([]), 1.0)

@@ -539,6 +539,39 @@ def score_penalty(
         raise ValueError(f"unknown probe_loss_kind: {kind!r}")
 
 
+def clip_grad_norm_per_block_(blocks, max_norm: float) -> None:
+    """Clip each block's gradients to `max_norm` by their own norm, fused
+    across every block.
+
+    Numerically the same as one `torch.nn.utils.clip_grad_norm_` per block
+    (per-block, not whole-model -- see LogregAdversarialConfig.grad_clip), but
+    every block's per-tensor norms come from a single multi-tensor kernel and
+    every block's scale is applied in one more. The per-block loop it replaces
+    was a separate launch sequence per block, which on launch-latency-bound
+    hardware cost more than the clipping arithmetic itself. See PR #146.
+    """
+    per_block = [
+        [p.grad for p in block.parameters() if p.grad is not None] for block in blocks
+    ]
+    widths = {len(g) for g in per_block}
+    if not per_block or widths == {0}:
+        return
+    if len(widths) != 1:
+        # Blocks disagree on how many gradients they have (some parameter
+        # didn't get one), so the norms can't be reshaped into a rectangle.
+        for block in blocks:
+            torch.nn.utils.clip_grad_norm_(block.parameters(), max_norm)
+        return
+
+    grads = [g for block_grads in per_block for g in block_grads]
+    width = widths.pop()
+    norms = torch.stack(torch._foreach_norm(grads)).view(len(per_block), width)
+    block_norm = norms.square().sum(dim=1).sqrt()
+    # Matching clip_grad_norm_'s own epsilon and clamp.
+    coef = (max_norm / (block_norm + 1e-6)).clamp(max=1.0)
+    torch._foreach_mul_(grads, list(coef.repeat_interleave(width).unbind()))
+
+
 @dataclass
 class TrainRecord:
     """One completed training step, everything a caller needs to checkpoint,
@@ -664,9 +697,7 @@ def train_steps(
         opt.zero_grad(set_to_none=True)
         loss.backward()
         if grad_clip > 0:
-            # Per-block, not whole-model -- see LogregAdversarialConfig.grad_clip.
-            for block in model.blocks:
-                torch.nn.utils.clip_grad_norm_(block.parameters(), grad_clip)
+            clip_grad_norm_per_block_(model.blocks, grad_clip)
         # grad_clip/adam_eps/adam_beta2 are band-aids for instability;
         # optimizer_kind="stableadamw" (update clipping) is a cleaner fix --
         # see PR #77 for the original discussion. Whether grad_clip/adam_eps
