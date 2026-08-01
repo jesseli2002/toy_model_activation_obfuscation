@@ -610,8 +610,10 @@ def train_steps(
         task: noisy pass -- this is what forbids shrinking c's encoding below
         the noise floor (see plans/resid_stream_noise_plan.md); `noise` is a
         pre-drawn blob (see `model.generate_noise`) rather than a generator,
-        so callers can replay the identical noise across multiple calls
-        within one iteration (see the explode-check/redo passes below). probe:
+        so callers can replay the identical noise across multiple calls, be
+        it within one iteration or -- for the lagged explode-redo pass, see
+        `pending` below -- a later one replaying an earlier iteration's blob.
+        probe:
         clean pass over the probe set, full resolution, so the probe can
         still out-resolve the model; `retrain_probe` first advances the probe
         on those activations and updates `affine`. Under lam=0 the probe pass
@@ -659,6 +661,15 @@ def train_steps(
         # empirical question (not addressed by adding the option itself).
         opt.step()
 
+    # Explode-detection state carried from the previous iteration to this
+    # one -- see the `pending` handling below. None before the first
+    # iteration (nothing to compare against yet) and whenever
+    # explode_factor==0. A side effect of the lag: this call's very last
+    # iteration's step is never checked, since there's no subsequent
+    # iteration left to reveal it -- resuming training (a fresh train_steps()
+    # call) doesn't inherit `pending` either, matching recent_losses below.
+    pending: dict | None = None
+
     for it in range(start_iter, max_iters):
         x_task, y = sample_batch(
             adv_config.batch_size,
@@ -687,28 +698,86 @@ def train_steps(
             lam_eff = adv_config.lam
 
         # Drawn once per iteration and reused verbatim across every
-        # forward_loss call below (initial, explode-check, explode-redo) --
-        # an explicit, replayable blob instead of snapshotting/resetting
-        # `gen`'s RNG state around the draw (see plans/model_noise_blob_plan.md).
+        # forward_loss call touching this iteration's batch below (this
+        # iteration's own pass, plus a possible redo one iteration later if
+        # this step turns out to have exploded -- see `pending`) -- an
+        # explicit, replayable blob instead of snapshotting/resetting `gen`'s
+        # RNG state around the draw (see plans/model_noise_blob_plan.md).
         noise = model.generate_noise(
             adv_config.batch_size, adv_config.resid_noise_std, gen
         )
+        retrain_probe = it % adv_config.probe_retrain_interval == 0
         loss, l_task, l_probe = forward_loss(
-            x_task,
-            y,
-            lam_eff,
-            probe_x,
-            probe_label,
-            noise,
-            retrain_probe=it % adv_config.probe_retrain_interval == 0,
+            x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=retrain_probe
         )
         loss_before_step = loss.item()
 
-        # Snapshot BEFORE the step, so a detected explosion (below) can
-        # revert to it. TODO(perf): every-iteration deepcopy + re-forward
-        # just to catch a rare event -- a cheaper retroactive alternative
-        # exists, see PR #77's revert-and-retry discussion (not the
-        # StableAdamW note in optimizer_step).
+        if adv_config.explode_factor > 0 and pending is not None:
+            # Lagged explode check: rather than paying for an extra
+            # same-batch re-forward every iteration just to catch a rare
+            # event, treat THIS iteration's own (different-batch) pre-step
+            # loss as the "after" signal for the PREVIOUS iteration's step --
+            # it's already being computed above regardless. One iteration of
+            # detection lag, and a noisier (cross-batch) signal, in exchange
+            # for dropping the extra forward pass on every non-exploding
+            # iteration. See PR #77's revert-and-retry discussion for the
+            # original same-batch version this replaced.
+            #
+            # The smallest loss over the last explode_window_iters completed
+            # iterations, plus the pending iteration's own pre-step loss --
+            # catches both a single-step spike and gradual creep across
+            # several steps (see adv_config.explode_window_iters).
+            baseline_loss = min([pending["pre_step_loss"]] + list(recent_losses))
+
+            # Also require the step to have made the pending iteration's own
+            # loss worse, not just left it above the historical window
+            # baseline -- otherwise a step that's recovering from an earlier
+            # arrested spike (elevated relative to baseline_loss but still
+            # improving) gets needlessly re-clipped.
+            if (
+                loss_before_step > adv_config.explode_factor * baseline_loss
+                and loss_before_step > pending["pre_step_loss"]
+            ):
+                n_exploded += 1
+                print(
+                    f"[explode] iter={pending['iter']} loss {baseline_loss:.3e} -> "
+                    f"{loss_before_step:.3e} ({loss_before_step / baseline_loss:.1f}x)"
+                    f" -- reverting and redoing with a tighter clip"
+                )
+                model.load_state_dict(pending["pre_model_state"])
+                opt.load_state_dict(pending["pre_opt_state"])
+
+                redo_loss, _, _ = forward_loss(
+                    pending["x_task"],
+                    pending["y"],
+                    pending["lam_eff"],
+                    pending["probe_x"],
+                    pending["probe_label"],
+                    pending["noise"],
+                    retrain_probe=False,
+                )
+                optimizer_step(
+                    redo_loss, adv_config.grad_clip / adv_config.explode_clip_divisor
+                )
+
+                # This iteration's own forward above ran at weights that just
+                # got reverted out from under it (and then moved again by the
+                # redo step) -- redo it before this iteration's step proceeds.
+                loss, l_task, l_probe = forward_loss(
+                    x_task,
+                    y,
+                    lam_eff,
+                    probe_x,
+                    probe_label,
+                    noise,
+                    retrain_probe=retrain_probe,
+                )
+                loss_before_step = loss.item()
+
+            recent_losses.append(pending["pre_step_loss"])
+
+        # Snapshot BEFORE this iteration's step, so a lagged explode check
+        # next iteration can revert to it if needed.
         if adv_config.explode_factor > 0:
             pre_model_state = copy.deepcopy(model.state_dict())
             pre_opt_state = copy.deepcopy(opt.state_dict())
@@ -716,47 +785,18 @@ def train_steps(
         optimizer_step(loss, adv_config.grad_clip)
 
         if adv_config.explode_factor > 0:
-            with torch.no_grad():
-                loss_after, _, _ = forward_loss(
-                    x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=False
-                )
-                loss_after_step = loss_after.item()
-
-            # The smallest loss over the last explode_window_iters completed
-            # iterations, plus this iteration's own pre-step loss -- catches
-            # both a single-step spike and gradual creep across several
-            # steps (see adv_config.explode_window_iters).
-            baseline_loss = min([loss_before_step] + list(recent_losses))
-
-            # Also require the step to have made this iteration's own loss
-            # worse, not just left it above the historical window baseline --
-            # otherwise a step that's recovering from an earlier arrested
-            # spike (elevated relative to baseline_loss but still improving)
-            # gets needlessly re-clipped.
-            if (
-                loss_after_step > adv_config.explode_factor * baseline_loss
-                and loss_after_step > loss_before_step
-            ):
-                n_exploded += 1
-                print(
-                    f"[explode] iter={it} loss {baseline_loss:.3e} -> "
-                    f"{loss_after_step:.3e} ({loss_after_step / baseline_loss:.1f}x)"
-                    f" -- reverting and redoing with a tighter clip"
-                )
-                model.load_state_dict(pre_model_state)
-                opt.load_state_dict(pre_opt_state)
-
-                # Fresh forward: the previous graph was freed by backward()
-                # above, and this is otherwise numerically the same
-                # pre-step state already used for l_task/l_probe/loss.
-                loss, l_task, l_probe = forward_loss(
-                    x_task, y, lam_eff, probe_x, probe_label, noise, retrain_probe=False
-                )
-                optimizer_step(
-                    loss, adv_config.grad_clip / adv_config.explode_clip_divisor
-                )
-
-            recent_losses.append(loss.item())
+            pending = {
+                "iter": it,
+                "pre_step_loss": loss_before_step,
+                "pre_model_state": pre_model_state,
+                "pre_opt_state": pre_opt_state,
+                "x_task": x_task,
+                "y": y,
+                "lam_eff": lam_eff,
+                "probe_x": probe_x,
+                "probe_label": probe_label,
+                "noise": noise,
+            }
 
         yield TrainRecord(
             iter=it,
