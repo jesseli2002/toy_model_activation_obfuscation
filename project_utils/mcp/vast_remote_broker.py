@@ -55,6 +55,10 @@ MAX_OUTPUT_CHARS = 40_000
 # `rm -rf runs` typo class, not a determined caller. See PR for rationale.
 _DESTRUCTIVE_VERB_RE = re.compile(r"(?<![\w/-])(rm|rmdir|shred|mkfs|dd)(?![\w-])")
 _PROTECTED_TARGET_RE = re.compile(r"(?<![\w.-])(runs|/workspace)(?![\w-])")
+# Runs tagged debug_* are declared-disposable scratch, excluded from every sync
+# and backup, so an agent may delete them without asking. Matches a whole path
+# component only, so nothing that walks back out of the run dir slips through.
+_DISPOSABLE_RUN_RE = re.compile(r"(?<![\w./-])runs/debug_[\w.*?-]+/?(?![\w./-])")
 
 
 @dataclass(frozen=True)
@@ -96,6 +100,9 @@ def load_config_from_env() -> Config:
 def _check_destructive(command: str, confirmed: bool) -> None:
     if confirmed:
         return
+    # Drop disposable targets first, so a command that only names those has
+    # nothing protected left to trip on.
+    command = _DISPOSABLE_RUN_RE.sub(" ", command)
     if _DESTRUCTIVE_VERB_RE.search(command) and _PROTECTED_TARGET_RE.search(command):
         raise BrokerError(
             "command looks like it destroys runs/ or the workspace root, which hold "
@@ -286,7 +293,9 @@ TOOLS = [
                     "description": (
                         "Set true to allow a command that appears to delete runs/ or the "
                         "workspace root. Such commands are refused by default because runs/ "
-                        "holds the only remote state worth keeping."
+                        "holds the only remote state worth keeping. Not needed to delete a "
+                        "runs/debug_* directory: those are disposable by convention and are "
+                        "never synced or backed up."
                     ),
                 },
             },

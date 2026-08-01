@@ -24,6 +24,7 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
 - Don't use draft GitHub PRs unless told.
 - *.tmp.py files are throwaway scripts - don't worry about code quality when reading/writing them, and when the user asks for a throwaway script, use a .tmp.py suffix.
+- Runs tagged `debug_*` are throwaway: they are excluded from every sync and backup, so use that prefix for scratch/debugging runs and treat them as disposable.
 - Commits should ideally be small and self-contained to help with reviewing.
 - If during testing, you encounter warnings - don't ignore them, unless you tell the user and have a very good reason to think it's a false positive (e.g. you're intentionally trying to trigger it to test it).
 
