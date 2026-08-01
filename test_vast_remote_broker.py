@@ -36,7 +36,7 @@ VENV_ACTIVATE = "export VENV_ACTIVE=1\n"
 
 @pytest.fixture
 def sync_script(tmp_path, monkeypatch):
-    """Stub standing in for sync_vastai.sh. Returns a writer that sets its body,
+    """Stub standing in for sync_vastai.py. Returns a writer that sets its body,
     so a test can make the flush succeed, fail, or hang."""
     script = tmp_path / "fake_sync.sh"
 

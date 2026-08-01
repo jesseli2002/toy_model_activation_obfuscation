@@ -62,7 +62,7 @@ DEFAULT_SYNC_TIMEOUT_S = 300
 _REPO_ROOT = os.path.dirname(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 )
-DEFAULT_SYNC_SCRIPT = os.path.join(_REPO_ROOT, "vast_setup", "sync_vastai.sh")
+DEFAULT_SYNC_SCRIPT = os.path.join(_REPO_ROOT, "vast_setup", "sync_vastai.py")
 
 # Output cap, split head/tail so both the start of a build log and the
 # error that ended it survive truncation.
@@ -282,7 +282,7 @@ def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
             "VAST_REMOTE_SYNC_SCRIPT to its absolute path."
         )
 
-    argv = ["bash", config.sync_script, "flush"]
+    argv = [sys.executable, config.sync_script, "flush"]
     try:
         result = subprocess.run(
             argv,
