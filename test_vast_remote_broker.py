@@ -194,6 +194,10 @@ def test_timeout_is_reported_as_an_error(remote):
         "rm -rf /workspace",
         "rm -rf ~/runs/",
         "dd if=/dev/zero of=/workspace/x",
+        # A disposable run named alongside a protected target is still refused.
+        "rm -rf runs/debug_a runs/keepme",
+        # Escaping the run directory forfeits the carve-out.
+        "rm -rf runs/debug_a/../..",
     ],
 )
 def test_destructive_commands_are_refused_by_default(remote, command):
@@ -218,6 +222,12 @@ def test_destructive_commands_run_when_confirmed(remote):
         "python plot_curves.py --tag runs_v2",
         "rm -rf /tmp/scratch",
         "grep -r norm runs",
+        # debug_* runs are disposable by convention: deleting one needs no
+        # confirmation, since nothing syncs or backs them up.
+        "rm -rf runs/debug_smoke",
+        "rm -rf runs/debug_smoke/",
+        "rm -rf runs/debug_*",
+        "rm -rf runs/debug_a runs/debug_b",
     ],
 )
 def test_guard_does_not_block_ordinary_commands(remote, command):
