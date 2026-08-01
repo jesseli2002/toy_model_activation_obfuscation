@@ -1,5 +1,10 @@
 """MCP stdio server exposing shell access to the vast.ai GPU instance.
 
+Also exposes the local mutagen sync as a tool. Mutagen runs on this side
+but reaches the remote over the network, so a sandboxed agent cannot
+flush it directly and would otherwise have to guess whether its local
+source edits had landed before launching a run.
+
 Runs as a host process launched from .mcp.json -- outside the sandboxed
 Bash-tool process tree -- so it can reach the network and the SSH keys
 that a sandboxed agent has no path or syscall to touch. The agent
@@ -47,6 +52,18 @@ SERVER_VERSION = "0.1.0"
 DEFAULT_TIMEOUT_S = 120
 MAX_TIMEOUT_S = 3600
 
+# Flushing blocks until both sessions reach a steady state, which after a
+# large edit (or a first sync) takes appreciably longer than a shell call.
+DEFAULT_SYNC_TIMEOUT_S = 300
+
+# The sync script lives in a directory that is deliberately excluded from
+# this repo's git history, so it is absent from worktree checkouts; the
+# server is launched from the main checkout, where this resolves.
+_REPO_ROOT = os.path.dirname(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+)
+DEFAULT_SYNC_SCRIPT = os.path.join(_REPO_ROOT, "vast_setup", "sync_vastai.sh")
+
 # Output cap, split head/tail so both the start of a build log and the
 # error that ended it survive truncation.
 MAX_OUTPUT_CHARS = 40_000
@@ -65,6 +82,7 @@ class Config:
     venv: str
     control_path: str
     control_persist: str
+    sync_script: str
 
 
 class BrokerError(Exception):
@@ -90,6 +108,7 @@ def load_config_from_env() -> Config:
             "VAST_REMOTE_CONTROL_PATH", "/tmp/vast-remote-broker-%C"
         ),
         control_persist=os.environ.get("VAST_REMOTE_CONTROL_PERSIST", "10m"),
+        sync_script=os.environ.get("VAST_REMOTE_SYNC_SCRIPT", DEFAULT_SYNC_SCRIPT),
     )
 
 
@@ -241,6 +260,56 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     )
 
 
+def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
+    timeout_s = arguments.get("timeout_s", DEFAULT_SYNC_TIMEOUT_S)
+    if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool):
+        raise BrokerError("timeout_s must be a number if given")
+    if not 1 <= timeout_s <= MAX_TIMEOUT_S:
+        raise BrokerError(f"timeout_s must be between 1 and {MAX_TIMEOUT_S}")
+
+    if not os.path.isfile(config.sync_script):
+        raise BrokerError(
+            f"sync script not found at {config.sync_script}. Set "
+            "VAST_REMOTE_SYNC_SCRIPT to its absolute path."
+        )
+
+    argv = ["bash", config.sync_script, "flush"]
+    try:
+        result = subprocess.run(
+            argv,
+            capture_output=True,
+            text=True,
+            timeout=timeout_s,
+            stdin=subprocess.DEVNULL,
+        )
+    except subprocess.TimeoutExpired:
+        raise BrokerError(
+            f"sync flush did not settle within {timeout_s}s. A large first sync can "
+            "genuinely take longer, but a session halted on a conflict will never "
+            "settle -- check the session list before retrying with a larger timeout_s."
+        )
+    except OSError as exc:
+        raise BrokerError(f"could not run {config.sync_script}: {exc}")
+
+    status = (
+        "exit code: 0 (both sessions flushed)"
+        if result.returncode == 0
+        else (
+            f"exit code: {result.returncode} -- flush failed. A halted session (mutagen "
+            "stops rather than clobbering either side on conflict) must be resolved "
+            "locally; until then the remote source is stale."
+        )
+    )
+    return "\n".join(
+        [
+            f"$ {' '.join(argv)}",
+            status,
+            _section("stdout", result.stdout),
+            _section("stderr", result.stderr),
+        ]
+    )
+
+
 TOOLS = [
     {
         "name": "remote_exec",
@@ -293,9 +362,35 @@ TOOLS = [
             "required": ["command"],
         },
     },
+    {
+        "name": "sync_flush",
+        "description": (
+            "Force the local mutagen sync sessions to settle now, and report their "
+            "status. Source (*.py + configs/) flows local -> remote and runs/ flows "
+            "remote -> local, normally on mutagen's own schedule; this blocks until "
+            "both are in a steady state.\n"
+            "Call this after editing source locally and before launching anything on "
+            "the remote that depends on the edit, otherwise the remote may still be "
+            "running the previous version. Also call it before reading a finished "
+            "run's outputs locally, to pull runs/ back.\n"
+            "A non-zero exit usually means a session has HALTED on a conflict: the "
+            "sessions are one-way-safe, so mutagen stops rather than overwriting "
+            "either side. That needs resolving locally -- until it is, the remote "
+            "source stays stale and remote_exec will keep running old code."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "timeout_s": {
+                    "type": "number",
+                    "description": f"Seconds to wait for the sync to settle (default {DEFAULT_SYNC_TIMEOUT_S}, max {MAX_TIMEOUT_S}).",
+                },
+            },
+        },
+    },
 ]
 
-TOOL_HANDLERS = {"remote_exec": remote_exec}
+TOOL_HANDLERS = {"remote_exec": remote_exec, "sync_flush": sync_flush}
 
 
 def _write_message(out: IO[str], obj: dict[str, Any]) -> None:
