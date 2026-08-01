@@ -157,6 +157,14 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     adam_eps: float
     adam_beta1: float
     adam_beta2: float
+    # Linear warmup from ~0 to lr over the first lr_warmup_iters steps, then
+    # cosine decay from lr down to lr * lr_min_frac over the remaining steps
+    # (0 warmup / lr_min_frac=1.0 reproduces the old constant-lr behavior
+    # exactly). Computed as a pure function of (it, max_iters), so it needs
+    # no scheduler object/state and just falls out correctly across
+    # --resume/--fork-from.
+    lr_warmup_iters: int
+    lr_min_frac: float
     # "adamw" or "stableadamw" (per-tensor update-clipping in place of
     # grad_clip/adam_eps/adam_beta2 band-aids) -- both consume adam_eps
     # /adam_beta1/adam_beta2 above with the same meaning.
@@ -187,6 +195,8 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
         "lam_warmup_iters": 0,
+        "lr_warmup_iters": 0,
+        "lr_min_frac": 1.0,
         "penalty_layers": None,
         "probe_C": 1.0,
         "probe_init_iters": 1000,

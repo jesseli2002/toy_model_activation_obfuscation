@@ -70,6 +70,7 @@ import collections
 import copy
 import dataclasses
 import json
+import math
 import os
 import shutil
 import signal
@@ -368,6 +369,19 @@ def _check_config_json(
         )
 
 
+def _lr_at(it: int, max_iters: int, adv_config: LogregAdversarialConfig) -> float:
+    """Linear warmup over lr_warmup_iters, then cosine decay from lr to
+    lr * lr_min_frac over the rest of the run -- see
+    LogregAdversarialConfig.lr_warmup_iters."""
+    if it < adv_config.lr_warmup_iters:
+        return adv_config.lr * (it + 1) / adv_config.lr_warmup_iters
+    decay_span = max(1, max_iters - adv_config.lr_warmup_iters)
+    progress = min(1.0, (it - adv_config.lr_warmup_iters) / decay_span)
+    cos_frac = 0.5 * (1 + math.cos(math.pi * progress))
+    frac = adv_config.lr_min_frac + (1 - adv_config.lr_min_frac) * cos_frac
+    return adv_config.lr * frac
+
+
 def _make_optimizer(
     params, adv_config: LogregAdversarialConfig
 ) -> torch.optim.Optimizer:
@@ -535,6 +549,7 @@ class TrainRecord:
     l_task: float | None
     l_probe: float | None
     lam_eff: float | None
+    lr: float
     affine: tuple[torch.Tensor, torch.Tensor]
     # Cumulative count of --explode-detected-and-corrected steps so far THIS
     # process invocation (see adv_config.explode_factor) -- resets to 0 on
@@ -686,6 +701,10 @@ def train_steps(
         else:
             lam_eff = adv_config.lam
 
+        lr_eff = _lr_at(it, max_iters, adv_config)
+        for group in opt.param_groups:
+            group["lr"] = lr_eff
+
         # Drawn once per iteration and reused verbatim across every
         # forward_loss call below (initial, explode-check, explode-redo) --
         # an explicit, replayable blob instead of snapshotting/resetting
@@ -764,6 +783,7 @@ def train_steps(
             l_task=float(l_task.item()),
             l_probe=float(l_probe.item()),
             lam_eff=lam_eff,
+            lr=lr_eff,
             affine=affine,
             n_exploded=n_exploded,
         )
@@ -978,7 +998,8 @@ def main(args):
         f"probe_resample_interval={adv_config.probe_resample_interval} "
         f"probe_loss_trim_frac={adv_config.probe_loss_trim_frac} "
         f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
-        f"lr={adv_config.lr} adam_eps={adv_config.adam_eps} "
+        f"lr={adv_config.lr} lr_warmup_iters={adv_config.lr_warmup_iters} "
+        f"lr_min_frac={adv_config.lr_min_frac} adam_eps={adv_config.adam_eps} "
         f"adam_beta1={adv_config.adam_beta1} adam_beta2={adv_config.adam_beta2} "
         f"optimizer_kind={adv_config.optimizer_kind} "
         f"stableadamw_d={adv_config.stableadamw_d} "
@@ -996,6 +1017,7 @@ def main(args):
         l_task=None,
         l_probe=None,
         lam_eff=None,
+        lr=adv_config.lr,
         affine=affine,
     )
 
