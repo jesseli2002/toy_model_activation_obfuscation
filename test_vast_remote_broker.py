@@ -35,7 +35,23 @@ VENV_ACTIVATE = "export VENV_ACTIVE=1\n"
 
 
 @pytest.fixture
-def remote(tmp_path, monkeypatch):
+def sync_script(tmp_path, monkeypatch):
+    """Stub standing in for sync_vastai.sh. Returns a writer that sets its body,
+    so a test can make the flush succeed, fail, or hang."""
+    script = tmp_path / "fake_sync.sh"
+
+    def write_script(body):
+        script.write_text("#!/usr/bin/env bash\n" + body)
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        return script
+
+    write_script('echo "flushed: $1"\n')
+    monkeypatch.setenv("VAST_REMOTE_SYNC_SCRIPT", str(script))
+    return write_script
+
+
+@pytest.fixture
+def remote(tmp_path, monkeypatch, sync_script):
     """A configured server whose 'remote' is this machine, in tmp_path."""
     ssh = tmp_path / "fake_ssh"
     ssh.write_text(FAKE_SSH)
@@ -76,6 +92,10 @@ def remote(tmp_path, monkeypatch):
         def exec(command, **kwargs):
             return Remote.call("remote_exec", {"command": command, **kwargs})
 
+        @staticmethod
+        def flush(**kwargs):
+            return Remote.call("sync_flush", kwargs)
+
     return Remote
 
 
@@ -98,9 +118,11 @@ def test_handshake_and_tool_listing(remote):
     assert responses[0]["result"]["protocolVersion"] == (
         vast_remote_broker.PROTOCOL_VERSION
     )
-    tools = responses[1]["result"]["tools"]
-    assert {tool["name"] for tool in tools} == set(vast_remote_broker.TOOL_HANDLERS)
-    assert tools[0]["inputSchema"]["required"] == ["command"]
+    tools = {tool["name"]: tool for tool in responses[1]["result"]["tools"]}
+    assert set(tools) == set(vast_remote_broker.TOOL_HANDLERS)
+    assert tools["remote_exec"]["inputSchema"]["required"] == ["command"]
+    # Flushing takes no required arguments -- it acts on the configured sessions.
+    assert not tools["sync_flush"]["inputSchema"].get("required")
 
 
 def test_reports_stdout_stderr_and_exit_code(remote):
@@ -270,6 +292,47 @@ def test_unknown_tool_is_an_error_not_a_crash(remote):
     assert "unknown tool" in text
 
 
+def test_flush_invokes_the_sync_script_and_reports_its_output(remote):
+    is_error, text = remote.flush()
+    assert not is_error, text
+    # The subcommand matters: `start` or `stop` would create or tear down
+    # sessions rather than settling the existing ones.
+    assert "flushed: flush" in text
+    assert "exit code: 0" in text
+
+
+def test_flush_reports_a_failed_flush_without_hiding_it_as_success(remote, sync_script):
+    """A halted session is the failure that matters: the remote silently keeps
+    running stale source, so the caller must not read this as a clean sync."""
+    sync_script('echo "unable to flush: session is halted on conflict" >&2\nexit 1\n')
+    is_error, text = remote.flush()
+    assert "exit code: 1" in text
+    assert "halted" in text.lower()
+    assert "session is halted on conflict" in text
+
+
+def test_flush_that_never_settles_is_reported_as_an_error(remote, sync_script):
+    sync_script("sleep 30\n")
+    is_error, text = remote.flush(timeout_s=1)
+    assert is_error
+    assert "did not settle" in text
+
+
+def test_missing_sync_script_names_the_override(remote, monkeypatch, tmp_path):
+    monkeypatch.setenv("VAST_REMOTE_SYNC_SCRIPT", str(tmp_path / "absent.sh"))
+    remote.config = vast_remote_broker.load_config_from_env()
+    is_error, text = remote.flush()
+    assert is_error
+    assert "VAST_REMOTE_SYNC_SCRIPT" in text
+
+
+@pytest.mark.parametrize("timeout_s", [0, -1, "soon", True])
+def test_flush_rejects_a_bad_timeout(remote, timeout_s):
+    is_error, text = remote.flush(timeout_s=timeout_s)
+    assert is_error
+    assert "timeout_s" in text
+
+
 def test_ssh_host_is_required(monkeypatch):
     monkeypatch.delenv("VAST_REMOTE_SSH_HOST", raising=False)
     with pytest.raises(RuntimeError, match="VAST_REMOTE_SSH_HOST"):
@@ -285,6 +348,7 @@ def test_defaults_cover_the_optional_settings(monkeypatch):
     assert os.path.isabs(config.workdir) and os.path.isabs(config.venv)
     assert config.control_path
     assert config.control_persist
+    assert os.path.isabs(config.sync_script)
 
 
 def test_stale_connection_is_retried_once_on_a_fresh_one(tmp_path, monkeypatch):
