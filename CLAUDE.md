@@ -1,5 +1,21 @@
+## Project structure
+The two main entry points are:
+- train_adversarial_logreg.py (training models)
+- adversarial_report.py (reporting on results)
+
+### Key directories
+- vast_setup/
+	- Scripts to setup and manage a VastAI instance. Gitignored here and tracked as a separate repo; to work in it, user must /cd into vast_setup/; otherwise your worktree changes will not be reflected.
+- runs/
+	- Training run checkpoints
+- plot/
+	- Output plots from adversarial_report.py
+- project_utils/
+	- Local MCP servers & utility scripts
+Other directories are generally not relevant unless the user specifically mentions them.
+
 ## Style
-- Most scripts have some heavy imports e.g. (torch), which can take some time. This is annoying if you only call --help on a command-line script. So, preferably structure CLI scripts like this:
+- Most scripts have some heavy imports e.g. (torch), which can take some time. This is annoying if you only call --help on a command-line script. Preferably structure CLI scripts like this:
 ```python
 import argparse # and other light imports
 
@@ -7,7 +23,7 @@ def parse_args():
     ...
 
 if __name__ == "__main__":
-    args = parse_args() # ArgumentParser should early exit if --help called
+    args = parse_args() # ArgumentParser early exits on --help
 
 import torch # and other heavy imports
 ... # rest of code
@@ -55,6 +71,3 @@ This environment is in a sandbox. Writes, sensitive reads, and network access ar
     - For git push, a custom git-push-broker MCP is used; the one from GitHub doesn't preserve commit history properly.
 - If you get this error or something like it on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs occasionally when the machine is updated. Stop what you're doing and tell the user; there's a known fix which needs user intervention
 - If asking user to rm files - give a trash command instead since user disabled rm in bashrc.
-
-## vast_setup
-vast_setup contains scripts to setup and manage a VastAI instance. It's gitignored here and tracked as a separate repo - to work in it, ask the user to /cd into vast_setup/; otherwise your changes will not be reflected.
