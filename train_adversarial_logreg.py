@@ -818,6 +818,49 @@ def save_checkpoint(
         )
 
 
+def _start_resume(args, last_path: str, device):
+    """--resume's full run-state restore: everything main() needs is either
+    inherited from the checkpoint (model/opt/adv_config/hidden_layers) or
+    continued in place (gen's RNG state) -- none of the shared fresh-run
+    setup (seeding, load_run_config, _make_optimizer, _write_run_config)
+    applies here. Returns (model, opt, start_iter, best_loss, adv_config,
+    hidden_layers, gen)."""
+    # (raises if last_path predates the nested adv_config checkpoint layout
+    # -- see _restore_checkpoint)
+    model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
+    adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
+    hidden_layers = adv_config.penalty_layers
+    gen = _restore_rng_state(rck, device)
+    # history.jsonl is append-only: this run's earlier entries are already on
+    # disk, so resuming needs no read -- new entries just keep appending to
+    # the same file.
+    print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
+    _check_config_json(args.tag, model.config, adv_config)
+    return model, opt, start_iter, best_loss, adv_config, hidden_layers, gen
+
+
+def _start_fork_from(args, hist_path: str, device):
+    """Restore (architecture, weights, iteration count) from
+    args.fork_from's checkpoint for a new tag -- the adversarial-objective
+    hyperparameters/optimizer are NOT restored here; the caller resolves
+    those fresh from --config like a scratch run. Returns (model,
+    start_iter, best_loss, forked_from)."""
+    source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
+    model, _, start_iter, best_loss, rck = _restore_checkpoint(
+        source_ckpt_path, device, restore_optimizer=False
+    )
+    # One-time seed write (not per-iteration, so no quadratic cost): copy
+    # source_tag's pre-fork entries into the new tag's own history.jsonl so
+    # loss curves stay continuous across the fork.
+    for h in _forked_history(args.fork_from, start_iter):
+        _append_history(hist_path, h)
+    forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
+    print(
+        f"[fork] from {args.fork_from} @ iter {start_iter}, best_loss={best_loss:.3e}"
+    )
+    return model, start_iter, best_loss, forked_from
+
+
 def main(args):
     if args.save_every_n == -1:
         args.save_every_n = args.ckpt_interval
@@ -844,31 +887,12 @@ def main(args):
     hist_path = _history_path(args.tag)
 
     if args.resume:
-        # (raises if last_path predates the nested adv_config checkpoint
-        # layout -- see _restore_checkpoint)
-        model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
-        adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
-        hidden_layers = adv_config.penalty_layers
-        gen = _restore_rng_state(rck, device)
-        # history.jsonl is append-only: this run's earlier entries are
-        # already on disk, so resuming needs no read -- new entries just
-        # keep appending to the same file.
-        print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
-        _check_config_json(args.tag, model.config, adv_config)
-    elif args.fork_from is not None:
-        source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
-        model, _, start_iter, best_loss, rck = _restore_checkpoint(
-            source_ckpt_path, device, restore_optimizer=False
+        model, opt, start_iter, best_loss, adv_config, hidden_layers, gen = (
+            _start_resume(args, last_path, device)
         )
-        # One-time seed write (not per-iteration, so no quadratic cost):
-        # copy source_tag's pre-fork entries into the new tag's own
-        # history.jsonl so loss curves stay continuous across the fork.
-        for h in _forked_history(args.fork_from, start_iter):
-            _append_history(hist_path, h)
-        forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
-        print(
-            f"[fork] from {args.fork_from} @ iter {start_iter}, "
-            f"best_loss={best_loss:.3e}"
+    elif args.fork_from is not None:
+        model, start_iter, best_loss, forked_from = _start_fork_from(
+            args, hist_path, device
         )
     else:
         model_config = ResidualMLPConfig(
