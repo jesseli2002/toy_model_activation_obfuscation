@@ -369,24 +369,24 @@ def _check_config_json(
 
 
 def _make_optimizer(
-    params,
-    optimizer_kind: str,
-    *,
-    lr: float,
-    eps: float,
-    beta1: float,
-    beta2: float,
-    stableadamw_d: float,
+    params, adv_config: LogregAdversarialConfig
 ) -> torch.optim.Optimizer:
-    """Construct the optimizer named by `LogregAdversarialConfig.optimizer_kind`."""
-    if optimizer_kind == "adamw":
-        return torch.optim.AdamW(params, lr=lr, eps=eps, betas=(beta1, beta2))
-    elif optimizer_kind == "stableadamw":
+    """Construct the optimizer named by adv_config.optimizer_kind."""
+    betas = (adv_config.adam_beta1, adv_config.adam_beta2)
+    if adv_config.optimizer_kind == "adamw":
+        return torch.optim.AdamW(
+            params, lr=adv_config.lr, eps=adv_config.adam_eps, betas=betas
+        )
+    elif adv_config.optimizer_kind == "stableadamw":
         return StableAdamW(
-            params, lr=lr, eps=eps, betas=(beta1, beta2), d=stableadamw_d
+            params,
+            lr=adv_config.lr,
+            eps=adv_config.adam_eps,
+            betas=betas,
+            d=adv_config.stableadamw_d,
         )
     else:
-        raise ValueError(f"unknown optimizer_kind {optimizer_kind!r}")
+        raise ValueError(f"unknown optimizer_kind {adv_config.optimizer_kind!r}")
 
 
 def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = True):
@@ -418,15 +418,7 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
         # The checkpoint's OWN historical config -- not the caller's
         # freshly-resolved adv_config, which for --fork-from may differ.
         hist_adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
-        opt = _make_optimizer(
-            model.parameters(),
-            hist_adv_config.optimizer_kind,
-            lr=hist_adv_config.lr,
-            eps=hist_adv_config.adam_eps,
-            beta1=hist_adv_config.adam_beta1,
-            beta2=hist_adv_config.adam_beta2,
-            stableadamw_d=hist_adv_config.stableadamw_d,
-        )
+        opt = _make_optimizer(model.parameters(), hist_adv_config)
         opt.load_state_dict(rck["opt"])
     else:
         opt = None
@@ -910,15 +902,7 @@ def main(args):
         # Always freshly built (never inherited from a --fork-from source),
         # same as every other adversarial hyperparameter above -- see
         # `_restore_checkpoint`'s restore_optimizer=False note.
-        opt = _make_optimizer(
-            model.parameters(),
-            adv_config.optimizer_kind,
-            lr=adv_config.lr,
-            eps=adv_config.adam_eps,
-            beta1=adv_config.adam_beta1,
-            beta2=adv_config.adam_beta2,
-            stableadamw_d=adv_config.stableadamw_d,
-        )
+        opt = _make_optimizer(model.parameters(), adv_config)
         _write_run_config(
             args.tag,
             model.config,
