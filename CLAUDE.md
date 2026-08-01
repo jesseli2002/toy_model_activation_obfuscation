@@ -55,3 +55,6 @@ This environment is in a sandbox. Writes and sensitive reads outside this direct
     - For git push, a custom git-push-broker MCP is used; the one from GitHub doesn't preserve commit history properly.
 - The sandbox can't reach the vast.ai GPU box over the network. Use the vast-remote-broker MCP's `remote_exec` to run commands on it; the sandboxed shell has no route and no SSH keys.
 - If you get this error or something like it on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs occasionally when the machine is updated. Stop what you're doing and tell the user; there's a known fix which needs user intervention
+
+## vast_setup
+vast_setup contains scripts to setup and manage a VastAI instance. It's gitignored here and tracked as a separate repo - to work in it, ask the user to /cd into vast_setup/; otherwise your changes will not be reflected.
