@@ -18,6 +18,12 @@ Commands run through a small wrapper that cd's to the remote project dir
 and activates the remote venv, because the remote's ~/.bashrc bails out
 early for non-interactive sessions and so does neither on its own.
 
+Each call reuses one multiplexed SSH connection (ControlMaster/
+ControlPersist) instead of renegotiating a fresh TCP+auth session per
+call. If the shared connection is stale (e.g. the instance was
+restarted), ssh exits 255 for connection-level failures; we tear down
+the dead control socket and retry once on a fresh connection.
+
 No third-party dependencies (this sandbox has no PyPI access), so the
 MCP JSON-RPC handshake (initialize / tools/list / tools/call) is
 hand-rolled here instead of using the `mcp` SDK.
@@ -57,6 +63,8 @@ class Config:
     ssh_host: str
     workdir: str
     venv: str
+    control_path: str
+    control_persist: str
 
 
 class BrokerError(Exception):
@@ -75,6 +83,13 @@ def load_config_from_env() -> Config:
         ssh_host=ssh_host,
         workdir=os.environ.get("VAST_REMOTE_WORKDIR", "/workspace/toy_probe_hiding"),
         venv=os.environ.get("VAST_REMOTE_VENV", "/workspace/.venv"),
+        # %C is ssh's own hash of (host, port, user); avoids a fixed name
+        # colliding across servers and avoids the ~104 char socket path
+        # limit that a literal host name could hit.
+        control_path=os.environ.get(
+            "VAST_REMOTE_CONTROL_PATH", "/tmp/vast-remote-broker-%C"
+        ),
+        control_persist=os.environ.get("VAST_REMOTE_CONTROL_PERSIST", "10m"),
     )
 
 
@@ -116,6 +131,49 @@ def _section(name: str, text: str) -> str:
     return f"--- {name} ---\n{_truncate(text)}" if text else f"--- {name} --- (empty)"
 
 
+def _control_opts(config: Config) -> list[str]:
+    return [
+        "-o",
+        "BatchMode=yes",
+        "-o",
+        "ControlMaster=auto",
+        "-o",
+        f"ControlPath={config.control_path}",
+        "-o",
+        f"ControlPersist={config.control_persist}",
+    ]
+
+
+def _teardown_master(config: Config) -> None:
+    """Best-effort: kill a stale multiplexed connection so the next call starts fresh."""
+    try:
+        subprocess.run(
+            [
+                *config.ssh_command,
+                *_control_opts(config),
+                "-O",
+                "exit",
+                config.ssh_host,
+            ],
+            capture_output=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def _run_ssh(argv: list[str], timeout_s: float) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        argv,
+        capture_output=True,
+        text=True,
+        timeout=timeout_s,
+        # Never inherit the server's stdin: that pipe carries JSON-RPC, and
+        # a remote command reading from it would eat the protocol stream.
+        stdin=subprocess.DEVNULL,
+    )
+
+
 def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     command = arguments.get("command")
     cwd = arguments.get("cwd")
@@ -141,30 +199,32 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     script = _remote_script(config, command, cwd, use_venv)
     argv = [
         *config.ssh_command,
-        "-o",
-        "BatchMode=yes",
+        *_control_opts(config),
         config.ssh_host,
         # One shlex.quote survives exactly one round of remote shell parsing,
         # which is what `ssh host bash -c <script>` performs.
         f"bash -c {shlex.quote(script)}",
     ]
 
-    try:
-        result = subprocess.run(
-            argv,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            # Never inherit the server's stdin: that pipe carries JSON-RPC, and
-            # a remote command reading from it would eat the protocol stream.
-            stdin=subprocess.DEVNULL,
-        )
-    except subprocess.TimeoutExpired:
-        raise BrokerError(
-            f"command timed out after {timeout_s}s and the ssh connection was closed. "
-            "The remote process may still be running; re-connect to check. For work "
-            "that outlives one call, launch it detached (see the tool description)."
-        )
+    def run_or_raise() -> subprocess.CompletedProcess[str]:
+        try:
+            return _run_ssh(argv, timeout_s)
+        except subprocess.TimeoutExpired:
+            raise BrokerError(
+                f"command timed out after {timeout_s}s and the ssh connection was "
+                "closed. The remote process may still be running; re-connect to "
+                "check. For work that outlives one call, launch it detached (see "
+                "the tool description)."
+            )
+
+    result = run_or_raise()
+    if result.returncode == 255:
+        # 255 is ssh's own exit code for connection-level failures (as opposed to
+        # the remote command's exit code, which passes through unchanged) -- the
+        # shared connection is dead, e.g. the instance was restarted. Tear down
+        # the stale control socket and retry once on a fresh connection.
+        _teardown_master(config)
+        result = run_or_raise()
 
     status = (
         "exit code: 0 (success)"

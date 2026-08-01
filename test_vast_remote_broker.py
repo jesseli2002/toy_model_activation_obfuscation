@@ -273,3 +273,44 @@ def test_defaults_cover_the_optional_settings(monkeypatch):
     config = vast_remote_broker.load_config_from_env()
     assert config.ssh_command == ["ssh"]
     assert os.path.isabs(config.workdir) and os.path.isabs(config.venv)
+    assert config.control_path
+    assert config.control_persist
+
+
+def test_stale_connection_is_retried_once_on_a_fresh_one(tmp_path, monkeypatch):
+    """A 255 exit (ssh's own connection-failure code) should trigger one retry,
+    not be reported straight to the caller as a command failure."""
+    marker = tmp_path / "seen_teardown"
+    ssh = tmp_path / "fake_ssh"
+    ssh.write_text(f"""#!/usr/bin/env bash
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -o) shift 2 ;;
+        -O) marker_seen=1; shift 2 ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+if [ -n "$marker_seen" ]; then
+    touch {marker}
+    exit 0
+fi
+if [ ! -f {marker} ]; then
+    exit 255
+fi
+exec /bin/sh -c "${{args[*]:1}}"
+""")
+    ssh.chmod(ssh.stat().st_mode | stat.S_IEXEC)
+
+    workdir = tmp_path / "workdir"
+    workdir.mkdir()
+    monkeypatch.setenv("VAST_REMOTE_SSH_COMMAND", str(ssh))
+    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao-agent")
+    monkeypatch.setenv("VAST_REMOTE_WORKDIR", str(workdir))
+    monkeypatch.delenv("VAST_REMOTE_VENV", raising=False)
+    config = vast_remote_broker.load_config_from_env()
+
+    text = vast_remote_broker.remote_exec(config, {"command": "echo alive"})
+    assert "exit code: 0" in text
+    assert "alive" in text
+    assert marker.exists()
