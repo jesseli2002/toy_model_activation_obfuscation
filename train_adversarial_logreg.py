@@ -829,14 +829,13 @@ def main(args):
         model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
         adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
         hidden_layers = adv_config.penalty_layers
-        # Reseeds fresh from the checkpoint's own historical seed (now that
-        # `seed` is no longer a LogregAdversarialConfig field, read straight
-        # off the raw dict; 913768 was that field's own removed
-        # _LEGACY_DEFAULTS value, for checkpoints predating even that),
-        # rather than continuing the interrupted run's RNG stream in place --
-        # exact RNG continuity across --resume is a separate follow-up.
+        # Reseeds fresh from the checkpoint's own historical seed (`seed` is
+        # no longer a LogregAdversarialConfig field, so read it straight off
+        # the raw dict) rather than continuing the interrupted run's RNG
+        # stream in place -- exact RNG continuity across --resume is a
+        # separate follow-up.
         gen = torch.Generator(device=device).manual_seed(
-            rck["adv_config"].get("seed", 913768) + 1
+            rck["adv_config"]["seed"] + 1
         )
         # history.jsonl is append-only: this run's earlier entries are
         # already on disk, so resuming needs no read -- new entries just
@@ -871,9 +870,6 @@ def main(args):
         forked_from = None
 
     if not args.resume:
-        # Hyperparameters are freshly resolved from --config (never read from
-        # the checkpoint, unlike --resume above).
-        file_fields = _read_config_file(args.config)
         torch.manual_seed(args.seed)
         gen = torch.Generator(device=device).manual_seed(args.seed + 1)
         if args.fork_from is None:
@@ -883,8 +879,10 @@ def main(args):
             model.reset_parameters()
             print(f"[init] scratch model cfg={model_config}")
 
+        # Hyperparameters are freshly resolved from --config (never read from
+        # the checkpoint, unlike --resume above).
         adv_config, hidden_layers = load_run_config(
-            file_fields,
+            _read_config_file(args.config),
             num_blocks=model.config.num_blocks,
             config_path=args.config,
         )
