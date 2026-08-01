@@ -780,10 +780,14 @@ def _defer_keyboard_interrupt():
 
 
 def save_checkpoint(
-    path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config
+    path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config, gen
 ):
     """Save all training state needed to resume from disk, atomically (a
-    SIGINT can't corrupt the file)."""
+    SIGINT can't corrupt the file). Includes every RNG's state (`gen` -- the
+    training loop's own generator -- plus torch's global default generator,
+    which model-init and any generator-less randomness still draw from) so
+    --resume can continue the interrupted run's RNG stream in place, rather
+    than reseeding a fresh one."""
     w_eff, b_eff = record.affine
     with _defer_keyboard_interrupt():
         model.save(
@@ -795,6 +799,11 @@ def save_checkpoint(
             probe_b=b_eff.cpu(),
             probe_layers=hidden_layers,
             adv_config=adv_config.to_dict(),
+            rng_state=torch.get_rng_state(),
+            cuda_rng_state=(
+                torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+            ),
+            gen_state=gen.get_state(),
         )
 
 
@@ -971,7 +980,9 @@ def main(args):
     )
 
     def save(path):
-        save_checkpoint(path, record, model, opt, best_loss, hidden_layers, adv_config)
+        save_checkpoint(
+            path, record, model, opt, best_loss, hidden_layers, adv_config, gen
+        )
 
     t0 = time.time()
     rate_meter = EMARateMeter(start_iter)
