@@ -26,6 +26,7 @@ from train_adversarial_logreg import (
     _history_path,
     _read_history,
     _resolve_hidden_layers,
+    _restore_rng_state,
     _write_run_config,
     load_run_config,
     train_steps,
@@ -99,10 +100,12 @@ def test_bad_fork_from_tag_exits_before_touching_run_dir(tmp_path):
             "does-not-exist",
             "--tag",
             "unused-test-tag",
-            # unused: Tier 2's --fork-from check fires before this is ever
-            # read, but parse_args() (Tier 1) requires it to be present.
+            # unused: Tier 2's --fork-from check fires before these are ever
+            # read, but parse_args() (Tier 1) requires them to be present.
             "--config",
             str(tmp_path / "unused_config.json"),
+            "--seed",
+            "1",
         ],
         capture_output=True,
         text=True,
@@ -113,11 +116,15 @@ def test_bad_fork_from_tag_exits_before_touching_run_dir(tmp_path):
     assert "checkpoint not found" in result.stderr + result.stdout
 
 
-@pytest.mark.parametrize("mode_args", [["--resume"], ["--fork-from", "some-tag"]])
+@pytest.mark.parametrize(
+    "mode_args", [["--resume"], ["--fork-from", "some-tag", "--seed", "1"]]
+)
 def test_arch_flag_with_resume_or_fork_from_exits_naming_the_flag(tmp_path, mode_args):
     """Architecture flags are frozen once a checkpoint is being restored --
     passing one explicitly alongside --resume/--fork-from must error (Tier 1,
-    in parse_args) rather than being silently ignored."""
+    in parse_args) rather than being silently ignored. --fork-from's mode_args
+    supplies --seed (required for it) so that check doesn't mask this one;
+    --resume's leaves it out since --seed is forbidden there."""
     script = Path(__file__).parent / "train_adversarial_logreg.py"
     result = subprocess.run(
         [
@@ -159,6 +166,8 @@ def test_missing_arch_flag_on_fresh_run_exits_naming_the_flag(tmp_path):
             "t",
             "--config",
             str(tmp_path / "unused_config.json"),
+            "--seed",
+            "1",
         ],
         capture_output=True,
         text=True,
@@ -179,7 +188,6 @@ class TestLoadRunConfig:
         assert cfg.lam == 0.7
         assert cfg.penalty_layers == [1, 2]
         assert hidden_layers == [1, 2]
-        assert cfg.seed == 1
         assert LogregAdversarialConfig.from_dict(cfg.to_dict()) == cfg
 
     def test_all_resolves_against_num_blocks(self):
@@ -213,7 +221,7 @@ class TestLoadRunConfig:
 
     def test_missing_key_error_names_config_path(self):
         file_fields = _logreg_config_file_fields()
-        del file_fields["seed"]
+        del file_fields["lam_warmup_iters"]
         with pytest.raises(SystemExit, match="my_config.json"):
             load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
@@ -237,7 +245,9 @@ class TestConfigJsonPersistence:
         cfg = _make_adv_config()
         (tmp_path / "runs" / "t1").mkdir(parents=True)
         input_path = _write_input_config(tmp_path / "input.json")
-        _write_run_config("t1", model_config, cfg, input_config_path=str(input_path))
+        _write_run_config(
+            "t1", model_config, cfg, input_config_path=str(input_path), seed=1
+        )
         capsys.readouterr()  # discard _write_run_config's own [config] print
         _check_config_json("t1", model_config, cfg)
         assert "[warn]" not in capsys.readouterr().out
@@ -250,7 +260,9 @@ class TestConfigJsonPersistence:
         cfg = _make_adv_config()
         (tmp_path / "runs" / "t1").mkdir(parents=True)
         input_path = _write_input_config(tmp_path / "input.json")
-        _write_run_config("t1", model_config, cfg, input_config_path=str(input_path))
+        _write_run_config(
+            "t1", model_config, cfg, input_config_path=str(input_path), seed=1
+        )
         path = tmp_path / "runs" / "t1" / "config.json"
         on_disk_before = path.read_text()
 
@@ -277,6 +289,7 @@ class TestConfigJsonPersistence:
             _make_model_config(),
             cfg,
             input_config_path=str(input_path),
+            seed=1,
             forked_from=ForkedFrom(tag="t1", iter=100),
         )
         with open(tmp_path / "runs" / "t2" / "config.json") as f:
@@ -292,6 +305,7 @@ class TestConfigJsonPersistence:
             _make_model_config(),
             _make_adv_config(),
             input_config_path=str(input_path),
+            seed=1,
         )
         input_copy = tmp_path / "runs" / "t3" / "input_config.json"
         assert input_copy.read_bytes() == input_path.read_bytes()
@@ -402,6 +416,8 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
             "1",
             "--tag",
             "t",
+            "--seed",
+            "1",
         ],
         capture_output=True,
         text=True,
@@ -426,6 +442,81 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
     )
     assert result.returncode != 0
     assert "adv_config" in result.stderr + result.stdout
+
+
+def test_resume_missing_rng_state_exits_with_error(tmp_path):
+    """A checkpoint predating RNG-state checkpointing (no "rng_state" key)
+    must fail loudly under --resume, not raise a raw KeyError."""
+    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps(_logreg_config_file_fields()))
+    fresh = subprocess.run(
+        [
+            sys.executable,
+            str(script),
+            "--config",
+            str(config_path),
+            "--num-x",
+            "2",
+            "--d-model",
+            "4",
+            "--d-mlp",
+            "2",
+            "--num-blocks",
+            "2",
+            "--max-iters",
+            "1",
+            "--tag",
+            "t",
+            "--seed",
+            "1",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=120,
+        cwd=tmp_path,
+    )
+    assert fresh.returncode == 0, fresh.stderr
+
+    import torch
+
+    ckpt_path = tmp_path / "runs" / "t" / "checkpoints" / "last.pt"
+    ck = torch.load(ckpt_path, weights_only=False)
+    del ck["rng_state"]
+    torch.save(ck, ckpt_path)
+
+    result = subprocess.run(
+        [sys.executable, str(script), "--resume", "--tag", "t", "--max-iters", "2"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        cwd=tmp_path,
+    )
+    assert result.returncode != 0
+    assert "RNG-state" in result.stderr + result.stdout
+
+
+def test_restore_rng_state_continues_gen_stream_not_reseeded():
+    """_restore_rng_state's `gen` must continue from where the snapshot left
+    off (next draw matches the original generator's next draw), not restart
+    a fresh stream at whatever seed originally produced that state."""
+    import torch
+
+    original_gen = torch.Generator().manual_seed(123)
+    original_gen.manual_seed(123)
+    torch.randn(5, generator=original_gen)  # advance past the initial state
+    snapshot_state = original_gen.get_state()
+    expected_next = torch.randn(3, generator=original_gen)
+
+    rck = {
+        "rng_state": torch.get_rng_state(),
+        "cuda_rng_state": None,
+        "gen_state": snapshot_state,
+    }
+    restored_gen = _restore_rng_state(rck, "cpu")
+    actual_next = torch.randn(3, generator=restored_gen)
+
+    assert torch.equal(actual_next, expected_next)
 
 
 class TestNoiseBlobReplay:

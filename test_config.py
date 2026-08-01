@@ -63,7 +63,7 @@ class TestLogregAdversarialConfigRequiredFields:
 
     def test_missing_required_field_raises_type_error(self):
         kwargs = dataclasses.asdict(_make_logreg_config())
-        del kwargs["seed"]
+        del kwargs["probe_C"]
         with pytest.raises(TypeError):
             LogregAdversarialConfig(**kwargs)
 
@@ -84,13 +84,13 @@ class TestLogregAdversarialConfigRequiredFields:
 class TestLogregRunConfig:
     def test_round_trip_without_forked_from(self):
         run_config = LogregRunConfig(
-            model=_make_model_config(), adversarial=_make_logreg_config()
+            model=_make_model_config(), adversarial=_make_logreg_config(), seed=1
         )
         assert LogregRunConfig.from_dict(run_config.to_dict()) == run_config
 
     def test_forked_from_absent_from_dict_when_none(self):
         run_config = LogregRunConfig(
-            model=_make_model_config(), adversarial=_make_logreg_config()
+            model=_make_model_config(), adversarial=_make_logreg_config(), seed=1
         )
         assert "forked_from" not in run_config.to_dict()
 
@@ -98,6 +98,7 @@ class TestLogregRunConfig:
         run_config = LogregRunConfig(
             model=_make_model_config(),
             adversarial=_make_logreg_config(),
+            seed=1,
             forked_from=ForkedFrom(tag="source", iter=100),
         )
         d = run_config.to_dict()
@@ -109,7 +110,7 @@ class TestLogregRunConfig:
         through each block's own _LEGACY_DEFAULTS, same as calling that
         dataclass's from_dict directly."""
         run_config = LogregRunConfig(
-            model=_make_model_config(), adversarial=_make_logreg_config()
+            model=_make_model_config(), adversarial=_make_logreg_config(), seed=1
         )
         d = run_config.to_dict()
         del d["model"]["num_blocks"]

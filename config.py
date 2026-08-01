@@ -104,14 +104,16 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     required key in the --config JSON file, so omitting it fails loudly (a
     TypeError from this constructor) instead of silently taking on a value.
     See train_adversarial_logreg.py's module docstring for the rationale
-    behind this split (architecture vs. config-file vs. bookkeeping).
+    behind this split (architecture vs. config-file vs. bookkeeping). `seed`
+    is a CLI flag instead (bookkeeping, on `LogregRunConfig`), so a trial
+    can't be re-run with a different seed by editing --config and forgetting
+    to bump it.
     """
 
     # No default -- required key in --config JSON.
     lam: float
     penalty_layers: list | str  # "all", or an explicit list of layer indices
     lam_warmup_iters: int
-    seed: int
     probe_C: float
     probe_init_iters: int
     class_threshold: float
@@ -186,7 +188,6 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "lam": 0.5,
         "lam_warmup_iters": 0,
         "penalty_layers": None,
-        "seed": 913768,
         "probe_C": 1.0,
         "probe_init_iters": 1000,
         "class_threshold": 1.5,
@@ -233,10 +234,15 @@ class LogregRunConfig:
 
     model: ResidualMLPConfig
     adversarial: LogregAdversarialConfig
+    seed: int
     forked_from: ForkedFrom | None = None
 
     def to_dict(self) -> dict:
-        d = {"model": self.model.to_dict(), "adversarial": self.adversarial.to_dict()}
+        d = {
+            "model": self.model.to_dict(),
+            "adversarial": self.adversarial.to_dict(),
+            "seed": self.seed,
+        }
         if self.forked_from is not None:
             d["forked_from"] = dataclasses.asdict(self.forked_from)
         return d
@@ -247,5 +253,6 @@ class LogregRunConfig:
         return cls(
             model=ResidualMLPConfig.from_dict(d["model"]),
             adversarial=LogregAdversarialConfig.from_dict(d["adversarial"]),
+            seed=d["seed"],
             forked_from=ForkedFrom(**forked_from) if forked_from is not None else None,
         )

@@ -125,6 +125,14 @@ def parse_args():
     g_book.add_argument("--tag", type=str, default="adv-logreg")
     g_book.add_argument("--resume", action="store_true")
     g_book.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="required for a fresh run or --fork-from; forbidden under "
+        "--resume, which reseeds from the checkpoint's own recorded seed "
+        "instead of this invocation's.",
+    )
+    g_book.add_argument(
         "--fork-from",
         type=str,
         default=None,
@@ -172,6 +180,13 @@ def parse_args():
         p.error("--resume and --fork-from are mutually exclusive.")
     if not args.resume and args.config is None:
         p.error("--config PATH is required (unless --resume).")
+    if args.resume and args.seed is not None:
+        p.error(
+            "--seed cannot be combined with --resume -- resume reseeds from "
+            "the checkpoint's own recorded seed instead."
+        )
+    if not args.resume and args.seed is None:
+        p.error("--seed required for a fresh run or --fork-from.")
 
     arch_flags = {
         "num_x": "--num-x",
@@ -312,6 +327,7 @@ def _write_run_config(
     model_config: ResidualMLPConfig,
     adv_config: LogregAdversarialConfig,
     input_config_path: str,
+    seed: int,
     forked_from: ForkedFrom | None = None,
 ) -> None:
     """Write runs/<tag>/config.json (fully resolved) and
@@ -319,7 +335,7 @@ def _write_run_config(
     tag-creation time (fresh run or --fork-from). Write-once, read-only
     thereafter -- see module docstring; --resume never calls this."""
     run_config = LogregRunConfig(
-        model=model_config, adversarial=adv_config, forked_from=forked_from
+        model=model_config, adversarial=adv_config, seed=seed, forked_from=forked_from
     )
     path = _config_json_path(tag)
     with open(path, "w") as f:
@@ -353,24 +369,24 @@ def _check_config_json(
 
 
 def _make_optimizer(
-    params,
-    optimizer_kind: str,
-    *,
-    lr: float,
-    eps: float,
-    beta1: float,
-    beta2: float,
-    stableadamw_d: float,
+    params, adv_config: LogregAdversarialConfig
 ) -> torch.optim.Optimizer:
-    """Construct the optimizer named by `LogregAdversarialConfig.optimizer_kind`."""
-    if optimizer_kind == "adamw":
-        return torch.optim.AdamW(params, lr=lr, eps=eps, betas=(beta1, beta2))
-    elif optimizer_kind == "stableadamw":
+    """Construct the optimizer named by adv_config.optimizer_kind."""
+    betas = (adv_config.adam_beta1, adv_config.adam_beta2)
+    if adv_config.optimizer_kind == "adamw":
+        return torch.optim.AdamW(
+            params, lr=adv_config.lr, eps=adv_config.adam_eps, betas=betas
+        )
+    elif adv_config.optimizer_kind == "stableadamw":
         return StableAdamW(
-            params, lr=lr, eps=eps, betas=(beta1, beta2), d=stableadamw_d
+            params,
+            lr=adv_config.lr,
+            eps=adv_config.adam_eps,
+            betas=betas,
+            d=adv_config.stableadamw_d,
         )
     else:
-        raise ValueError(f"unknown optimizer_kind {optimizer_kind!r}")
+        raise ValueError(f"unknown optimizer_kind {adv_config.optimizer_kind!r}")
 
 
 def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = True):
@@ -402,21 +418,32 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
         # The checkpoint's OWN historical config -- not the caller's
         # freshly-resolved adv_config, which for --fork-from may differ.
         hist_adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
-        opt = _make_optimizer(
-            model.parameters(),
-            hist_adv_config.optimizer_kind,
-            lr=hist_adv_config.lr,
-            eps=hist_adv_config.adam_eps,
-            beta1=hist_adv_config.adam_beta1,
-            beta2=hist_adv_config.adam_beta2,
-            stableadamw_d=hist_adv_config.stableadamw_d,
-        )
+        opt = _make_optimizer(model.parameters(), hist_adv_config)
         opt.load_state_dict(rck["opt"])
     else:
         opt = None
     start_iter = rck["iter"]
     best_loss = rck.get("best_loss", float("inf"))
     return model, opt, start_iter, best_loss, rck
+
+
+def _restore_rng_state(rck: dict, device) -> torch.Generator:
+    """--resume counterpart to save_checkpoint's RNG snapshot: restores
+    torch's global default generator (and CUDA's, if present) in place, and
+    rebuilds `gen` -- the training loop's own generator -- from its saved
+    state, so the interrupted run's RNG stream continues rather than
+    reseeding a fresh one."""
+    if "rng_state" not in rck:
+        raise SystemExit(
+            "[error] checkpoint predates RNG-state checkpointing and cannot "
+            "be exactly --resume'd. Use --fork-from instead (reseeds fresh)."
+        )
+    torch.set_rng_state(rck["rng_state"])
+    if rck["cuda_rng_state"] is not None:
+        torch.cuda.set_rng_state(rck["cuda_rng_state"])
+    gen = torch.Generator(device=device)
+    gen.set_state(rck["gen_state"])
+    return gen
 
 
 def _history_path(tag: str) -> str:
@@ -764,10 +791,14 @@ def _defer_keyboard_interrupt():
 
 
 def save_checkpoint(
-    path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config
+    path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config, gen
 ):
     """Save all training state needed to resume from disk, atomically (a
-    SIGINT can't corrupt the file)."""
+    SIGINT can't corrupt the file). Includes every RNG's state (`gen` -- the
+    training loop's own generator -- plus torch's global default generator,
+    which model-init and any generator-less randomness still draw from) so
+    --resume can continue the interrupted run's RNG stream in place, rather
+    than reseeding a fresh one."""
     w_eff, b_eff = record.affine
     with _defer_keyboard_interrupt():
         model.save(
@@ -779,7 +810,55 @@ def save_checkpoint(
             probe_b=b_eff.cpu(),
             probe_layers=hidden_layers,
             adv_config=adv_config.to_dict(),
+            rng_state=torch.get_rng_state(),
+            cuda_rng_state=(
+                torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+            ),
+            gen_state=gen.get_state(),
         )
+
+
+def _start_resume(args, last_path: str, device):
+    """--resume's full run-state restore: everything main() needs is either
+    inherited from the checkpoint (model/opt/adv_config/hidden_layers) or
+    continued in place (gen's RNG state) -- none of the shared fresh-run
+    setup (seeding, load_run_config, _make_optimizer, _write_run_config)
+    applies here. Returns (model, opt, start_iter, best_loss, adv_config,
+    hidden_layers, gen)."""
+    # (raises if last_path predates the nested adv_config checkpoint layout
+    # -- see _restore_checkpoint)
+    model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
+    adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
+    hidden_layers = adv_config.penalty_layers
+    gen = _restore_rng_state(rck, device)
+    # history.jsonl is append-only: this run's earlier entries are already on
+    # disk, so resuming needs no read -- new entries just keep appending to
+    # the same file.
+    print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
+    _check_config_json(args.tag, model.config, adv_config)
+    return model, opt, start_iter, best_loss, adv_config, hidden_layers, gen
+
+
+def _start_fork_from(args, hist_path: str, device):
+    """Restore (architecture, weights, iteration count) from
+    args.fork_from's checkpoint for a new tag -- the adversarial-objective
+    hyperparameters/optimizer are NOT restored here; the caller resolves
+    those fresh from --config like a scratch run. Returns (model,
+    start_iter, best_loss, forked_from)."""
+    source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
+    model, _, start_iter, best_loss, rck = _restore_checkpoint(
+        source_ckpt_path, device, restore_optimizer=False
+    )
+    # One-time seed write (not per-iteration, so no quadratic cost): copy
+    # source_tag's pre-fork entries into the new tag's own history.jsonl so
+    # loss curves stay continuous across the fork.
+    for h in _forked_history(args.fork_from, start_iter):
+        _append_history(hist_path, h)
+    forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
+    print(
+        f"[fork] from {args.fork_from} @ iter {start_iter}, best_loss={best_loss:.3e}"
+    )
+    return model, start_iter, best_loss, forked_from
 
 
 def main(args):
@@ -808,78 +887,53 @@ def main(args):
     hist_path = _history_path(args.tag)
 
     if args.resume:
-        # (raises if last_path predates the nested adv_config checkpoint
-        # layout -- see _restore_checkpoint)
-        model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
-        adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
-        hidden_layers = adv_config.penalty_layers
-        # history.jsonl is append-only: this run's earlier entries are
-        # already on disk, so resuming needs no read -- new entries just
-        # keep appending to the same file.
-        print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
-        _check_config_json(args.tag, model.config, adv_config)
+        model, opt, start_iter, best_loss, adv_config, hidden_layers, gen = (
+            _start_resume(args, last_path, device)
+        )
+    elif args.fork_from is not None:
+        model, start_iter, best_loss, forked_from = _start_fork_from(
+            args, hist_path, device
+        )
     else:
+        model_config = ResidualMLPConfig(
+            num_x=args.num_x,
+            d_model=args.d_model,
+            d_mlp=args.d_mlp,
+            num_blocks=args.num_blocks,
+        )
+        model = ResidualMLP(model_config).to(device)
+        start_iter = 0
+        best_loss = float("inf")
+        forked_from = None
+
+    if not args.resume:
+        torch.manual_seed(args.seed)
+        gen = torch.Generator(device=device).manual_seed(args.seed + 1)
+        if args.fork_from is None:
+            # Re-seeded, deliberate re-init -- the ctor's own (unseeded) init
+            # above is discarded, same as --resume/--fork-from's own ctor-time
+            # init is discarded by their (already-run) load_state_dict.
+            model.reset_parameters()
+            print(f"[init] scratch model cfg={model_config}")
+
         # Hyperparameters are freshly resolved from --config (never read from
         # the checkpoint, unlike --resume above).
-        file_fields = _read_config_file(args.config)
-        if "seed" in file_fields:
-            # Needed before the scratch init below is reproducible. (Under
-            # --fork-from the model built here is discarded in favor of the
-            # restored checkpoint, so the seed in effect at this point
-            # doesn't matter there.)
-            torch.manual_seed(file_fields["seed"])
-
-        if args.fork_from is not None:
-            source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
-            model, _, start_iter, best_loss, rck = _restore_checkpoint(
-                source_ckpt_path, device, restore_optimizer=False
-            )
-            # One-time seed write (not per-iteration, so no quadratic cost):
-            # copy source_tag's pre-fork entries into the new tag's own
-            # history.jsonl so loss curves stay continuous across the fork.
-            for h in _forked_history(args.fork_from, start_iter):
-                _append_history(hist_path, h)
-            forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
-            print(
-                f"[fork] from {args.fork_from} @ iter {start_iter}, "
-                f"best_loss={best_loss:.3e}"
-            )
-        else:
-            model_config = ResidualMLPConfig(
-                num_x=args.num_x,
-                d_model=args.d_model,
-                d_mlp=args.d_mlp,
-                num_blocks=args.num_blocks,
-            )
-            model = ResidualMLP(model_config).to(device)
-            print(f"[init] scratch model cfg={model_config}")
-            start_iter = 0
-            best_loss = float("inf")
-            forked_from = None
-
         adv_config, hidden_layers = load_run_config(
-            file_fields,
+            _read_config_file(args.config),
             num_blocks=model.config.num_blocks,
             config_path=args.config,
         )
         # Always freshly built (never inherited from a --fork-from source),
         # same as every other adversarial hyperparameter above -- see
         # `_restore_checkpoint`'s restore_optimizer=False note.
-        opt = _make_optimizer(
-            model.parameters(),
-            adv_config.optimizer_kind,
-            lr=adv_config.lr,
-            eps=adv_config.adam_eps,
-            beta1=adv_config.adam_beta1,
-            beta2=adv_config.adam_beta2,
-            stableadamw_d=adv_config.stableadamw_d,
-        )
+        opt = _make_optimizer(model.parameters(), adv_config)
         _write_run_config(
             args.tag,
             model.config,
             adv_config,
             input_config_path=args.config,
             forked_from=forked_from,
+            seed=args.seed,
         )
 
     num_x, num_blocks = model.config.num_x, model.config.num_blocks
@@ -888,10 +942,6 @@ def main(args):
             f"[error] no penalty layers (num_blocks={num_blocks} has no hidden "
             f"layers). Nothing to hide against."
         )
-
-    torch.manual_seed(adv_config.seed)
-
-    gen = torch.Generator(device=device).manual_seed(adv_config.seed + 1)
 
     # --- sample the fixed probe dataset (reused for every fit + penalty for
     # the rest of the run -- see module docstring) and init-fit a probe over
@@ -950,7 +1000,9 @@ def main(args):
     )
 
     def save(path):
-        save_checkpoint(path, record, model, opt, best_loss, hidden_layers, adv_config)
+        save_checkpoint(
+            path, record, model, opt, best_loss, hidden_layers, adv_config, gen
+        )
 
     t0 = time.time()
     rate_meter = EMARateMeter(start_iter)
