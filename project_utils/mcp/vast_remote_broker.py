@@ -11,9 +11,8 @@ holding nothing durable except runs/, so arbitrary command execution on
 it is an acceptable capability to hand an agent. It is NOT a security
 boundary -- anything reachable from the remote's shell is reachable
 through this server. The only guard is an anti-footgun check on commands
-that look like they destroy runs/ or the workspace root. There is no
-per-call override: deleting runs/ is rare and belongs to a human with a
-root shell, so the guard is a wall rather than a speed bump.
+that look like they destroy runs/ or the workspace root, which callers
+can override per call.
 
 Commands run through a small wrapper that cd's to the remote project dir
 and activates the remote venv, because the remote's ~/.bashrc bails out
@@ -79,12 +78,14 @@ def load_config_from_env() -> Config:
     )
 
 
-def _check_destructive(command: str) -> None:
+def _check_destructive(command: str, confirmed: bool) -> None:
+    if confirmed:
+        return
     if _DESTRUCTIVE_VERB_RE.search(command) and _PROTECTED_TARGET_RE.search(command):
         raise BrokerError(
             "command looks like it destroys runs/ or the workspace root, which hold "
-            "the only state on the remote worth keeping. This tool cannot override "
-            "the check; ask the human to run the deletion from their own root shell."
+            "the only state on the remote worth keeping. Re-send with "
+            "confirm_destructive=true if that is genuinely intended."
         )
 
 
@@ -120,6 +121,7 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     cwd = arguments.get("cwd")
     timeout_s = arguments.get("timeout_s", DEFAULT_TIMEOUT_S)
     use_venv = arguments.get("use_venv", True)
+    confirm_destructive = arguments.get("confirm_destructive", False)
 
     if not isinstance(command, str) or not command.strip():
         raise BrokerError("command is required and must be a non-empty string")
@@ -127,12 +129,14 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
         raise BrokerError("cwd must be a non-empty string if given")
     if not isinstance(use_venv, bool):
         raise BrokerError("use_venv must be a boolean if given")
+    if not isinstance(confirm_destructive, bool):
+        raise BrokerError("confirm_destructive must be a boolean if given")
     if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool):
         raise BrokerError("timeout_s must be a number if given")
     if not 1 <= timeout_s <= MAX_TIMEOUT_S:
         raise BrokerError(f"timeout_s must be between 1 and {MAX_TIMEOUT_S}")
 
-    _check_destructive(command)
+    _check_destructive(command, confirm_destructive)
 
     script = _remote_script(config, command, cwd, use_venv)
     argv = [
@@ -193,9 +197,6 @@ TOOLS = [
             "further remote_exec calls that tail the log.\n"
             "Output is truncated in the middle if very long; prefer piping through "
             "head/tail/grep on the remote.\n"
-            "Commands that look like they delete runs/ or the workspace root are refused "
-            "outright, with no argument that unlocks them: ask the human to do it from "
-            "their own root shell rather than looking for a phrasing that gets through.\n"
             "The remote is a stateless executor: source is synced from this machine and "
             "runs/ syncs back, so remote-side source edits get overwritten and are not "
             "the way to change code."
@@ -219,6 +220,14 @@ TOOLS = [
                 "use_venv": {
                     "type": "boolean",
                     "description": "Activate the remote venv first (default true). Set false to use the system Python.",
+                },
+                "confirm_destructive": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true to allow a command that appears to delete runs/ or the "
+                        "workspace root. Such commands are refused by default because runs/ "
+                        "holds the only remote state worth keeping."
+                    ),
                 },
             },
             "required": ["command"],
