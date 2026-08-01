@@ -99,10 +99,12 @@ def test_bad_fork_from_tag_exits_before_touching_run_dir(tmp_path):
             "does-not-exist",
             "--tag",
             "unused-test-tag",
-            # unused: Tier 2's --fork-from check fires before this is ever
-            # read, but parse_args() (Tier 1) requires it to be present.
+            # unused: Tier 2's --fork-from check fires before these are ever
+            # read, but parse_args() (Tier 1) requires them to be present.
             "--config",
             str(tmp_path / "unused_config.json"),
+            "--seed",
+            "1",
         ],
         capture_output=True,
         text=True,
@@ -113,11 +115,15 @@ def test_bad_fork_from_tag_exits_before_touching_run_dir(tmp_path):
     assert "checkpoint not found" in result.stderr + result.stdout
 
 
-@pytest.mark.parametrize("mode_args", [["--resume"], ["--fork-from", "some-tag"]])
+@pytest.mark.parametrize(
+    "mode_args", [["--resume"], ["--fork-from", "some-tag", "--seed", "1"]]
+)
 def test_arch_flag_with_resume_or_fork_from_exits_naming_the_flag(tmp_path, mode_args):
     """Architecture flags are frozen once a checkpoint is being restored --
     passing one explicitly alongside --resume/--fork-from must error (Tier 1,
-    in parse_args) rather than being silently ignored."""
+    in parse_args) rather than being silently ignored. --fork-from's mode_args
+    supplies --seed (required for it) so that check doesn't mask this one;
+    --resume's leaves it out since --seed is forbidden there."""
     script = Path(__file__).parent / "train_adversarial_logreg.py"
     result = subprocess.run(
         [
@@ -159,6 +165,8 @@ def test_missing_arch_flag_on_fresh_run_exits_naming_the_flag(tmp_path):
             "t",
             "--config",
             str(tmp_path / "unused_config.json"),
+            "--seed",
+            "1",
         ],
         capture_output=True,
         text=True,
@@ -179,7 +187,6 @@ class TestLoadRunConfig:
         assert cfg.lam == 0.7
         assert cfg.penalty_layers == [1, 2]
         assert hidden_layers == [1, 2]
-        assert cfg.seed == 1
         assert LogregAdversarialConfig.from_dict(cfg.to_dict()) == cfg
 
     def test_all_resolves_against_num_blocks(self):
@@ -213,7 +220,7 @@ class TestLoadRunConfig:
 
     def test_missing_key_error_names_config_path(self):
         file_fields = _logreg_config_file_fields()
-        del file_fields["seed"]
+        del file_fields["lam_warmup_iters"]
         with pytest.raises(SystemExit, match="my_config.json"):
             load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
 
@@ -237,7 +244,9 @@ class TestConfigJsonPersistence:
         cfg = _make_adv_config()
         (tmp_path / "runs" / "t1").mkdir(parents=True)
         input_path = _write_input_config(tmp_path / "input.json")
-        _write_run_config("t1", model_config, cfg, input_config_path=str(input_path))
+        _write_run_config(
+            "t1", model_config, cfg, input_config_path=str(input_path), seed=1
+        )
         capsys.readouterr()  # discard _write_run_config's own [config] print
         _check_config_json("t1", model_config, cfg)
         assert "[warn]" not in capsys.readouterr().out
@@ -250,7 +259,9 @@ class TestConfigJsonPersistence:
         cfg = _make_adv_config()
         (tmp_path / "runs" / "t1").mkdir(parents=True)
         input_path = _write_input_config(tmp_path / "input.json")
-        _write_run_config("t1", model_config, cfg, input_config_path=str(input_path))
+        _write_run_config(
+            "t1", model_config, cfg, input_config_path=str(input_path), seed=1
+        )
         path = tmp_path / "runs" / "t1" / "config.json"
         on_disk_before = path.read_text()
 
@@ -277,6 +288,7 @@ class TestConfigJsonPersistence:
             _make_model_config(),
             cfg,
             input_config_path=str(input_path),
+            seed=1,
             forked_from=ForkedFrom(tag="t1", iter=100),
         )
         with open(tmp_path / "runs" / "t2" / "config.json") as f:
@@ -292,6 +304,7 @@ class TestConfigJsonPersistence:
             _make_model_config(),
             _make_adv_config(),
             input_config_path=str(input_path),
+            seed=1,
         )
         input_copy = tmp_path / "runs" / "t3" / "input_config.json"
         assert input_copy.read_bytes() == input_path.read_bytes()
@@ -402,6 +415,8 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
             "1",
             "--tag",
             "t",
+            "--seed",
+            "1",
         ],
         capture_output=True,
         text=True,

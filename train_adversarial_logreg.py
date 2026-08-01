@@ -125,6 +125,14 @@ def parse_args():
     g_book.add_argument("--tag", type=str, default="adv-logreg")
     g_book.add_argument("--resume", action="store_true")
     g_book.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="required for a fresh run or --fork-from; forbidden under "
+        "--resume, which reseeds from the checkpoint's own recorded seed "
+        "instead of this invocation's.",
+    )
+    g_book.add_argument(
         "--fork-from",
         type=str,
         default=None,
@@ -172,6 +180,13 @@ def parse_args():
         p.error("--resume and --fork-from are mutually exclusive.")
     if not args.resume and args.config is None:
         p.error("--config PATH is required (unless --resume).")
+    if args.resume and args.seed is not None:
+        p.error(
+            "--seed cannot be combined with --resume -- resume reseeds from "
+            "the checkpoint's own recorded seed instead."
+        )
+    if not args.resume and args.seed is None:
+        p.error("--seed required for a fresh run or --fork-from.")
 
     arch_flags = {
         "num_x": "--num-x",
@@ -312,6 +327,7 @@ def _write_run_config(
     model_config: ResidualMLPConfig,
     adv_config: LogregAdversarialConfig,
     input_config_path: str,
+    seed: int,
     forked_from: ForkedFrom | None = None,
 ) -> None:
     """Write runs/<tag>/config.json (fully resolved) and
@@ -319,7 +335,7 @@ def _write_run_config(
     tag-creation time (fresh run or --fork-from). Write-once, read-only
     thereafter -- see module docstring; --resume never calls this."""
     run_config = LogregRunConfig(
-        model=model_config, adversarial=adv_config, forked_from=forked_from
+        model=model_config, adversarial=adv_config, seed=seed, forked_from=forked_from
     )
     path = _config_json_path(tag)
     with open(path, "w") as f:
@@ -813,49 +829,59 @@ def main(args):
         model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
         adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
         hidden_layers = adv_config.penalty_layers
+        # Reseeds fresh from the checkpoint's own historical seed (now that
+        # `seed` is no longer a LogregAdversarialConfig field, read straight
+        # off the raw dict; 913768 was that field's own removed
+        # _LEGACY_DEFAULTS value, for checkpoints predating even that),
+        # rather than continuing the interrupted run's RNG stream in place --
+        # exact RNG continuity across --resume is a separate follow-up.
+        gen = torch.Generator(device=device).manual_seed(
+            rck["adv_config"].get("seed", 913768) + 1
+        )
         # history.jsonl is append-only: this run's earlier entries are
         # already on disk, so resuming needs no read -- new entries just
         # keep appending to the same file.
         print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
         _check_config_json(args.tag, model.config, adv_config)
+    elif args.fork_from is not None:
+        source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
+        model, _, start_iter, best_loss, rck = _restore_checkpoint(
+            source_ckpt_path, device, restore_optimizer=False
+        )
+        # One-time seed write (not per-iteration, so no quadratic cost):
+        # copy source_tag's pre-fork entries into the new tag's own
+        # history.jsonl so loss curves stay continuous across the fork.
+        for h in _forked_history(args.fork_from, start_iter):
+            _append_history(hist_path, h)
+        forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
+        print(
+            f"[fork] from {args.fork_from} @ iter {start_iter}, "
+            f"best_loss={best_loss:.3e}"
+        )
     else:
+        model_config = ResidualMLPConfig(
+            num_x=args.num_x,
+            d_model=args.d_model,
+            d_mlp=args.d_mlp,
+            num_blocks=args.num_blocks,
+        )
+        model = ResidualMLP(model_config).to(device)
+        start_iter = 0
+        best_loss = float("inf")
+        forked_from = None
+
+    if not args.resume:
         # Hyperparameters are freshly resolved from --config (never read from
         # the checkpoint, unlike --resume above).
         file_fields = _read_config_file(args.config)
-        if "seed" in file_fields:
-            # Needed before the scratch init below is reproducible. (Under
-            # --fork-from the model built here is discarded in favor of the
-            # restored checkpoint, so the seed in effect at this point
-            # doesn't matter there.)
-            torch.manual_seed(file_fields["seed"])
-
-        if args.fork_from is not None:
-            source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
-            model, _, start_iter, best_loss, rck = _restore_checkpoint(
-                source_ckpt_path, device, restore_optimizer=False
-            )
-            # One-time seed write (not per-iteration, so no quadratic cost):
-            # copy source_tag's pre-fork entries into the new tag's own
-            # history.jsonl so loss curves stay continuous across the fork.
-            for h in _forked_history(args.fork_from, start_iter):
-                _append_history(hist_path, h)
-            forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
-            print(
-                f"[fork] from {args.fork_from} @ iter {start_iter}, "
-                f"best_loss={best_loss:.3e}"
-            )
-        else:
-            model_config = ResidualMLPConfig(
-                num_x=args.num_x,
-                d_model=args.d_model,
-                d_mlp=args.d_mlp,
-                num_blocks=args.num_blocks,
-            )
-            model = ResidualMLP(model_config).to(device)
+        torch.manual_seed(args.seed)
+        gen = torch.Generator(device=device).manual_seed(args.seed + 1)
+        if args.fork_from is None:
+            # Re-seeded, deliberate re-init -- the ctor's own (unseeded) init
+            # above is discarded, same as --resume/--fork-from's own ctor-time
+            # init is discarded by their (already-run) load_state_dict.
+            model.reset_parameters()
             print(f"[init] scratch model cfg={model_config}")
-            start_iter = 0
-            best_loss = float("inf")
-            forked_from = None
 
         adv_config, hidden_layers = load_run_config(
             file_fields,
@@ -880,6 +906,7 @@ def main(args):
             adv_config,
             input_config_path=args.config,
             forked_from=forked_from,
+            seed=args.seed,
         )
 
     num_x, num_blocks = model.config.num_x, model.config.num_blocks
@@ -888,10 +915,6 @@ def main(args):
             f"[error] no penalty layers (num_blocks={num_blocks} has no hidden "
             f"layers). Nothing to hide against."
         )
-
-    torch.manual_seed(adv_config.seed)
-
-    gen = torch.Generator(device=device).manual_seed(adv_config.seed + 1)
 
     # --- sample the fixed probe dataset (reused for every fit + penalty for
     # the rest of the run -- see module docstring) and init-fit a probe over
