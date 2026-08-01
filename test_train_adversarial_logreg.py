@@ -40,6 +40,7 @@ def _make_record(**overrides):
         l_task=0.5,
         l_probe=0.5,
         lam_eff=0.3,
+        lr=3e-3,
         affine=("w", "b"),
     )
     defaults.update(overrides)
@@ -533,9 +534,7 @@ class TestNoiseBlobReplay:
 
         model_config = _make_model_config(num_x=2, d_model=4, d_mlp=4, num_blocks=3)
         model = ResidualMLP(model_config)
-        opt = torch.optim.AdamW(
-            model.parameters(), lr=1e3
-        )  # huge lr -> guaranteed explode
+        opt = torch.optim.AdamW(model.parameters())
         gen = torch.Generator().manual_seed(0)
 
         adv_config, hidden_layers = load_run_config(
@@ -545,6 +544,9 @@ class TestNoiseBlobReplay:
                 resid_noise_std=0.1,
                 explode_factor=1e-6,  # any step counts as an explosion
                 batch_size=8,
+                lr=1e3,  # huge lr -> guaranteed explode (train_steps sets
+                # opt's lr from adv_config every iteration, so this is what
+                # actually governs the step size, not opt's own ctor lr above)
             ),
             num_blocks=3,
             config_path="unused.json",
