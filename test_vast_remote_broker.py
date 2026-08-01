@@ -48,7 +48,7 @@ def remote(tmp_path, monkeypatch):
     (venv / "bin" / "activate").write_text(VENV_ACTIVATE)
 
     monkeypatch.setenv("VAST_REMOTE_SSH_COMMAND", str(ssh))
-    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao")
+    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao-agent")
     monkeypatch.setenv("VAST_REMOTE_WORKDIR", str(workdir))
     monkeypatch.setenv("VAST_REMOTE_VENV", str(venv))
 
@@ -267,7 +267,7 @@ def test_ssh_host_is_required(monkeypatch):
 
 
 def test_defaults_cover_the_optional_settings(monkeypatch):
-    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao")
+    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao-agent")
     for name in ("VAST_REMOTE_SSH_COMMAND", "VAST_REMOTE_WORKDIR", "VAST_REMOTE_VENV"):
         monkeypatch.delenv(name, raising=False)
     config = vast_remote_broker.load_config_from_env()
