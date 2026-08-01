@@ -752,14 +752,17 @@ def train_steps(
             noise,
             retrain_probe=it % adv_config.probe_retrain_interval == 0,
         )
-        loss_before_step = loss.item()
-
         # Snapshot BEFORE the step, so a detected explosion (below) can
         # revert to it. TODO(perf): every-iteration deepcopy + re-forward
         # just to catch a rare event -- a cheaper retroactive alternative
         # exists, see PR #77's revert-and-retry discussion (not the
         # StableAdamW note in optimizer_step).
+        #
+        # loss.item() is read here rather than unconditionally: it syncs the
+        # host against the GPU, and nothing outside the explode path wants
+        # the pre-step loss.
         if adv_config.explode_factor > 0:
+            loss_before_step = loss.item()
             pre_model_state = copy.deepcopy(model.state_dict())
             pre_opt_state = copy.deepcopy(opt.state_dict())
 
