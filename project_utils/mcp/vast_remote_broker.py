@@ -322,21 +322,30 @@ TOOLS = [
         "name": "remote_exec",
         "description": (
             "Run a shell command on the remote vast.ai GPU instance over SSH and return "
-            "its exit code, stdout and stderr. The command runs under bash in the remote "
-            "project directory with the remote venv activated, so `python train_*.py ...` "
-            "and `nvidia-smi` work directly. Arbitrary commands are allowed.\n"
-            "stdin is closed, so nothing interactive will work. The call blocks until the "
-            "command finishes or timeout_s elapses, and a timeout closes the connection "
-            "without necessarily killing the remote process -- for anything long-running "
-            "(training), launch it detached instead, e.g. "
-            "`setsid nohup python train.py > logs/x.log 2>&1 < /dev/null &`, then poll with "
-            "further remote_exec calls that tail the log.\n"
+            "its exit code, stdout and stderr. Runs under bash in the remote project "
+            "directory with the remote venv activated, so `python train_*.py ...` and "
+            "`nvidia-smi` work directly. Arbitrary commands are allowed.\n"
+            "Stateless executor: source syncs this-machine -> remote and runs/ syncs "
+            "remote -> this-machine on mutagen's own schedule (see sync_flush); "
+            "remote-side source edits get overwritten, so edit source locally instead. "
+            "Tag scratch/debug runs `debug_*` -- excluded from sync and backup, so "
+            "delete or leave them freely.\n"
+            "Leave cwd at its default (the remote project directory, not a worktree "
+            "checkout) for anything touching runs/: paths.py resolves runs/ off CWD, "
+            "and only that top-level runs/ is synced back. To run a script that lives "
+            "in a worktree, invoke it by absolute path rather than cd'ing into it.\n"
+            "stdin is closed, so nothing interactive will work. The call blocks until "
+            "the command finishes or timeout_s elapses, and a timeout closes the "
+            "connection without necessarily killing the remote process -- for anything "
+            "long-running (training), launch it detached instead, e.g. "
+            "`setsid nohup python train.py > logs/x.log 2>&1 < /dev/null &`, then poll "
+            "with further remote_exec calls that tail the log.\n"
             "Output is truncated in the middle if very long; prefer piping through "
             "head/tail/grep on the remote.\n"
-            "The remote is a stateless executor: source is synced from this machine and "
-            "runs/ syncs back, so remote-side source edits get overwritten and are not "
-            "the way to change code."
-            "See /etc/vast-agents-guide.md on the remote for operating details. The in-container vastai CLI is instance-scoped (cannot create new instances)."
+            "See /etc/vast-agents-guide.md on the remote for more. The in-container "
+            "vastai CLI is instance-scoped (cannot create new instances); instance "
+            "lifecycle (create/destroy) and sync management are handled by vast_setup/ "
+            "locally, per CLAUDE.md."
         ),
         "inputSchema": {
             "type": "object",
@@ -347,7 +356,7 @@ TOOLS = [
                 },
                 "cwd": {
                     "type": "string",
-                    "description": "Absolute remote directory to run in. Defaults to the remote project directory.",
+                    "description": "Absolute remote directory to run in. Defaults to the remote project directory -- see the tool description before pointing this at a worktree.",
                 },
                 "timeout_s": {
                     "type": "number",
