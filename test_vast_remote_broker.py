@@ -257,6 +257,13 @@ def test_guard_does_not_block_ordinary_commands(remote, command):
     vast_remote_broker._check_destructive(command, confirmed=False)
 
 
+def test_guard_does_not_block_debug_run_deletion_by_absolute_path(remote):
+    # remote_exec's cwd is caller-controlled, so a debug_* target named by
+    # absolute path is just as common as one named relative to workdir.
+    command = f"rm -rf {remote.workdir_path}/runs/debug_smoke"
+    vast_remote_broker._check_destructive(command, confirmed=False)
+
+
 def test_long_output_is_truncated_in_the_middle(remote):
     line_count = vast_remote_broker.MAX_OUTPUT_CHARS
     is_error, text = remote.exec(f"seq 1 {line_count}")

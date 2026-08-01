@@ -75,7 +75,9 @@ _PROTECTED_TARGET_RE = re.compile(r"(?<![\w.-])(runs|/workspace)(?![\w-])")
 # Runs tagged debug_* are declared-disposable scratch, excluded from every sync
 # and backup, so an agent may delete them without asking. Matches a whole path
 # component only, so nothing that walks back out of the run dir slips through.
-_DISPOSABLE_RUN_RE = re.compile(r"(?<![\w./-])runs/debug_[\w.*?-]+/?(?![\w./-])")
+# "/" is allowed immediately before "runs/" (unlike other path chars) so this
+# still matches when "runs/debug_x" is reached via an absolute path.
+_DISPOSABLE_RUN_RE = re.compile(r"(?<![\w.-])runs/debug_[\w.*?-]+/?(?![\w./-])")
 
 
 @dataclass(frozen=True)
