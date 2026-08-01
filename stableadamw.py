@@ -15,9 +15,15 @@ steps only on tensors whose RMS exceeds the threshold and leaving quieter
 steps untouched.
 
 Derived from optimi's StableAdamW (MIT, Copyright (c) 2023-present Benjamin
-Warner), reduced to the plain fp32 single-tensor path -- the foreach/Triton
-backends, Kahan summation, gradient release, and optimizer accumulation are
-deliberately not carried over.
+Warner), reduced to the plain fp32 path -- Kahan summation, gradient release,
+the Triton backend, and optimizer accumulation are deliberately not carried
+over.
+
+The step is written multi-tensor (`torch._foreach_*`) throughout, and the
+clipped per-tensor learning rate is kept on-device as a tensor rather than
+read back with `.item()`. On a launch-latency-bound workload the read-back
+cost dominates: it forces one GPU->CPU sync *per parameter tensor* per step.
+See PR #146.
 """
 
 from collections.abc import Callable, Iterable
@@ -84,6 +90,22 @@ class StableAdamW(torch.optim.Optimizer):
                 step=0,
             ),
         )
+        # Kept off the param_groups so it never reaches state_dict().
+        self._numel_cache: dict[int, tuple[tuple[int, ...], Tensor]] = {}
+
+    def _numels(self, group_index: int, params: list[Tensor]) -> Tensor:
+        """Per-tensor element counts as one device tensor, for turning the
+        summed RMS ratios into means. Cached on the (validated) shape tuple so
+        the host->device copy happens once rather than every step."""
+        key = tuple(p.numel() for p in params)
+        cached = self._numel_cache.get(group_index)
+        if cached is None or cached[0] != key:
+            cached = (
+                key,
+                torch.tensor(key, device=params[0].device, dtype=params[0].dtype),
+            )
+            self._numel_cache[group_index] = cached
+        return cached[1]
 
     def _init_state(self, state: dict[str, Any], param: Tensor):
         if "exp_avg" not in state:
@@ -101,29 +123,57 @@ class StableAdamW(torch.optim.Optimizer):
             with torch.enable_grad():
                 loss = closure()
 
-        for group in self.param_groups:
+        for group_index, group in enumerate(self.param_groups):
             group["step"] += 1
             beta1_hat = _debias_beta(group["beta1"], group["step"])
             beta2_hat = _debias_beta(group["beta2"], group["step"])
             eps, eps_sq = group["eps"], group["eps"] ** 2
+            weight_decay = group["weight_decay"]
 
+            params, grads, exp_avgs, exp_avg_sqs = [], [], [], []
             for param in group["params"]:
                 if param.grad is None:
                     continue
-                grad = param.grad
                 state = self.state[param]
                 self._init_state(state, param)
-                exp_avg, exp_avg_sq = state["exp_avg"], state["exp_avg_sq"]
+                params.append(param)
+                grads.append(param.grad)
+                exp_avgs.append(state["exp_avg"])
+                exp_avg_sqs.append(state["exp_avg_sq"])
+            if not params:
+                continue
 
-                exp_avg.lerp_(grad, weight=1 - beta1_hat)
-                exp_avg_sq.mul_(beta2_hat).addcmul_(grad, grad, value=1 - beta2_hat)
+            torch._foreach_lerp_(exp_avgs, grads, 1 - beta1_hat)
+            torch._foreach_mul_(exp_avg_sqs, beta2_hat)
+            torch._foreach_addcmul_(exp_avg_sqs, grads, grads, value=1 - beta2_hat)
 
-                # Per-tensor RMS of the un-momentumed update, and the clipped lr
-                rms = grad.pow(2).div_(exp_avg_sq.clamp(min=eps_sq)).mean().sqrt()
-                lr = group["lr"] / max(1.0, rms.item() / group["d"])
+            # Per-tensor RMS of the un-momentumed update. The ratio is
+            # non-negative elementwise, so its L1 norm is its sum and the mean
+            # is that over numel -- one fused reduction for every tensor at
+            # once, where a per-tensor .mean() would be a launch each.
+            ratio = torch._foreach_div(
+                torch._foreach_mul(grads, grads),
+                torch._foreach_clamp_min(exp_avg_sqs, eps_sq),
+            )
+            rms = (
+                torch.stack(torch._foreach_norm(ratio, 1))
+                / self._numels(group_index, params)
+            ).sqrt()
+            # The clipped lr, one entry per tensor and never leaving the
+            # device. Computed in float64 and rounded back at each use site,
+            # matching the reference implementation's Python-float arithmetic.
+            lr = group["lr"] / torch.clamp(rms.double() / group["d"], min=1.0)
+            dtype = params[0].dtype
 
-                if group["weight_decay"] != 0:
-                    param.mul_(1 - lr * group["weight_decay"])
-                param.addcdiv_(exp_avg, exp_avg_sq.sqrt().add_(eps), value=-lr)
+            if weight_decay != 0:
+                torch._foreach_mul_(
+                    params, list((1 - lr * weight_decay).to(dtype).unbind())
+                )
+
+            denom = torch._foreach_sqrt(exp_avg_sqs)
+            torch._foreach_add_(denom, eps)
+            update = torch._foreach_div(exp_avgs, denom)
+            torch._foreach_mul_(update, list((-lr).to(dtype).unbind()))
+            torch._foreach_add_(params, update)
 
         return loss

@@ -55,8 +55,13 @@ def test_matches_optimi_at_d_1(weight_decay):
             foreach=False,
         )
     )
+    # Not bit-exact: our step is multi-tensor, so upstream's fused
+    # `addcdiv_` becomes a separate divide/scale/add and the two round
+    # differently in the last place (measured: 1 ulp on 1 of 18 elements after
+    # 10 steps). The tolerance is still ~2 orders tighter than any behavioural
+    # difference this test exists to catch. See PR #146.
     for a, b in zip(ours, theirs):
-        torch.testing.assert_close(a, b, rtol=0, atol=0)
+        torch.testing.assert_close(a, b, rtol=1e-6, atol=1e-7)
 
 
 def test_smaller_d_clips_harder():

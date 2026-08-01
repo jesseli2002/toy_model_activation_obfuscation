@@ -84,12 +84,16 @@ def eval_max_err(
     n: int = 100_000,
     batch: int = 20_000,
 ) -> float:
-    worst = 0.0
+    # Accumulated on-device and read back once: a per-batch .item() would
+    # sync the host against the GPU on every chunk, which at a short
+    # --log-interval costs more than the eval itself. Chunking (and so the
+    # generator's draw sequence) is unchanged.
+    worst = torch.zeros((), device=device)
     done = 0
     while done < n:
         b = min(batch, n - done)
         x_full, y = sample_batch(b, model.num_x, generator=generator, device=device)
         pred: Float[Tensor, "b num_x"] = model.task_output(x_full)
-        worst = max(worst, (pred - y).abs().max().item())
+        worst = torch.maximum(worst, (pred - y).abs().max())
         done += b
-    return worst
+    return worst.item()
