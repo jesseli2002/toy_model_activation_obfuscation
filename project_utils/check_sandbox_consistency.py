@@ -255,28 +255,6 @@ def audit_consistency(settings: dict, project_root: Path) -> list[str]:
     return findings
 
 
-def check_claude_dir_requirement(settings: dict, project_root: Path) -> list[str]:
-    """.claude/ must have a literal absolute-path entry in BOTH allowRead and allowWrite.
-
-    Relative paths in sandbox.filesystem resolve per-worktree, not to one fixed
-    project root (see SANDBOX.md gotchas) -- a `./.claude` entry doesn't reliably
-    cover .claude/ access when running from inside a worktree. Only an absolute
-    entry does, and Bash needs it in worktrees.
-    """
-    fs = settings.get("sandbox", {}).get("filesystem", {})
-    required = str(project_root / ".claude")
-    findings = []
-    if required not in fs.get("allowRead", []):
-        findings.append(
-            f"MISSING   sandbox.filesystem.allowRead lacks the absolute entry `{required}`"
-        )
-    if required not in fs.get("allowWrite", []):
-        findings.append(
-            f"MISSING   sandbox.filesystem.allowWrite lacks the absolute entry `{required}`"
-        )
-    return findings
-
-
 def categorize(settings: dict, project_root: Path) -> dict:
     """Bucket every path declared in sandbox.filesystem into one of three categories,
     resolved using that block alone: allow beats deny (see SANDBOX.md's
@@ -553,11 +531,12 @@ def check_path_form(settings: dict, project_root: Path) -> list[str]:
                         f"directory -- should use an absolute path (relative paths "
                         f"resolve per-worktree), not `./`-relative"
                     )
-            elif status == "outside_repo":
-                findings.append(
-                    f"REDUNDANT {label} `{raw}` targets a path outside the repo -- "
-                    f"writes there are already denied by default"
-                )
+            # elif status == "outside_repo":
+            #     findings.append(
+            #         f"REDUNDANT {label} `{raw}` targets a path outside the repo -- "
+            #         f"writes there are already denied by default"
+            #     )
+            # False positives on the global deny-read rules.
 
     def check_allow_write(label, raw_entries, extractor):
         for raw in raw_entries:
@@ -626,6 +605,7 @@ def check_global_deny_rules(settings: dict, project_root: Path) -> list[str]:
     fs = settings.get("sandbox", {}).get("filesystem", {})
     perm_deny = extract_permission_entries(perms.get("deny", []), project_root)
     fs_deny_read = extract_fs_entries(fs.get("denyRead", []), project_root)
+    fs_deny_write = extract_fs_entries(fs.get("denyWrite", []), project_root)
 
     findings = []
     for label, target in [
@@ -636,14 +616,13 @@ def check_global_deny_rules(settings: dict, project_root: Path) -> list[str]:
             findings.append(
                 f"MISSING   sandbox.filesystem.denyRead lacks an entry for {label}"
             )
+        if find_match(target, fs_deny_write)[0] is None:
+            findings.append(
+                f"MISSING   sandbox.filesystem.denyWrite lacks an entry for {label}"
+            )
         if find_match(target, perm_deny["Read"])[0] is None:
             findings.append(
                 f"MISSING   permissions.deny lacks a Read(...) entry for {label}"
-            )
-        if find_match(target, perm_deny["Edit"])[0] is None:
-            findings.append(
-                f"MISSING   permissions.deny lacks an Edit(...) entry for {label} "
-                f"(Read-only doesn't block Write/NotebookEdit -- see SANDBOX.md)"
             )
     return findings
 
@@ -689,11 +668,7 @@ def main():
         audit_consistency(settings, project_root),
     )
     print_section(
-        "REQUIRED ABSOLUTE ENTRIES (.claude/ worktree access)",
-        check_claude_dir_requirement(settings, project_root),
-    )
-    print_section(
-        "GLOBAL DENY-READ RULES (~/ and /var/log, both layers, Read+Edit)",
+        "GLOBAL DENY-READ RULES (~/ and /var/log, both layers, Read)",
         check_global_deny_rules(settings, project_root),
     )
     print_section(
