@@ -407,8 +407,11 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
     """Load a full checkpoint -- architecture, weights, and iteration count,
     plus (if `restore_optimizer`) optimizer state -- shared by --resume
     (source: args.tag) and --fork-from (source: args.fork_from). Returns
-    (model, opt, start_iter, best_loss, rck) so callers can pull any other
+    (model, opt, last_iter, best_loss, rck) so callers can pull any other
     checkpoint field they need (e.g. --resume rebuilds adv_config from rck).
+    `last_iter` is the last iteration the checkpoint actually completed
+    (0-indexed) -- a caller resuming training must pass `last_iter + 1` as
+    the new loop's start, or it repeats that iteration.
 
     `restore_optimizer=False` for --fork-from: like every other adversarial
     hyperparameter (lr, adam_eps, adam_beta1, adam_beta2, ...), optimizer_kind is freshly
@@ -436,9 +439,9 @@ def _restore_checkpoint(ckpt_path: str, device, *, restore_optimizer: bool = Tru
         opt.load_state_dict(rck["opt"])
     else:
         opt = None
-    start_iter = rck["iter"]
+    last_iter = rck["iter"]
     best_loss = rck.get("best_loss", float("inf"))
-    return model, opt, start_iter, best_loss, rck
+    return model, opt, last_iter, best_loss, rck
 
 
 def _restore_rng_state(rck: dict, device) -> torch.Generator:
@@ -881,13 +884,14 @@ def _start_resume(args, last_path: str, device):
     hidden_layers, gen)."""
     # (raises if last_path predates the nested adv_config checkpoint layout
     # -- see _restore_checkpoint)
-    model, opt, start_iter, best_loss, rck = _restore_checkpoint(last_path, device)
+    model, opt, last_iter, best_loss, rck = _restore_checkpoint(last_path, device)
     adv_config = LogregAdversarialConfig.from_dict(rck["adv_config"])
     hidden_layers = adv_config.penalty_layers
     gen = _restore_rng_state(rck, device)
     # history.jsonl is append-only: this run's earlier entries are already on
     # disk, so resuming needs no read -- new entries just keep appending to
     # the same file.
+    start_iter = last_iter + 1
     print(f"[resume] from iter {start_iter}, best_loss={best_loss:.3e}")
     _check_config_json(args.tag, model.config, adv_config)
     return model, opt, start_iter, best_loss, adv_config, hidden_layers, gen
@@ -900,18 +904,17 @@ def _start_fork_from(args, hist_path: str, device):
     those fresh from --config like a scratch run. Returns (model,
     start_iter, best_loss, forked_from)."""
     source_ckpt_path = os.path.join(ckpt_dir(args.fork_from), "last.pt")
-    model, _, start_iter, best_loss, rck = _restore_checkpoint(
+    model, _, last_iter, best_loss, rck = _restore_checkpoint(
         source_ckpt_path, device, restore_optimizer=False
     )
     # One-time seed write (not per-iteration, so no quadratic cost): copy
     # source_tag's pre-fork entries into the new tag's own history.jsonl so
     # loss curves stay continuous across the fork.
-    for h in _forked_history(args.fork_from, start_iter):
+    for h in _forked_history(args.fork_from, last_iter):
         _append_history(hist_path, h)
-    forked_from = ForkedFrom(tag=args.fork_from, iter=start_iter)
-    print(
-        f"[fork] from {args.fork_from} @ iter {start_iter}, best_loss={best_loss:.3e}"
-    )
+    forked_from = ForkedFrom(tag=args.fork_from, iter=last_iter)
+    start_iter = last_iter + 1
+    print(f"[fork] from {args.fork_from} @ iter {last_iter}, best_loss={best_loss:.3e}")
     return model, start_iter, best_loss, forked_from
 
 
@@ -1044,9 +1047,12 @@ def main(args):
 
     # Placeholder record for the (edge-case) zero-iteration run, e.g.
     # --resume past --max-iters: train_steps() then yields nothing, and the
-    # final save/log below still needs a record to work with.
+    # final save/log below still needs a record to work with. iter is
+    # start_iter - 1 (the last iteration actually completed, not the next
+    # one train_steps would have run) so a no-op resume's final save doesn't
+    # falsely mark an unexecuted iteration as done.
     record = TrainRecord(
-        iter=start_iter,
+        iter=start_iter - 1,
         loss=best_loss,
         l_task=None,
         l_probe=None,
