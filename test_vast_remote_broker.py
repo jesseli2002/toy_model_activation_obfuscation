@@ -37,15 +37,16 @@ VENV_ACTIVATE = "export VENV_ACTIVE=1\n"
 @pytest.fixture
 def sync_script(tmp_path, monkeypatch):
     """Stub standing in for sync_vastai.py. Returns a writer that sets its body,
-    so a test can make the flush succeed, fail, or hang."""
-    script = tmp_path / "fake_sync.sh"
+    so a test can make the flush succeed, fail, or hang. Written in Python since
+    the broker always invokes the sync script via `sys.executable`."""
+    script = tmp_path / "fake_sync.py"
 
     def write_script(body):
-        script.write_text("#!/usr/bin/env bash\n" + body)
+        script.write_text("#!/usr/bin/env python3\n" + body)
         script.chmod(script.stat().st_mode | stat.S_IEXEC)
         return script
 
-    write_script('echo "flushed: $1"\n')
+    write_script('import sys\nprint(f"flushed: {sys.argv[1]}")\n')
     monkeypatch.setenv("VAST_REMOTE_SYNC_SCRIPT", str(script))
     return write_script
 
@@ -311,7 +312,11 @@ def test_flush_invokes_the_sync_script_and_reports_its_output(remote):
 def test_flush_reports_a_failed_flush_without_hiding_it_as_success(remote, sync_script):
     """A halted session is the failure that matters: the remote silently keeps
     running stale source, so the caller must not read this as a clean sync."""
-    sync_script('echo "unable to flush: session is halted on conflict" >&2\nexit 1\n')
+    sync_script(
+        "import sys\n"
+        'print("unable to flush: session is halted on conflict", file=sys.stderr)\n'
+        "sys.exit(1)\n"
+    )
     is_error, text = remote.flush()
     assert "exit code: 1" in text
     assert "halted" in text.lower()
@@ -319,7 +324,7 @@ def test_flush_reports_a_failed_flush_without_hiding_it_as_success(remote, sync_
 
 
 def test_flush_that_never_settles_is_reported_as_an_error(remote, sync_script):
-    sync_script("sleep 30\n")
+    sync_script("import time\ntime.sleep(30)\n")
     is_error, text = remote.flush(timeout_s=1)
     assert is_error
     assert "did not settle" in text
