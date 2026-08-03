@@ -1,9 +1,12 @@
-"""Shared probing primitives: capture residual-stream activations from a
-checkpoint, fit/compare linear decision boundaries over them, and plot the
-result.
+"""Utilities for probe analysis: capture residual-stream activations from a
+checkpoint, build eval sets over them, fit/compare/score linear decision
+boundaries, and plot the result.
 
-Used as a library by adversarial_report.py (the probing harness) and
-analytic.py (activation capture for hand-built exact models).
+Used as a library by the reporting scripts (adversarial_report.py and the
+sweep_*.py family) and by analytic.py (activation capture for hand-built
+exact models). Anything a report needs in order to turn a checkpoint into a
+probe score belongs here rather than in one of those entry points, so the
+reports agree on what "probe AUROC" means.
 """
 
 import os
@@ -14,6 +17,9 @@ import numpy as np
 import torch
 from jaxtyping import Bool, Float
 
+import config
+from config import C_HIGH, C_LOW
+from data import sample_fixed_c
 from model import ResidualMLP
 from paths import ckpt_dir
 
@@ -31,22 +37,70 @@ class LinearBoundary(NamedTuple):
         return X @ self.w + self.b
 
 
-def _boundary_accuracy(
+class BinaryEvalSet(NamedTuple):
+    """A fixed two-class contrast to score probes against: class 0 is c=c_lo,
+    class 1 is c=c_hi, `n` inputs each.
+
+    Deliberately a fixed pair rather than the continuous c ~ U[C_LOW, C_HIGH]
+    training distribution -- sampled once and reused, so scores stay
+    comparable point to point across checkpoints and across runs."""
+
+    x: Float[torch.Tensor, "n2 num_x_plus_1"]
+    y: Bool[np.ndarray, "n2"]
+
+
+def make_binary_eval_set(
+    num_x: int,
+    n: int,
+    c_lo: float = C_LOW,
+    c_hi: float = C_HIGH,
+    *,
+    generator: torch.Generator,
+    device: str,
+) -> BinaryEvalSet:
+    """`n` inputs per class (so 2n rows total, the c_lo half first)."""
+    xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
+    xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)
+    return BinaryEvalSet(
+        x=torch.cat([xf_lo, xf_hi], dim=0),
+        y=np.concatenate([np.zeros(n), np.ones(n)]),
+    )
+
+
+def boundary_accuracy(
     b: LinearBoundary, X: Float[np.ndarray, "n d"], y: Bool[np.ndarray, "n"]
 ) -> float:
     """Fraction of (X, y) classified correctly by `b.score(X) > 0`."""
     return float(((b.score(X) > 0) == y).mean())
 
 
-def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
-    """Returns (model, full checkpoint dict) -- the dict carries any non-
-    architecture fields (opt state, iter, adversarial-run metadata, ...) that
-    rode along in the checkpoint; architecture lives on model.config."""
-    path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
+def boundary_auroc(
+    b: LinearBoundary, X: Float[np.ndarray, "n d"], y: Bool[np.ndarray, "n"]
+) -> float:
+    """AUROC of `b`'s scores against `y`. Threshold-free, so unlike
+    `boundary_accuracy` it ignores the bias term."""
+    from sklearn.metrics import roc_auc_score
+
+    return float(roc_auc_score(y, b.score(X)))
+
+
+def load_model_path(path: str, device: str) -> tuple[ResidualMLP, dict]:
+    """Returns (model, full checkpoint dict) for a checkpoint path -- the dict
+    carries any non-architecture fields (opt state, iter, adversarial-run
+    metadata, ...) that rode along in the checkpoint; architecture lives on
+    model.config. Use when walking checkpoint files directly, e.g. the
+    numbered iter_*.pt snapshots; see `load_model` to load a run's named
+    checkpoint by tag."""
     model, ck = ResidualMLP.load(path, map_location=device)
     model = model.to(device)
     model.eval()
     return model, ck
+
+
+def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
+    """`load_model_path` for a run's named checkpoint (runs/<tag>/checkpoints/
+    <ckpt>.pt)."""
+    return load_model_path(os.path.join(ckpt_dir(tag), f"{ckpt}.pt"), device)
 
 
 @torch.no_grad()
@@ -81,6 +135,243 @@ def capture_layers(
         model, x_full, layers, noise_std=noise_std, generator=generator
     )
     return torch.cat([d[i] for i in layers], dim=-1)
+
+
+def resolve_adv_config(ck) -> "config.LogregAdversarialConfig | None":
+    """The checkpoint's adversarial-training config, or None for a checkpoint
+    with no adversarial config at all -- e.g. a train_no_c.py c-blind
+    demonstration run, which has no probe or penalty to speak of since c was
+    withheld from the model entirely (its embedding coordinate is zeroed)."""
+    adv_ck = ck.get("adv_config")
+    return (
+        config.LogregAdversarialConfig.from_dict(adv_ck) if adv_ck is not None else None
+    )
+
+
+def stored_probe(ck, device: str) -> tuple[LinearBoundary, list[int]] | None:
+    """The probe fit during training and saved alongside the model weights, as
+    (boundary, probed layers). None for a checkpoint carrying no probe.
+
+    Contrast the refit path (`binary_probe_metrics_all_layers`), which fits a
+    fresh probe against the checkpoint instead: this one answers "how visible
+    was c to the adversary the model was actually trained against"."""
+    if "probe_w" not in ck:
+        return None
+    w = ck["probe_w"].to(device).cpu().numpy()
+    b = float(ck["probe_b"])
+    return LinearBoundary(w, b), list(ck["probe_layers"])
+
+
+@torch.no_grad()
+def stored_probe_auroc(
+    model: ResidualMLP,
+    ck: dict,
+    eval_set: BinaryEvalSet,
+    *,
+    eval_noise_mult: float = 1.0,
+    generator: torch.Generator | None = None,
+) -> float | None:
+    """AUROC of the checkpoint's own training-time probe over `eval_set`, or
+    None when the checkpoint carries no probe.
+
+    The eval forward pass gets `eval_noise_mult` * the run's own training-time
+    resid_noise_std of residual-stream noise, so a report can ask how the
+    probe holds up under more or less noise than the model trained with."""
+    stored = stored_probe(ck, str(next(model.parameters()).device))
+    if stored is None:
+        return None
+    boundary, layers = stored
+    adv_cfg = resolve_adv_config(ck)
+    # A stored probe means this came from train_adversarial_logreg's
+    # save_checkpoint, which always writes adv_config alongside it -- fail
+    # loudly rather than quietly scoring an unexpected checkpoint at 0 noise.
+    assert adv_cfg is not None, "checkpoint has a stored probe but no adv_config"
+    feats = capture_layers(
+        model,
+        eval_set.x,
+        layers,
+        noise_std=adv_cfg.resid_noise_std * eval_noise_mult,
+        generator=generator,
+    )
+    return boundary_auroc(boundary, feats.cpu().numpy(), eval_set.y)
+
+
+class StoredProbeScorer:
+    """Scores many runs' stored probes against one shared eval set.
+
+    The eval set is built lazily from the first checkpoint loaded (the runs in
+    a sweep share an architecture, so any of them fixes num_x) and reused for
+    every subsequent run, which is what makes the resulting AUROCs comparable
+    across a sweep. Owns the one RNG the whole thing needs -- both the eval
+    sampling and the per-run eval noise draw from it."""
+
+    def __init__(
+        self,
+        ckpt: str,
+        device: str,
+        *,
+        eval_n: int = 4096,
+        eval_noise_mult: float = 1.0,
+        seed: int = 0,
+    ):
+        self.ckpt = ckpt
+        self.device = device
+        self.eval_n = eval_n
+        self.eval_noise_mult = eval_noise_mult
+        self.g = torch.Generator(device=device).manual_seed(seed)
+        self.eval_set: BinaryEvalSet | None = None
+
+    def auroc(self, tag: str) -> float | None:
+        """AUROC of `tag`'s stored probe, or None if it has no stored probe."""
+        model, ck = load_model(tag, self.ckpt, self.device)
+        if self.eval_set is None:
+            self.eval_set = make_binary_eval_set(
+                model.config.num_x, self.eval_n, generator=self.g, device=self.device
+            )
+        return stored_probe_auroc(
+            model,
+            ck,
+            self.eval_set,
+            eval_noise_mult=self.eval_noise_mult,
+            generator=self.g,
+        )
+
+
+# ----------------------------------------------------------------------------
+# Refit-probe path: fit a fresh probe against a checkpoint
+# ----------------------------------------------------------------------------
+# Regularization constant for LogisticRegression (see scikit-learn
+# LogisticRegression interface). Larger = less regularization but higher
+# accuracy.
+PROBE_C = 1000
+
+
+def raw_signed_distance(
+    w_probe: Float[np.ndarray, "d"], b_probe: float, X: Float[np.ndarray, "n d"]
+) -> Float[np.ndarray, "n"]:
+    """Signed distance to the probe's decision boundary in raw
+    (unstandardized) data units, boundary at 0 -- same fold as `plot_probe`'s
+    raw-space panel."""
+    w_hat = w_probe / np.linalg.norm(w_probe)
+    threshold = -b_probe / np.linalg.norm(w_probe)
+    return X @ w_hat - threshold
+
+
+@torch.no_grad()
+def binary_dataset_all_layers(
+    model, num_x, n, c_lo, c_hi, layers, generator, device, noise_std=0.0
+):
+    """One forward pass over c_lo and one over c_hi, shared across all
+    `layers` -- returns {layer: (r_lo, r_hi)}. `noise_std` (if > 0) injects
+    residual-stream noise into that forward pass, same as the model's own
+    training-time environment."""
+    xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
+    xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)
+    r_lo = capture_layers_dict(
+        model, xf_lo, layers, noise_std=noise_std, generator=generator
+    )
+    r_hi = capture_layers_dict(
+        model, xf_hi, layers, noise_std=noise_std, generator=generator
+    )
+    return {layer: (r_lo[layer], r_hi[layer]) for layer in layers}
+
+
+def binary_probe_metrics_all_layers(
+    model,
+    c_lo,
+    c_hi,
+    layers,
+    n_train,
+    n_test,
+    g,
+    probe_backend_name,
+    desc="layers",
+    eval_noise_std=0.0,
+):
+    """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
+    c_hi) pair, from a single shared forward pass per train/test set.
+
+    Fits a fresh probe against the checkpoint, unlike `stored_probe_auroc`
+    which scores the one the model was trained against.
+
+    Pure data generation -- no plotting. Returns `(metrics, plot_inputs)`:
+    `metrics` is {layer: {"dom", "delta_norm", "logreg", "lda"}}, and
+    `plot_inputs` is {layer: {"w_dom", "midpoint", "w_probe", "b_probe",
+    "X_te", "y_te", "dist_lo", "dist_hi"}}, everything a caller needs to
+    later feed `plot_probe` or a layer-distribution plot for this (c_lo, c_hi)
+    pair -- returned unconditionally since the forward pass and the fit
+    already happened regardless of whether the caller wants a plot.
+
+    `eval_noise_std` only affects the test forward pass, not the fit.
+    """
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    from tqdm import tqdm
+
+    from probe_backend import build_probe_pipeline
+
+    num_x = model.num_x
+    device = next(model.parameters()).device
+    train_ds = binary_dataset_all_layers(
+        model, num_x, n_train, c_lo, c_hi, layers, g, device
+    )
+    test_ds = binary_dataset_all_layers(
+        model, num_x, n_test, c_lo, c_hi, layers, g, device, noise_std=eval_noise_std
+    )
+
+    metrics = {}
+    plot_inputs = {}
+    for layer in tqdm(layers, desc=desc, leave=False):
+        r_lo_tr, r_hi_tr = train_ds[layer]
+        r_lo_te, r_hi_te = test_ds[layer]
+
+        X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
+        y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
+        X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
+        y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
+        lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
+
+        X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0)
+        y_tr_t = torch.cat(
+            [
+                torch.zeros(n_train, dtype=torch.bool, device=device),
+                torch.ones(n_train, dtype=torch.bool, device=device),
+            ]
+        )
+        pipeline = build_probe_pipeline(
+            C=PROBE_C, max_iter=2000, backend=probe_backend_name
+        )
+        pipeline.fit(X_tr_t, y_tr_t)
+        w_probe_t, b_probe_t = pipeline.get_affine(device)
+        w_probe = w_probe_t.cpu().numpy()
+        b_probe = float(b_probe_t.cpu())
+
+        mu_lo = r_lo_tr.mean(dim=0)
+        mu_hi = r_hi_tr.mean(dim=0)
+        w_dom = (mu_hi - mu_lo).cpu().numpy()
+        midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
+        dom_boundary = LinearBoundary(w_dom, -midpoint)
+        probe_boundary = LinearBoundary(w_probe, b_probe)
+        dom_acc = boundary_accuracy(dom_boundary, X_te, y_te)
+        logreg_acc = boundary_accuracy(probe_boundary, X_te, y_te)
+        delta_norm = float(np.linalg.norm(w_dom))
+
+        metrics[layer] = {
+            "dom": dom_acc,
+            "delta_norm": delta_norm,
+            "logreg": logreg_acc,
+            "lda": float(lda.score(X_te, y_te)),
+        }
+        plot_inputs[layer] = {
+            "w_dom": w_dom,
+            "midpoint": midpoint,
+            "w_probe": w_probe,
+            "b_probe": b_probe,
+            "X_te": X_te,
+            "y_te": y_te,
+            "dist_lo": raw_signed_distance(w_probe, b_probe, r_lo_te.cpu().numpy()),
+            "dist_hi": raw_signed_distance(w_probe, b_probe, r_hi_te.cpu().numpy()),
+        }
+    return metrics, plot_inputs
 
 
 @torch.no_grad()

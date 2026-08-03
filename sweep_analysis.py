@@ -39,13 +39,12 @@ import re
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 
-from data import sample_fixed_c
-from paths import ckpt_dir, log_dir
-from probe_lib import capture_layers, load_model
+from paths import log_dir
+from probe_lib import StoredProbeScorer
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SEED = 0
 
 TAG_RE = re.compile(r"sweep3_lam([0-9.]+)_tr(\d+)$")
 
@@ -117,31 +116,6 @@ def _final_loss(tag: str) -> float:
     return float(_running_mean(iters, losses, LOSS_LOWPASS_WINDOW)[-1])
 
 
-def _probe_auroc(tag: str, eval_n: int = 4096, seed: int = 0) -> float | None:
-    """Probe AUROC at the run's CKPT checkpoint, scored with the probe
-    (probe_w/probe_b/probe_layers) already fit and stored in the checkpoint --
-    same computation as sweep_report.py / sweep_threshold_report.py."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    if "probe_w" not in ck:
-        return None
-    gen = torch.Generator(device=DEVICE).manual_seed(seed)
-    noise_gen = torch.Generator(device=DEVICE).manual_seed(seed)
-    num_x = model.num_x
-    xf_lo, _ = sample_fixed_c(eval_n, num_x, 1.0, generator=gen, device=DEVICE)
-    xf_hi, _ = sample_fixed_c(eval_n, num_x, 2.0, generator=gen, device=DEVICE)
-    eval_x = torch.cat([xf_lo, xf_hi], dim=0)
-    eval_label = np.concatenate([np.zeros(eval_n), np.ones(eval_n)])
-    w = ck["probe_w"].to(DEVICE)
-    b = ck["probe_b"].to(DEVICE)
-    noise_std = ck["adv_config"]["resid_noise_std"] * EVAL_NOISE_MULT
-    with torch.no_grad():
-        feats = capture_layers(
-            model, eval_x, ck["probe_layers"], noise_std=noise_std, generator=noise_gen
-        )
-        s = (feats @ w + b).cpu().numpy()
-    return roc_auc_score(eval_label, s)
-
-
 def _classify(loss: float, auroc: float, thresholds: list[float]) -> int:
     """Bucket index, 0 = failed task, 1 = succeeded but not hidden (auroc
     above the highest threshold), ..., len(thresholds) + 1 = succeeded and
@@ -181,6 +155,8 @@ def main():
 
     ratios: list[float] = []
     fractions: list[np.ndarray] = []  # one length-n_bands array per lambda
+    # One scorer across every lambda, so all runs share a single eval set.
+    scorer = StoredProbeScorer(CKPT, DEVICE, eval_noise_mult=EVAL_NOISE_MULT, seed=SEED)
 
     print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
     for lam in sorted(by_lambda):
@@ -190,7 +166,7 @@ def main():
         for tag in tags:
             try:
                 loss = _final_loss(tag)
-                auroc = _probe_auroc(tag)
+                auroc = scorer.auroc(tag)
             except FileNotFoundError:
                 print(f"  {tag}: no history/checkpoint yet, skipped")
                 continue

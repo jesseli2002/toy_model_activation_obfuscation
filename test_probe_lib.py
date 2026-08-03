@@ -2,10 +2,13 @@ import numpy as np
 import pytest
 import torch
 
-from adversarial_report import _binary_probe_metrics_all_layers
 from config import ResidualMLPConfig
 from model import ResidualMLP
-from probe_lib import LinearBoundary, _boundary_accuracy
+from probe_lib import (
+    LinearBoundary,
+    binary_probe_metrics_all_layers,
+    boundary_accuracy,
+)
 
 
 def _make_model(num_x=2, d_model=3, d_mlp=8, num_blocks=2):
@@ -19,13 +22,13 @@ def _make_model(num_x=2, d_model=3, d_mlp=8, num_blocks=2):
 
 
 # ----------------------------------------------------------------------------
-# _boundary_accuracy
+# boundary_accuracy
 # ----------------------------------------------------------------------------
 def test_boundary_accuracy_1d_two_points():
     b = LinearBoundary(np.array([1.0]), 0.0)
     X = np.array([[-1.0], [1.0]])
     y = np.array([False, True])
-    assert _boundary_accuracy(b, X, y) == 1.0
+    assert boundary_accuracy(b, X, y) == 1.0
 
 
 def test_boundary_accuracy_1d_intermediate():
@@ -34,7 +37,7 @@ def test_boundary_accuracy_1d_intermediate():
     b = LinearBoundary(np.array([1.0]), 0.0)
     X = np.array([[-2.0], [-1.0], [1.0], [2.0], [3.0]])
     y = np.array([False, False, False, True, True])  # third point mislabeled
-    assert _boundary_accuracy(b, X, y) == pytest.approx(4 / 5)
+    assert boundary_accuracy(b, X, y) == pytest.approx(4 / 5)
 
 
 def test_boundary_accuracy_nd_intermediate():
@@ -51,15 +54,15 @@ def test_boundary_accuracy_nd_intermediate():
         ]
     )
     y_all_correct = np.array([False, True, True, False, True, False])
-    assert _boundary_accuracy(b, X, y_all_correct) == 1.0
+    assert boundary_accuracy(b, X, y_all_correct) == 1.0
 
     # Flip two labels -> 4/6 correct.
     y_some_wrong = np.array([True, True, False, False, True, False])
-    assert _boundary_accuracy(b, X, y_some_wrong) == pytest.approx(4 / 6)
+    assert boundary_accuracy(b, X, y_some_wrong) == pytest.approx(4 / 6)
 
 
 # ----------------------------------------------------------------------------
-# _binary_probe_metrics_all_layers (end-to-end, synthetic model)
+# binary_probe_metrics_all_layers (end-to-end, synthetic model)
 # ----------------------------------------------------------------------------
 def test_binary_probe_metrics_all_layers_perfect_separation():
     """Layer 1's residual stream is `layer0 + block(layer0)`, where layer0 =
@@ -78,7 +81,7 @@ def test_binary_probe_metrics_all_layers_perfect_separation():
     n_train, n_test = 4096, 256
     layer = 1
 
-    metrics, plot_inputs = _binary_probe_metrics_all_layers(
+    metrics, plot_inputs = binary_probe_metrics_all_layers(
         model,
         c_lo=1.0,
         c_hi=2.0,
@@ -115,6 +118,6 @@ def test_binary_probe_metrics_all_layers_perfect_separation():
     # Sanity check plot_inputs' own DoM boundary (main()'s convention:
     # LinearBoundary(w_dom, -midpoint)) reproduces the same accuracy.
     dom_boundary = LinearBoundary(pi["w_dom"], -pi["midpoint"])
-    assert _boundary_accuracy(dom_boundary, pi["X_te"], pi["y_te"]) == pytest.approx(
+    assert boundary_accuracy(dom_boundary, pi["X_te"], pi["y_te"]) == pytest.approx(
         m["dom"]
     )

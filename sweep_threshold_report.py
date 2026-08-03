@@ -37,16 +37,17 @@ import re
 
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 
-from adversarial_report import (
-    _binary_probe_metrics_all_layers,
-    _resolve_adv_config,
-    plot_learned_curves,
-)
+from adversarial_report import plot_learned_curves
 from paths import log_dir
 from probe_backend import resolve_probe_backend
-from probe_lib import LinearBoundary, load_model
+from probe_lib import (
+    LinearBoundary,
+    binary_probe_metrics_all_layers,
+    boundary_auroc,
+    load_model,
+    resolve_adv_config,
+)
 from probe_lib import plot_probe as plot_probe_separation
 from probe_lib import plot_probe_pca as plot_probe_pca_separation
 
@@ -116,11 +117,11 @@ def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | 
     never matched the AUROC in its own title.) None for a checkpoint with no
     adversarial config (nothing to probe for)."""
     model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = _resolve_adv_config(ck)
+    adv_cfg = resolve_adv_config(ck)
     if adv_cfg is None:
         return None
     eval_noise_std = adv_cfg.resid_noise_std * EVAL_NOISE_MULT
-    _metrics, plot_inputs = _binary_probe_metrics_all_layers(
+    _metrics, plot_inputs = binary_probe_metrics_all_layers(
         model,
         1.0,
         2.0,
@@ -137,7 +138,7 @@ def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | 
 
 def _probe_auroc(pi: dict) -> float:
     probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
-    return roc_auc_score(pi["y_te"], probe.score(pi["X_te"]))
+    return boundary_auroc(probe, pi["X_te"], pi["y_te"])
 
 
 def _select_percentile_indices(
