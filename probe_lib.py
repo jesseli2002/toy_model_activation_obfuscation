@@ -129,6 +129,106 @@ def capture_layers(
     return torch.cat([d[i] for i in layers], dim=-1)
 
 
+def resolve_adv_config(ck) -> "config.LogregAdversarialConfig | None":
+    """The checkpoint's adversarial-training config, or None for a checkpoint
+    with no adversarial config at all -- e.g. a train_no_c.py c-blind
+    demonstration run, which has no probe or penalty to speak of since c was
+    withheld from the model entirely (its embedding coordinate is zeroed)."""
+    adv_ck = ck.get("adv_config")
+    return (
+        config.LogregAdversarialConfig.from_dict(adv_ck) if adv_ck is not None else None
+    )
+
+
+def stored_probe(ck, device: str) -> tuple[LinearBoundary, list[int]] | None:
+    """The probe fit during training and saved alongside the model weights, as
+    (boundary, probed layers). None for a checkpoint carrying no probe.
+
+    Contrast the refit path (`binary_probe_metrics_all_layers`), which fits a
+    fresh probe against the checkpoint instead: this one answers "how visible
+    was c to the adversary the model was actually trained against"."""
+    if "probe_w" not in ck:
+        return None
+    w = ck["probe_w"].to(device).cpu().numpy()
+    b = float(ck["probe_b"])
+    return LinearBoundary(w, b), list(ck["probe_layers"])
+
+
+@torch.no_grad()
+def stored_probe_auroc(
+    model: ResidualMLP,
+    ck: dict,
+    eval_set: BinaryEvalSet,
+    *,
+    eval_noise_mult: float = 1.0,
+    generator: torch.Generator | None = None,
+) -> float | None:
+    """AUROC of the checkpoint's own training-time probe over `eval_set`, or
+    None when the checkpoint carries no probe.
+
+    The eval forward pass gets `eval_noise_mult` * the run's own training-time
+    resid_noise_std of residual-stream noise, so a report can ask how the
+    probe holds up under more or less noise than the model trained with."""
+    stored = stored_probe(ck, str(next(model.parameters()).device))
+    if stored is None:
+        return None
+    boundary, layers = stored
+    adv_cfg = resolve_adv_config(ck)
+    # A stored probe means this came from train_adversarial_logreg's
+    # save_checkpoint, which always writes adv_config alongside it -- fail
+    # loudly rather than quietly scoring an unexpected checkpoint at 0 noise.
+    assert adv_cfg is not None, "checkpoint has a stored probe but no adv_config"
+    feats = capture_layers(
+        model,
+        eval_set.x,
+        layers,
+        noise_std=adv_cfg.resid_noise_std * eval_noise_mult,
+        generator=generator,
+    )
+    return boundary_auroc(boundary, feats.cpu().numpy(), eval_set.y)
+
+
+class StoredProbeScorer:
+    """Scores many runs' stored probes against one shared eval set.
+
+    The eval set is built lazily from the first checkpoint loaded (the runs in
+    a sweep share an architecture, so any of them fixes num_x) and reused for
+    every subsequent run, which is what makes the resulting AUROCs comparable
+    across a sweep. Owns the one RNG the whole thing needs -- both the eval
+    sampling and the per-run eval noise draw from it."""
+
+    def __init__(
+        self,
+        ckpt: str,
+        device: str,
+        *,
+        eval_n: int = 4096,
+        eval_noise_mult: float = 1.0,
+        seed: int = 0,
+    ):
+        self.ckpt = ckpt
+        self.device = device
+        self.eval_n = eval_n
+        self.eval_noise_mult = eval_noise_mult
+        self.g = torch.Generator(device=device).manual_seed(seed)
+        self.eval_set: BinaryEvalSet | None = None
+
+    def auroc(self, tag: str) -> float | None:
+        """AUROC of `tag`'s stored probe, or None if it has no stored probe."""
+        model, ck = load_model(tag, self.ckpt, self.device)
+        if self.eval_set is None:
+            self.eval_set = make_binary_eval_set(
+                model.config.num_x, self.eval_n, generator=self.g, device=self.device
+            )
+        return stored_probe_auroc(
+            model,
+            ck,
+            self.eval_set,
+            eval_noise_mult=self.eval_noise_mult,
+            generator=self.g,
+        )
+
+
 @torch.no_grad()
 def forward_steered(
     model: ResidualMLP,

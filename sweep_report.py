@@ -20,14 +20,12 @@ import os
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
-from sklearn.metrics import roc_auc_score
 
-from data import sample_fixed_c
-from model import ResidualMLP
-from paths import ckpt_dir, log_dir
-from probe_lib import capture_layers
+from paths import log_dir
+from probe_lib import StoredProbeScorer
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
+SEED = 0
 
 
 def _load_history(tag: str) -> tuple[np.ndarray, np.ndarray]:
@@ -61,34 +59,6 @@ def _running_min(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarr
     return out
 
 
-def _last_iter_auroc(tag: str, eval_n: int = 4096, seed: int = 0) -> float | None:
-    """Probe AUROC at the run's CKPT checkpoint, scored with the probe
-    (probe_w/probe_b/probe_layers) already fit and stored in the checkpoint --
-    same computation as adversarial_report.py's _auroc_snapshots, but for one
-    checkpoint instead of a sweep across training."""
-    path = os.path.join(ckpt_dir(tag), f"{CKPT}.pt")
-    model, ck = ResidualMLP.load(path, map_location=DEVICE)
-    if "probe_w" not in ck:
-        return None
-    model = model.to(DEVICE).eval()
-    gen = torch.Generator(device=DEVICE).manual_seed(seed)
-    noise_gen = torch.Generator(device=DEVICE).manual_seed(seed)
-    num_x = model.config.num_x
-    xf_lo, _ = sample_fixed_c(eval_n, num_x, 1.0, generator=gen, device=DEVICE)
-    xf_hi, _ = sample_fixed_c(eval_n, num_x, 2.0, generator=gen, device=DEVICE)
-    eval_x = torch.cat([xf_lo, xf_hi], dim=0)
-    eval_label = np.concatenate([np.zeros(eval_n), np.ones(eval_n)])
-    w = ck["probe_w"].to(DEVICE)
-    b = ck["probe_b"].to(DEVICE)
-    noise_std = ck["adv_config"]["resid_noise_std"] * EVAL_NOISE_MULT
-    with torch.no_grad():
-        feats = capture_layers(
-            model, eval_x, ck["probe_layers"], noise_std=noise_std, generator=noise_gen
-        )
-        s = (feats @ w + b).cpu().numpy()
-    return roc_auc_score(eval_label, s)
-
-
 def main():
     fig, (ax_loss, ax_auroc) = plt.subplots(1, 2, figsize=(13, 5))
 
@@ -104,9 +74,9 @@ def main():
     ax_loss.grid(True, alpha=0.3)
 
     print(f"probe AUROC at {CKPT} checkpoint:")
-    aurocs = {}
+    scorer = StoredProbeScorer(CKPT, DEVICE, eval_noise_mult=EVAL_NOISE_MULT, seed=SEED)
+    aurocs = {tag: scorer.auroc(tag) for tag in RUN_TAGS}
     for tag in RUN_TAGS:
-        aurocs[tag] = _last_iter_auroc(tag)
         if aurocs[tag] is None:
             print(f"  {tag}: n/a (no probe in checkpoint)")
         else:
