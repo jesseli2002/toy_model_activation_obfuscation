@@ -2,10 +2,13 @@ import numpy as np
 import pytest
 import torch
 
-from adversarial_report import _binary_probe_metrics_all_layers
 from config import ResidualMLPConfig
 from model import ResidualMLP
-from probe_lib import LinearBoundary, boundary_accuracy
+from probe_lib import (
+    LinearBoundary,
+    binary_probe_metrics_all_layers,
+    boundary_accuracy,
+)
 
 
 def _make_model(num_x=2, d_model=3, d_mlp=8, num_blocks=2):
@@ -21,14 +24,14 @@ def _make_model(num_x=2, d_model=3, d_mlp=8, num_blocks=2):
 # ----------------------------------------------------------------------------
 # boundary_accuracy
 # ----------------------------------------------------------------------------
-def testboundary_accuracy_1d_two_points():
+def test_boundary_accuracy_1d_two_points():
     b = LinearBoundary(np.array([1.0]), 0.0)
     X = np.array([[-1.0], [1.0]])
     y = np.array([False, True])
     assert boundary_accuracy(b, X, y) == 1.0
 
 
-def testboundary_accuracy_1d_intermediate():
+def test_boundary_accuracy_1d_intermediate():
     # Boundary at x = 0. Points: -2, -1, 1, 2, 3 -> labels False,False,True,True,True
     # but flip one label so accuracy is 4/5, not 0 or 1.
     b = LinearBoundary(np.array([1.0]), 0.0)
@@ -37,7 +40,7 @@ def testboundary_accuracy_1d_intermediate():
     assert boundary_accuracy(b, X, y) == pytest.approx(4 / 5)
 
 
-def testboundary_accuracy_nd_intermediate():
+def test_boundary_accuracy_nd_intermediate():
     # 2-D boundary: score = x0 + x1 - 1 > 0.
     b = LinearBoundary(np.array([1.0, 1.0]), -1.0)
     X = np.array(
@@ -59,7 +62,7 @@ def testboundary_accuracy_nd_intermediate():
 
 
 # ----------------------------------------------------------------------------
-# _binary_probe_metrics_all_layers (end-to-end, synthetic model)
+# binary_probe_metrics_all_layers (end-to-end, synthetic model)
 # ----------------------------------------------------------------------------
 def test_binary_probe_metrics_all_layers_perfect_separation():
     """Layer 1's residual stream is `layer0 + block(layer0)`, where layer0 =
@@ -78,7 +81,7 @@ def test_binary_probe_metrics_all_layers_perfect_separation():
     n_train, n_test = 4096, 256
     layer = 1
 
-    metrics, plot_inputs = _binary_probe_metrics_all_layers(
+    metrics, plot_inputs = binary_probe_metrics_all_layers(
         model,
         c_lo=1.0,
         c_hi=2.0,

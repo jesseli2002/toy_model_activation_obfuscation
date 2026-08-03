@@ -237,6 +237,143 @@ class StoredProbeScorer:
         )
 
 
+# ----------------------------------------------------------------------------
+# Refit-probe path: fit a fresh probe against a checkpoint
+# ----------------------------------------------------------------------------
+# Regularization constant for LogisticRegression (see scikit-learn
+# LogisticRegression interface). Larger = less regularization but higher
+# accuracy.
+PROBE_C = 1000
+
+
+def raw_signed_distance(
+    w_probe: Float[np.ndarray, "d"], b_probe: float, X: Float[np.ndarray, "n d"]
+) -> Float[np.ndarray, "n"]:
+    """Signed distance to the probe's decision boundary in raw
+    (unstandardized) data units, boundary at 0 -- same fold as `plot_probe`'s
+    raw-space panel."""
+    w_hat = w_probe / np.linalg.norm(w_probe)
+    threshold = -b_probe / np.linalg.norm(w_probe)
+    return X @ w_hat - threshold
+
+
+@torch.no_grad()
+def binary_dataset_all_layers(
+    model, num_x, n, c_lo, c_hi, layers, generator, device, noise_std=0.0
+):
+    """One forward pass over c_lo and one over c_hi, shared across all
+    `layers` -- returns {layer: (r_lo, r_hi)}. `noise_std` (if > 0) injects
+    residual-stream noise into that forward pass, same as the model's own
+    training-time environment."""
+    xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
+    xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)
+    r_lo = capture_layers_dict(
+        model, xf_lo, layers, noise_std=noise_std, generator=generator
+    )
+    r_hi = capture_layers_dict(
+        model, xf_hi, layers, noise_std=noise_std, generator=generator
+    )
+    return {layer: (r_lo[layer], r_hi[layer]) for layer in layers}
+
+
+def binary_probe_metrics_all_layers(
+    model,
+    c_lo,
+    c_hi,
+    layers,
+    n_train,
+    n_test,
+    g,
+    probe_backend_name,
+    desc="layers",
+    eval_noise_std=0.0,
+):
+    """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
+    c_hi) pair, from a single shared forward pass per train/test set.
+
+    Fits a fresh probe against the checkpoint, unlike `stored_probe_auroc`
+    which scores the one the model was trained against.
+
+    Pure data generation -- no plotting. Returns `(metrics, plot_inputs)`:
+    `metrics` is {layer: {"dom", "delta_norm", "logreg", "lda"}}, and
+    `plot_inputs` is {layer: {"w_dom", "midpoint", "w_probe", "b_probe",
+    "X_te", "y_te", "dist_lo", "dist_hi"}}, everything a caller needs to
+    later feed `plot_probe` or a layer-distribution plot for this (c_lo, c_hi)
+    pair -- returned unconditionally since the forward pass and the fit
+    already happened regardless of whether the caller wants a plot.
+
+    `eval_noise_std` only affects the test forward pass, not the fit.
+    """
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+    from tqdm import tqdm
+
+    from probe_backend import build_probe_pipeline
+
+    num_x = model.num_x
+    device = next(model.parameters()).device
+    train_ds = binary_dataset_all_layers(
+        model, num_x, n_train, c_lo, c_hi, layers, g, device
+    )
+    test_ds = binary_dataset_all_layers(
+        model, num_x, n_test, c_lo, c_hi, layers, g, device, noise_std=eval_noise_std
+    )
+
+    metrics = {}
+    plot_inputs = {}
+    for layer in tqdm(layers, desc=desc, leave=False):
+        r_lo_tr, r_hi_tr = train_ds[layer]
+        r_lo_te, r_hi_te = test_ds[layer]
+
+        X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
+        y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
+        X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
+        y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
+        lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
+
+        X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0)
+        y_tr_t = torch.cat(
+            [
+                torch.zeros(n_train, dtype=torch.bool, device=device),
+                torch.ones(n_train, dtype=torch.bool, device=device),
+            ]
+        )
+        pipeline = build_probe_pipeline(
+            C=PROBE_C, max_iter=2000, backend=probe_backend_name
+        )
+        pipeline.fit(X_tr_t, y_tr_t)
+        w_probe_t, b_probe_t = pipeline.get_affine(device)
+        w_probe = w_probe_t.cpu().numpy()
+        b_probe = float(b_probe_t.cpu())
+
+        mu_lo = r_lo_tr.mean(dim=0)
+        mu_hi = r_hi_tr.mean(dim=0)
+        w_dom = (mu_hi - mu_lo).cpu().numpy()
+        midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
+        dom_boundary = LinearBoundary(w_dom, -midpoint)
+        probe_boundary = LinearBoundary(w_probe, b_probe)
+        dom_acc = boundary_accuracy(dom_boundary, X_te, y_te)
+        logreg_acc = boundary_accuracy(probe_boundary, X_te, y_te)
+        delta_norm = float(np.linalg.norm(w_dom))
+
+        metrics[layer] = {
+            "dom": dom_acc,
+            "delta_norm": delta_norm,
+            "logreg": logreg_acc,
+            "lda": float(lda.score(X_te, y_te)),
+        }
+        plot_inputs[layer] = {
+            "w_dom": w_dom,
+            "midpoint": midpoint,
+            "w_probe": w_probe,
+            "b_probe": b_probe,
+            "X_te": X_te,
+            "y_te": y_te,
+            "dist_lo": raw_signed_distance(w_probe, b_probe, r_lo_te.cpu().numpy()),
+            "dist_hi": raw_signed_distance(w_probe, b_probe, r_hi_te.cpu().numpy()),
+        }
+    return metrics, plot_inputs
+
+
 @torch.no_grad()
 def forward_steered(
     model: ResidualMLP,
