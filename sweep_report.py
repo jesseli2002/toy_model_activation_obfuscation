@@ -6,13 +6,10 @@ shape is still changing, so argparse would just be churn for now. Prints to
 console / plt.show() only; nothing is written to disk.
 """
 
-RUN_TAGS = [
-    "stable5_lam0_trial0",
-    "stable5_lam0_trial1",
-    "stable5_lam0_trial2",
-    "stable5_lam0_trial3",
-    "stable5_lam0_trial4",
-]
+RUN_TAGS = [f"sweep3_lam0.1_tr{i}" for i in range(10)]
+# RUN_TAGS = [f"sweep3_lam0.05_tr{i}" for i in range(10)]
+# RUN_TAGS = [f"sweep3_lam0.01_tr{i}" for i in range(10)]
+# RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running min of loss over the past this-many iters
 EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
@@ -59,7 +56,8 @@ def _running_min(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarr
         cutoff = iters[i] - window + 1
         while iters[lo] < cutoff:
             lo += 1
-        out[i] = values[lo : i + 1].min()
+        # out[i] = values[lo : i + 1].min()
+        out[i] = values[lo : i + 1].mean()
     return out
 
 
