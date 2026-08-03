@@ -184,6 +184,7 @@ def parse_args():
     g_book.add_argument("--log-interval", type=int, default=100)
     g_book.add_argument("--ckpt-interval", type=int, default=200)
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
+    g_book.add_argument("--rate-meter-window", type=float, default=1000.0)
 
     args = p.parse_args()
     if args.resume and args.fork_from is not None:
@@ -1137,7 +1138,7 @@ def main(args):
         )
 
     t0 = time.time()
-    rate_meter = EMARateMeter(start_iter)
+    rate_meter = EMARateMeter(start_iter, window=args.rate_meter_window)
     max_err = None
     last_logged_iter = None
 
