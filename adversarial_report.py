@@ -131,7 +131,7 @@ from data import eval_max_err
 from probe_backend import build_probe_pipeline, resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
-    _boundary_accuracy,
+    boundary_accuracy,
     capture_layers,
     capture_layers_dict,
     forward_steered,
@@ -284,8 +284,8 @@ def _binary_probe_metrics_all_layers(
         midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
         dom_boundary = LinearBoundary(w_dom, -midpoint)
         probe_boundary = LinearBoundary(w_probe, b_probe)
-        dom_acc = _boundary_accuracy(dom_boundary, X_te, y_te)
-        logreg_acc = _boundary_accuracy(probe_boundary, X_te, y_te)
+        dom_acc = boundary_accuracy(dom_boundary, X_te, y_te)
+        logreg_acc = boundary_accuracy(probe_boundary, X_te, y_te)
         delta_norm = float(np.linalg.norm(w_dom))
 
         metrics[layer] = {

@@ -1,9 +1,12 @@
-"""Shared probing primitives: capture residual-stream activations from a
-checkpoint, fit/compare linear decision boundaries over them, and plot the
-result.
+"""Utilities for probe analysis: capture residual-stream activations from a
+checkpoint, build eval sets over them, fit/compare/score linear decision
+boundaries, and plot the result.
 
-Used as a library by adversarial_report.py (the probing harness) and
-analytic.py (activation capture for hand-built exact models).
+Used as a library by the reporting scripts (adversarial_report.py and the
+sweep_*.py family) and by analytic.py (activation capture for hand-built
+exact models). Anything a report needs in order to turn a checkpoint into a
+probe score belongs here rather than in one of those entry points, so the
+reports agree on what "probe AUROC" means.
 """
 
 import os
@@ -14,6 +17,9 @@ import numpy as np
 import torch
 from jaxtyping import Bool, Float
 
+import config
+from config import C_HIGH, C_LOW
+from data import sample_fixed_c
 from model import ResidualMLP
 from paths import ckpt_dir
 
@@ -31,11 +37,51 @@ class LinearBoundary(NamedTuple):
         return X @ self.w + self.b
 
 
-def _boundary_accuracy(
+class BinaryEvalSet(NamedTuple):
+    """A fixed two-class contrast to score probes against: class 0 is c=c_lo,
+    class 1 is c=c_hi, `n` inputs each.
+
+    Deliberately a fixed pair rather than the continuous c ~ U[C_LOW, C_HIGH]
+    training distribution -- sampled once and reused, so scores stay
+    comparable point to point across checkpoints and across runs."""
+
+    x: Float[torch.Tensor, "n2 num_x_plus_1"]
+    y: Bool[np.ndarray, "n2"]
+
+
+def make_binary_eval_set(
+    num_x: int,
+    n: int,
+    c_lo: float = C_LOW,
+    c_hi: float = C_HIGH,
+    *,
+    generator: torch.Generator,
+    device: str,
+) -> BinaryEvalSet:
+    """`n` inputs per class (so 2n rows total, the c_lo half first)."""
+    xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
+    xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)
+    return BinaryEvalSet(
+        x=torch.cat([xf_lo, xf_hi], dim=0),
+        y=np.concatenate([np.zeros(n), np.ones(n)]),
+    )
+
+
+def boundary_accuracy(
     b: LinearBoundary, X: Float[np.ndarray, "n d"], y: Bool[np.ndarray, "n"]
 ) -> float:
     """Fraction of (X, y) classified correctly by `b.score(X) > 0`."""
     return float(((b.score(X) > 0) == y).mean())
+
+
+def boundary_auroc(
+    b: LinearBoundary, X: Float[np.ndarray, "n d"], y: Bool[np.ndarray, "n"]
+) -> float:
+    """AUROC of `b`'s scores against `y`. Threshold-free, so unlike
+    `boundary_accuracy` it ignores the bias term."""
+    from sklearn.metrics import roc_auc_score
+
+    return float(roc_auc_score(y, b.score(X)))
 
 
 def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
