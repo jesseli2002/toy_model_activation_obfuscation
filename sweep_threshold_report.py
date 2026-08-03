@@ -6,9 +6,10 @@ sweep is still running).
 
 Loss percentiles get a learned-function-curves plot each (from
 adversarial_report.plot_learned_curves); AUROC percentiles get a probe
-histogram+ROC plot and a logreg/PCA residual plot (from probe_lib.plot_probe
-/ plot_probe_pca), both scored at PROBE_LAYER -- the layer the adversarial
-penalty is actually applied to during training.
+histogram+ROC plot and a PCA/residual plot (local, logreg-only trims of
+probe_lib.plot_probe / plot_probe_pca, which also plot a difference-of-means
+comparison this report doesn't need), both scored at PROBE_LAYER -- the layer
+the adversarial penalty is actually applied to during training.
 
 "Loss" here is the task loss alone (data.eval_task_loss), freshly recomputed
 from each checkpoint -- not the combined lam-weighted training-loss field
@@ -41,6 +42,7 @@ import glob
 import os
 import re
 
+import matplotlib.pyplot as plt
 import torch
 
 from adversarial_report import plot_learned_curves
@@ -52,9 +54,8 @@ from probe_lib import (
     boundary_auroc,
     load_model,
     resolve_adv_config,
+    save_plot,
 )
-from probe_lib import plot_probe as plot_probe_separation
-from probe_lib import plot_probe_pca as plot_probe_pca_separation
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -160,6 +161,99 @@ def _make_curve_plots(tags_by_loss: list[str], losses: list[float]) -> None:
             plot_learned_curves(model, label, out_dir)
 
 
+def _plot_probe_hist_auroc(
+    tag, layers, probe: LinearBoundary, X_test, y_test, plot_dir
+):
+    """Trimmed variant of probe_lib.plot_probe: this report only cares about
+    the logreg probe (no difference-of-means comparison), so it's just a
+    logreg decision-function histogram plus its ROC/AUROC
+    ({tag}_L{layers}_probe.png)."""
+    from sklearn.metrics import roc_auc_score, roc_curve
+
+    proj = probe.score(X_test)
+    auroc = roc_auc_score(y_test, proj)
+    fpr, tpr, _ = roc_curve(y_test, proj)
+
+    lo_mask = y_test == 0.0
+    hi_mask = y_test == 1.0
+    layer_str = "-".join(str(i) for i in layers)
+
+    fig, (ax_hist, ax_roc) = plt.subplots(1, 2, figsize=(10, 4.5))
+
+    ax_hist.hist(proj[lo_mask], bins=60, alpha=0.6, label="c=1")
+    ax_hist.hist(proj[hi_mask], bins=60, alpha=0.6, label="c=2")
+    percentile_5, percentile_95 = np.percentile(proj, [5, 95])
+    percentile_diff = percentile_95 - percentile_5
+    ax_hist.set_xlim(
+        [
+            percentile_5 - percentile_diff * 0.5,
+            percentile_95 + percentile_diff * 0.5,
+        ]
+    )
+    ax_hist.axvline(0.0, color="k", ls="--", lw=1, label="threshold")
+    ax_hist.set_title("logreg decision function")
+    ax_hist.set_xlabel("projection (test set)")
+    ax_hist.legend(fontsize=8)
+    ax_hist.grid(True, alpha=0.3)
+
+    ax_roc.plot(fpr, tpr, label="logreg")
+    ax_roc.plot([0, 1], [0, 1], "k--", lw=1, label="chance")
+    ax_roc.set_xlabel("FPR")
+    ax_roc.set_ylabel("TPR")
+    ax_roc.set_title(f"AUROC: {auroc:.3f}")
+    ax_roc.legend(fontsize=8, loc="lower right")
+    ax_roc.grid(True, alpha=0.3)
+    ax_roc.set_aspect("equal", adjustable="box")
+
+    fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_L{layer_str}_probe.png")
+
+
+def _plot_probe_pca_resid(tag, layers, probe: LinearBoundary, X_test, y_test, plot_dir):
+    """Trimmed variant of probe_lib.plot_probe_pca: logreg-only companion to
+    `_plot_probe_hist_auroc`, dropping the difference-of-means residual panel
+    -- a shared top-2-component PCA plus the logreg direction projected out
+    and PC1 of what's left ({tag}_L{layers}_probe_pca.png)."""
+    from sklearn.decomposition import PCA
+
+    pca_xy = PCA(n_components=2).fit_transform(X_test)
+
+    w_hat = probe.w / np.linalg.norm(probe.w)
+    X_resid = X_test - np.outer(X_test @ w_hat, w_hat)
+    pc1_resid = PCA(n_components=1).fit_transform(X_resid)[:, 0]
+    proj_raw = X_test @ w_hat
+    raw_threshold = float(-probe.b / np.linalg.norm(probe.w))
+
+    lo_mask = y_test == 0.0
+    hi_mask = y_test == 1.0
+    layer_str = "-".join(str(i) for i in layers)
+
+    fig, (ax_pca, ax_resid) = plt.subplots(1, 2, figsize=(10, 4.5))
+
+    ax_pca.scatter(pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1")
+    ax_pca.scatter(pca_xy[hi_mask, 0], pca_xy[hi_mask, 1], s=4, alpha=0.4, label="c=2")
+    ax_pca.set_title("PCA (top 2 components)")
+    ax_pca.set_xlabel("PC1")
+    ax_pca.set_ylabel("PC2")
+    ax_pca.legend(fontsize=8)
+    ax_pca.grid(True, alpha=0.3)
+    ax_pca.set_aspect("equal", adjustable="datalim")
+
+    ax_resid.scatter(proj_raw[lo_mask], pc1_resid[lo_mask], s=4, alpha=0.4, label="c=1")
+    ax_resid.scatter(proj_raw[hi_mask], pc1_resid[hi_mask], s=4, alpha=0.4, label="c=2")
+    ax_resid.axvline(raw_threshold, color="k", ls="--", lw=1, label="threshold")
+    ax_resid.set_title("logreg vs residual PCA")
+    ax_resid.set_xlabel("logreg projection (data coords)")
+    ax_resid.set_ylabel("PC1 of orthogonal residual")
+    ax_resid.legend(fontsize=8)
+    ax_resid.grid(True, alpha=0.3)
+
+    fig.suptitle(f"probe separation, PCA ({tag}, layers={layer_str})")
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_L{layer_str}_probe_pca.png")
+
+
 def _make_probe_plots(
     tags_by_auroc: list[str], aurocs: list[float], probe_fits: dict[str, dict]
 ) -> None:
@@ -171,16 +265,12 @@ def _make_probe_plots(
             tag = tags_by_auroc[idx]
             pi = probe_fits[tag]
             label = f"p{p:02d}_rank{idx:03d}_{tag}_auroc{aurocs[idx]:.4f}"
-            # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so
-            # its bias is the midpoint threshold negated (matches
-            # adversarial_report._make_plots).
-            dom = LinearBoundary(pi["w_dom"], -pi["midpoint"])
             probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
-            plot_probe_separation(
-                label, [PROBE_LAYER], dom, probe, pi["X_te"], pi["y_te"], out_dir
+            _plot_probe_hist_auroc(
+                label, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir
             )
-            plot_probe_pca_separation(
-                label, [PROBE_LAYER], dom, probe, pi["X_te"], pi["y_te"], out_dir
+            _plot_probe_pca_resid(
+                label, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir
             )
 
 
