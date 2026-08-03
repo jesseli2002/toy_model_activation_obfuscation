@@ -189,6 +189,25 @@ def parse_args():
     if not args.resume and args.seed is None:
         p.error("--seed required for a fresh run or --fork-from.")
 
+    if args.save_every_n == -1:
+        args.save_every_n = args.ckpt_interval
+    # Every checkpoint iter must also be a log iter, so each checkpoint on
+    # disk has a matching history.jsonl entry.
+    if args.log_interval <= 0:
+        p.error(f"--log-interval must be positive, got {args.log_interval}.")
+    if args.ckpt_interval <= 0:
+        p.error(f"--ckpt-interval must be positive, got {args.ckpt_interval}.")
+    for dest, flag in (
+        ("ckpt_interval", "--ckpt-interval"),
+        ("save_every_n", "--save-every-n"),
+    ):
+        interval = getattr(args, dest)
+        if interval != 0 and interval % args.log_interval != 0:
+            p.error(
+                f"{flag} ({interval}) must be a multiple of --log-interval "
+                f"({args.log_interval})."
+            )
+
     arch_flags = {
         "num_x": "--num-x",
         "d_model": "--d-model",
@@ -919,8 +938,6 @@ def _start_fork_from(args, hist_path: str, device):
 
 
 def main(args):
-    if args.save_every_n == -1:
-        args.save_every_n = args.ckpt_interval
     warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     probe_backend = resolve_probe_backend(args.probe_backend, device)
