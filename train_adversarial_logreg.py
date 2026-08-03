@@ -79,7 +79,7 @@ naming: a setting lives in the `--config` JSON file (i.e. on
     caused enough confusion to not be worth it, so `lam` moved into the
     config file too.
   - Bookkeeping flags (`--tag`, `--resume`, `--fork-from`, `--tag-force`,
-    `--probe-backend`, `--log-interval`, `--ckpt-interval`, `--save-every-n`,
+    `--probe-backend`, `--log-interval`, `--ckpt-interval`,
     `--max-iters`) sit outside this split entirely: they're run control that
     never varies within one tag's lineage and is never persisted to
     `config.json`.
@@ -183,18 +183,6 @@ def parse_args():
     )
     g_book.add_argument("--log-interval", type=int, default=100)
     g_book.add_argument("--ckpt-interval", type=int, default=200)
-    g_book.add_argument(
-        "--save-every-n",
-        type=int,
-        nargs="?",
-        const=-1,
-        default=-1,
-        help=(
-            "keep the numbered checkpoint permanently every N iters "
-            "(-1 = --ckpt-interval, 0 = keep none, i.e. only the rotating "
-            "checkpoint last.pt points at)"
-        ),
-    )
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
 
     args = p.parse_args()
@@ -210,24 +198,17 @@ def parse_args():
     if not args.resume and args.seed is None:
         p.error("--seed required for a fresh run or --fork-from.")
 
-    if args.save_every_n == -1:
-        args.save_every_n = args.ckpt_interval
     # Every checkpoint iter must also be a log iter, so each checkpoint on
     # disk has a matching history.jsonl entry.
     if args.log_interval <= 0:
         p.error(f"--log-interval must be positive, got {args.log_interval}.")
     if args.ckpt_interval <= 0:
         p.error(f"--ckpt-interval must be positive, got {args.ckpt_interval}.")
-    for dest, flag in (
-        ("ckpt_interval", "--ckpt-interval"),
-        ("save_every_n", "--save-every-n"),
-    ):
-        interval = getattr(args, dest)
-        if interval != 0 and interval % args.log_interval != 0:
-            p.error(
-                f"{flag} ({interval}) must be a multiple of --log-interval "
-                f"({args.log_interval})."
-            )
+    if args.ckpt_interval % args.log_interval != 0:
+        p.error(
+            f"--ckpt-interval ({args.ckpt_interval}) must be a multiple of "
+            f"--log-interval ({args.log_interval})."
+        )
 
     arch_flags = {
         "num_x": "--num-x",
@@ -952,40 +933,16 @@ def checkpoint_path(run_ckpt_dir: str, iter: int) -> str:
     return os.path.join(run_ckpt_dir, f"iter_{iter}.pt")
 
 
-def _checkpoint_iter(path: str) -> int | None:
-    """The iteration a numbered checkpoint's filename refers to, or None for
-    any other file (best.pt, a stale plain last.pt from an older run, ...)."""
-    name = os.path.basename(path)
-    stem = name[len("iter_") : -len(".pt")]
-    if not name.startswith("iter_") or not name.endswith(".pt") or not stem.isdigit():
-        return None
-    return int(stem)
-
-
-def write_checkpoint(run_ckpt_dir: str, iter: int, save_fn, keep_every: int) -> str:
-    """Write `iter_<iter>.pt` and repoint `last.pt` at it.
-
-    The checkpoint `last.pt` previously named is deleted unless --save-every-n
-    keeps it, so a run with snapshots disabled costs one checkpoint file
-    rather than one per --ckpt-interval. Which checkpoint that is comes from
-    the symlink itself, so rotation stays correct across a --resume.
+def write_checkpoint(run_ckpt_dir: str, iter: int, save_fn) -> str:
+    """Write `iter_<iter>.pt` and repoint `last.pt` at it. Every numbered
+    checkpoint is kept permanently.
 
     Callers are responsible for deferring SIGINT around this (see
     `_defer_keyboard_interrupt`)."""
     last_path = os.path.join(run_ckpt_dir, "last.pt")
-    previous = os.path.realpath(last_path) if os.path.islink(last_path) else None
-
     path = checkpoint_path(run_ckpt_dir, iter)
     _atomic_write(save_fn, path)
     _point_symlink(last_path, os.path.basename(path))
-
-    if previous is not None and previous != os.path.realpath(path):
-        previous_iter = _checkpoint_iter(previous)
-        keep = previous_iter is not None and (
-            keep_every != 0 and previous_iter % keep_every == 0
-        )
-        if previous_iter is not None and not keep and os.path.exists(previous):
-            os.remove(previous)
     return path
 
 
@@ -1195,9 +1152,7 @@ def main(args):
         )
 
     def checkpoint():
-        return write_checkpoint(
-            run_ckpt_dir, record.iter, save, keep_every=args.save_every_n
-        )
+        return write_checkpoint(run_ckpt_dir, record.iter, save)
 
     ran_any_iters = False
     # SIGINT is deferred for the whole loop, so a Ctrl-C (however hard it is
@@ -1227,13 +1182,7 @@ def main(args):
             if record.iter % args.log_interval == 0:
                 log_iter()
 
-            # --save-every-n snapshots and the periodic last.pt refresh are the
-            # same write: both produce iter_<n>.pt, and write_checkpoint keeps
-            # or rotates it depending on --save-every-n.
-            due = record.iter % args.ckpt_interval == 0 or (
-                args.save_every_n != 0 and record.iter % args.save_every_n == 0
-            )
-            if due and record.iter > start_iter:
+            if record.iter % args.ckpt_interval == 0 and record.iter > start_iter:
                 checkpoint()
 
             if sigint.interrupted:

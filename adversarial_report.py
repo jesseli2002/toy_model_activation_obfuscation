@@ -191,9 +191,9 @@ def _auroc_snapshots(
 ):
     """Probe AUROC over the course of training, computed here (not logged
     during training) from the numbered checkpoint snapshots
-    train_adversarial_logreg.py already writes every --save-every-n iters
-    (default = --ckpt-interval) -- each carries the probe's affine
-    (probe_w/probe_b/probe_layers) alongside the model weights.
+    train_adversarial_logreg.py already writes every --ckpt-interval iters --
+    each carries the probe's affine (probe_w/probe_b/probe_layers) alongside
+    the model weights.
 
     Snapshots are approximately-uniformly strided down to ~n_snapshots (a
     simple stride, not an exact pick) since loading + a forward pass per
