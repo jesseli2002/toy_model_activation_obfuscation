@@ -97,3 +97,40 @@ def eval_max_err(
         worst = torch.maximum(worst, (pred - y).abs().max())
         done += b
     return worst.item()
+
+
+@torch.no_grad()
+def eval_task_loss(
+    model: ResidualMLP,
+    generator: torch.Generator,
+    device: str = "cpu",
+    n: int = 100_000,
+    batch: int = 20_000,
+    x_p_outer: float | None = None,
+    x_threshold: float = 1.0,
+    noise_std: float = 0.0,
+) -> float:
+    """Mean-squared task error over `n` fresh examples, matching the training
+    loop's own `l_task` formula (see train_adversarial_logreg.py's
+    forward_loss) -- deliberately excludes any probe/adversarial penalty, so
+    this is purely "how well does the model solve the task", independent of
+    lam. Pass a checkpoint's own `x_p_outer`/`x_threshold`/`resid_noise_std`
+    (see `probe_lib.resolve_adv_config`) to match its training distribution."""
+    total = torch.zeros((), device=device)
+    done = 0
+    while done < n:
+        b = min(batch, n - done)
+        x_full, y = sample_batch(
+            b,
+            model.num_x,
+            generator=generator,
+            device=device,
+            x_p_outer=x_p_outer,
+            x_threshold=x_threshold,
+        )
+        pred: Float[Tensor, "b num_x"] = model.task_output(
+            x_full, noise=noise_std, generator=generator
+        )
+        total += ((pred - y) ** 2).sum()
+        done += b
+    return (total / (done * model.num_x)).item()

@@ -10,6 +10,12 @@ histogram+ROC plot and a logreg/PCA residual plot (from probe_lib.plot_probe
 / plot_probe_pca), both scored at PROBE_LAYER -- the layer the adversarial
 penalty is actually applied to during training.
 
+"Loss" here is the task loss alone (data.eval_task_loss), freshly recomputed
+from each checkpoint -- not the combined lam-weighted training-loss field
+logged to history.jsonl, and not read from history.jsonl at all (some runs'
+final checkpoint predates their last history record, a past checkpoint-saving
+bug).
+
 Settings live in the constants below rather than a CLI -- this script's
 shape is still changing, so argparse would just be churn for now. Plots are
 written under plot/sweep3/; a summary table prints to console."""
@@ -19,9 +25,10 @@ EXCLUDE_LAMBDAS = {}  # lam0 sweep is still running
 EXCLUDE_TRIAL_ABOVE = 9  # for partial trials greater than this index
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
-LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 PERCENTILES = [10, 25, 50, 75, 90]
 N_PER_PERCENTILE = 3  # a few runs per bucket, not just the nearest one, so a single outlier run doesn't set the impression for its whole percentile
+TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
+TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see EVAL_NOISE_MULT for the probe-eval analog, tuned separately)
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "auto"
@@ -31,15 +38,13 @@ SEED = 20260718
 OUT_DIR = "plot/sweep3"
 
 import glob
-import json
 import os
 import re
 
-import numpy as np
 import torch
 
 from adversarial_report import plot_learned_curves
-from paths import log_dir
+from data import eval_task_loss
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -71,40 +76,27 @@ def _discover_tags() -> list[str]:
     return tags
 
 
-def _load_history(tag: str) -> tuple[np.ndarray, np.ndarray]:
-    """(iters, loss) from a run's logs/history.jsonl. Skips the trailing
-    'final' summary record, which repeats the last iter with loss fields
-    nulled out."""
-    iters, losses = [], []
-    with open(os.path.join(log_dir(tag), "history.jsonl")) as f:
-        for line in f:
-            rec = json.loads(line)
-            if rec.get("final"):
-                continue
-            iters.append(rec["iter"])
-            losses.append(rec["loss"])
-    return np.array(iters), np.array(losses)
-
-
-# def _running_mean(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarray:
-#     """Causal low-pass: mean value among logged points within the trailing
-#     `window` iterations (not `window` logged points -- --log-interval
-#     defaults to 100 and can vary run to run, so this has to key off `iters`,
-#     not array index). Matches sweep_report.py's smoothing."""
-#     out = np.empty_like(values, dtype=float)
-#     lo = 0
-#     for i in range(len(iters)):
-#         cutoff = iters[i] - window + 1
-#         while iters[lo] < cutoff:
-#             lo += 1
-#         out[i] = values[lo : i + 1].mean()
-#     return out
-
-
-def _final_loss(tag: str) -> float:
-    iters, losses = _load_history(tag)
-    return float(losses[-1])
-    # return float(_running_mean(iters, losses, LOSS_LOWPASS_WINDOW)[-1])
+def _final_loss(tag: str, g: torch.Generator) -> float:
+    """Task loss (data.eval_task_loss), freshly recomputed at CKPT -- not
+    read from history.jsonl (some runs' final checkpoint predates their last
+    history record) and deliberately excludes the adversarial/probe penalty,
+    since this script only cares about task performance here."""
+    model, ck = load_model(tag, CKPT, DEVICE)
+    adv_cfg = resolve_adv_config(ck)
+    x_p_outer = adv_cfg.x_p_outer if adv_cfg is not None else None
+    x_threshold = adv_cfg.x_threshold if adv_cfg is not None else 1.0
+    noise_std = (
+        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
+    )
+    return eval_task_loss(
+        model,
+        g,
+        DEVICE,
+        n=TASK_LOSS_N_EVAL,
+        x_p_outer=x_p_outer,
+        x_threshold=x_threshold,
+        noise_std=noise_std,
+    )
 
 
 def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | None:
@@ -198,9 +190,9 @@ def main():
         f"found {len(tags)} runs matching {RUN_GLOB!r} (excluding lam in {EXCLUDE_LAMBDAS})"
     )
 
-    losses = {t: _final_loss(t) for t in tags}
-
     g = torch.Generator(device=DEVICE).manual_seed(SEED)
+    losses = {t: _final_loss(t, g) for t in tags}
+
     probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
     probe_fits = {t: _fit_probe(t, g, probe_backend_name) for t in tags}
     aurocs = {
