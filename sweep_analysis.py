@@ -279,14 +279,14 @@ def main():
         )
 
     SYMLOG_LINTHRESH = x[1]  # linear-region half-width (in ratio units) around lam=0
-    ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH)
+    ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH, linscale=0.5)
     # ax.axvline(x[1] / 2, ls="--", lw=1, color="#52514e")
     ax.axvline(x[1] / 2, ls="--", lw=1, color="black")
-    ax.set_xlabel("lam / (1 - lam)  (probe-loss weight / task-loss weight)")
+    ax.set_xlabel(r"$\lambda / (1 - \lambda)$  (probe-loss weight / task-loss weight)")
     ax.set_ylabel("fraction of runs")
     ax.set_ylim(0, 1)
     ax.set_xlim(0, x[-1])
-    ax.set_title(f"task success / probe hiding vs. adversarial weight ({RUN_GLOB})")
+    ax.set_title(f"Outcome vs. $\\lambda$ \n({RUN_GLOB})")
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     ax.grid(True, alpha=0.3)
 
