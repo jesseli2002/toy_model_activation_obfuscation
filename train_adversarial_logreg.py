@@ -44,8 +44,24 @@ Hand-editing either after creation has no effect except tripping the
 mismatch warning on a later `--resume`.
 
 Progress is written as numbered `runs/<tag>/checkpoints/iter_<n>.pt` files
-with `last.pt` a symlink to the newest, plus `logs/history.jsonl`; see
-`CheckpointWriter` for the consistency guarantees between the two.
+with `last.pt` a symlink to the newest, plus `logs/history.jsonl`. Two
+invariants hold between them for a run at rest -- one that finished, or that
+stopped on a Ctrl-C:
+
+  - the last line of `history.jsonl` describes the iteration `last.pt`
+    resolves to;
+  - every `iter_<n>.pt` on disk has a history entry.
+
+Both come from `--ckpt-interval` being a multiple of `--log-interval` (so
+periodic checkpoints only land on logged iterations) plus the loop logging
+and checkpointing whichever iteration it actually stopped at. `best.pt` is
+outside this: it is written whenever the loss improves, which is generally
+not a logged iteration.
+
+"At rest" is the limit of the guarantee. Mid-run, history legitimately runs
+ahead of `last.pt` between checkpoints, and a run killed without a SIGINT
+(SIGKILL, OOM, power) can be left that way -- a later `--resume` then logs
+those iterations a second time.
 
 Configuration is split two ways, and the split is a near-invariant worth
 naming: a setting lives in the `--config` JSON file (i.e. on
@@ -1229,10 +1245,9 @@ def main(args):
 
         # Checkpoint wherever the run actually stopped -- the end of
         # --max-iters, or the interrupted iteration. That iteration is
-        # generally not a --log-interval multiple, so log it first: last.pt is
-        # then always backed by a real, plottable history entry, and (with
-        # --ckpt-interval a multiple of --log-interval) every checkpoint on
-        # disk has one.
+        # generally not a --log-interval multiple, so log it first; this is
+        # what establishes the two history/checkpoint invariants described at
+        # the top of this module.
         if ran_any_iters:
             if last_logged_iter != record.iter:
                 log_iter()
