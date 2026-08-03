@@ -83,12 +83,26 @@ _DISPOSABLE_RUN_RE = re.compile(r"(?<![\w.-])runs/debug_[\w.*?-]+/?(?![\w./-])")
 @dataclass(frozen=True)
 class Config:
     ssh_command: list[str]
-    ssh_host: str
+    # Instance name -> agent SSH host alias. One process can broker several
+    # vast.ai rentals; callers pick one per tool call via the "instance"
+    # argument (see resolve_ssh_host). Everything else (workdir, venv, sync
+    # script) is identical across instances since each is provisioned the
+    # same way, so it isn't part of this map.
+    instances: dict[str, str]
+    default_instance: str
     workdir: str
     venv: str
     control_path: str
     control_persist: str
     sync_script: str
+
+    def resolve_ssh_host(self, instance: str | None) -> str:
+        name = instance or self.default_instance
+        ssh_host = self.instances.get(name)
+        if ssh_host is None:
+            available = ", ".join(sorted(self.instances))
+            raise BrokerError(f"unknown instance {name!r}; available: {available}")
+        return ssh_host
 
 
 class BrokerError(Exception):
@@ -99,17 +113,66 @@ def load_config_from_env() -> Config:
     ssh_command = shlex.split(os.environ.get("VAST_REMOTE_SSH_COMMAND", "ssh"))
     if not ssh_command:
         raise RuntimeError("vast_remote_broker: VAST_REMOTE_SSH_COMMAND is empty")
-    ssh_host = os.environ.get("VAST_REMOTE_SSH_HOST")
-    if not ssh_host:
-        raise RuntimeError("vast_remote_broker: VAST_REMOTE_SSH_HOST is required")
+
+    # VAST_REMOTE_INSTANCES is a JSON object mapping instance name -> agent SSH
+    # host alias, e.g. {"vtao": "vtao-agent", "vtao2": "vtao2-agent"}. Falls
+    # back to the older single-instance VAST_REMOTE_SSH_HOST var (named
+    # "default") so existing single-instance launch configs keep working.
+    instances_json = os.environ.get("VAST_REMOTE_INSTANCES")
+    if instances_json:
+        try:
+            instances = json.loads(instances_json)
+        except json.JSONDecodeError as exc:
+            raise RuntimeError(
+                f"vast_remote_broker: VAST_REMOTE_INSTANCES is not valid JSON: {exc}"
+            )
+        if not isinstance(instances, dict) or not all(
+            isinstance(k, str) and isinstance(v, str) for k, v in instances.items()
+        ):
+            raise RuntimeError(
+                "vast_remote_broker: VAST_REMOTE_INSTANCES must be a JSON object "
+                "of string instance names to string SSH host aliases"
+            )
+        if not instances:
+            raise RuntimeError("vast_remote_broker: VAST_REMOTE_INSTANCES is empty")
+    else:
+        ssh_host = os.environ.get("VAST_REMOTE_SSH_HOST")
+        if not ssh_host:
+            raise RuntimeError(
+                "vast_remote_broker: one of VAST_REMOTE_INSTANCES or "
+                "VAST_REMOTE_SSH_HOST is required"
+            )
+        instances = {"default": ssh_host}
+
+    # Which instance a call gets if it omits "instance". Required when there's
+    # more than one candidate rather than silently guessing, since guessing
+    # wrong means running a command on the wrong box.
+    default_instance = os.environ.get("VAST_REMOTE_DEFAULT_INSTANCE")
+    if not default_instance:
+        if len(instances) == 1:
+            (default_instance,) = instances
+        else:
+            raise RuntimeError(
+                "vast_remote_broker: VAST_REMOTE_DEFAULT_INSTANCE is required "
+                "when VAST_REMOTE_INSTANCES has more than one entry"
+            )
+    elif default_instance not in instances:
+        raise RuntimeError(
+            f"vast_remote_broker: VAST_REMOTE_DEFAULT_INSTANCE={default_instance!r} "
+            f"is not a key in VAST_REMOTE_INSTANCES ({sorted(instances)})"
+        )
+
     return Config(
         ssh_command=ssh_command,
-        ssh_host=ssh_host,
+        instances=instances,
+        default_instance=default_instance,
         workdir=os.environ.get("VAST_REMOTE_WORKDIR", "/workspace/toy_probe_hiding"),
         venv=os.environ.get("VAST_REMOTE_VENV", "/workspace/.venv"),
         # %C is ssh's own hash of (host, port, user); avoids a fixed name
         # colliding across servers and avoids the ~104 char socket path
-        # limit that a literal host name could hit.
+        # limit that a literal host name could hit. Since it hashes the host,
+        # different instances naturally get different sockets from one
+        # process without needing a per-instance override here.
         control_path=os.environ.get(
             "VAST_REMOTE_CONTROL_PATH", "/tmp/vast-remote-broker-%C"
         ),
@@ -172,7 +235,7 @@ def _control_opts(config: Config) -> list[str]:
     ]
 
 
-def _teardown_master(config: Config) -> None:
+def _teardown_master(config: Config, ssh_host: str) -> None:
     """Best-effort: kill a stale multiplexed connection so the next call starts fresh."""
     try:
         subprocess.run(
@@ -181,7 +244,7 @@ def _teardown_master(config: Config) -> None:
                 *_control_opts(config),
                 "-O",
                 "exit",
-                config.ssh_host,
+                ssh_host,
             ],
             capture_output=True,
             timeout=10,
@@ -208,6 +271,7 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     timeout_s = arguments.get("timeout_s", DEFAULT_TIMEOUT_S)
     use_venv = arguments.get("use_venv", True)
     confirm_destructive = arguments.get("confirm_destructive", False)
+    instance = arguments.get("instance")
 
     if not isinstance(command, str) or not command.strip():
         raise BrokerError("command is required and must be a non-empty string")
@@ -221,14 +285,17 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
         raise BrokerError("timeout_s must be a number if given")
     if not 1 <= timeout_s <= MAX_TIMEOUT_S:
         raise BrokerError(f"timeout_s must be between 1 and {MAX_TIMEOUT_S}")
+    if instance is not None and (not isinstance(instance, str) or not instance):
+        raise BrokerError("instance must be a non-empty string if given")
 
+    ssh_host = config.resolve_ssh_host(instance)
     _check_destructive(command, confirm_destructive)
 
     script = _remote_script(config, command, cwd, use_venv)
     argv = [
         *config.ssh_command,
         *_control_opts(config),
-        config.ssh_host,
+        ssh_host,
         # One shlex.quote survives exactly one round of remote shell parsing,
         # which is what `ssh host bash -c <script>` performs.
         f"bash -c {shlex.quote(script)}",
@@ -251,7 +318,7 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
         # the remote command's exit code, which passes through unchanged) -- the
         # shared connection is dead, e.g. the instance was restarted. Tear down
         # the stale control socket and retry once on a fresh connection.
-        _teardown_master(config)
+        _teardown_master(config, ssh_host)
         result = run_or_raise()
 
     status = (
@@ -261,7 +328,7 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     )
     return "\n".join(
         [
-            f"{config.ssh_host}:{cwd or config.workdir}$ {command}",
+            f"{ssh_host}:{cwd or config.workdir}$ {command}",
             status,
             _section("stdout", result.stdout),
             _section("stderr", result.stderr),
@@ -271,10 +338,19 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
 
 def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
     timeout_s = arguments.get("timeout_s", DEFAULT_SYNC_TIMEOUT_S)
+    instance = arguments.get("instance")
     if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool):
         raise BrokerError("timeout_s must be a number if given")
     if not 1 <= timeout_s <= MAX_TIMEOUT_S:
         raise BrokerError(f"timeout_s must be between 1 and {MAX_TIMEOUT_S}")
+    if instance is not None and (not isinstance(instance, str) or not instance):
+        raise BrokerError("instance must be a non-empty string if given")
+
+    # Resolving validates the name (and applies the default) even though only
+    # the instance name -- not the ssh_host it maps to -- is passed on, since
+    # sync_vastai.py's own --instance-name uses the same instance names.
+    config.resolve_ssh_host(instance)
+    instance_name = instance or config.default_instance
 
     if not os.path.isfile(config.sync_script):
         raise BrokerError(
@@ -282,7 +358,13 @@ def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
             "VAST_REMOTE_SYNC_SCRIPT to its absolute path."
         )
 
-    argv = [sys.executable, config.sync_script, "flush"]
+    argv = [
+        sys.executable,
+        config.sync_script,
+        "flush",
+        "--instance-name",
+        instance_name,
+    ]
     try:
         result = subprocess.run(
             argv,
@@ -319,96 +401,118 @@ def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
     )
 
 
-TOOLS = [
-    {
-        "name": "remote_exec",
-        "description": (
-            "Run a shell command on the remote vast.ai GPU instance over SSH and return "
-            "its exit code, stdout and stderr. Runs under bash in the remote project "
-            "directory with the remote venv activated, so `python train_*.py ...` and "
-            "`nvidia-smi` work directly. Arbitrary commands are allowed.\n"
-            "Stateless executor: source syncs this-machine -> remote and runs/ syncs "
-            "remote -> this-machine on mutagen's own schedule (see sync_flush); "
-            "remote-side source edits get overwritten, so edit source locally instead. "
-            "Tag scratch/debug runs `debug_*` -- excluded from sync and backup, so "
-            "delete or leave them freely.\n"
-            "Leave cwd at its default (the remote project directory, not a worktree "
-            "checkout) for anything touching runs/: paths.py resolves runs/ off CWD, "
-            "and only that top-level runs/ is synced back. To run a script that lives "
-            "in a worktree, invoke it by absolute path rather than cd'ing into it.\n"
-            "stdin is closed, so nothing interactive will work. The call blocks until "
-            "the command finishes or timeout_s elapses, and a timeout closes the "
-            "connection without necessarily killing the remote process -- for anything "
-            "long-running (training), launch it detached instead, e.g. "
-            "`setsid nohup python train.py > logs/x.log 2>&1 < /dev/null &`, then poll "
-            "with further remote_exec calls that tail the log.\n"
-            "Output is truncated in the middle if very long; prefer piping through "
-            "head/tail/grep on the remote.\n"
-            "See /etc/vast-agents-guide.md on the remote for more. The in-container "
-            "vastai CLI is instance-scoped (cannot create new instances); instance "
-            "lifecycle (create/destroy) and sync management are handled by vast_setup/ "
-            "locally, per CLAUDE.md."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "command": {
-                    "type": "string",
-                    "description": "Shell command to run on the remote (bash syntax; may contain pipes, &&, etc).",
+def _instance_param_description(config: Config) -> str:
+    available = ", ".join(sorted(config.instances))
+    return (
+        f"Which vast.ai instance to target: one of {available} (default "
+        f"{config.default_instance!r} if omitted). Each is an independent rental "
+        "with its own runs/ and GPU, so pick the one the work in question belongs to."
+    )
+
+
+def build_tools(config: Config) -> list[dict[str, Any]]:
+    """Tool schemas, parameterized by config so the "instance" description
+    reflects the instances this server process actually brokers."""
+    instance_desc = _instance_param_description(config)
+    return [
+        {
+            "name": "remote_exec",
+            "description": (
+                "Run a shell command on a remote vast.ai GPU instance over SSH and return "
+                "its exit code, stdout and stderr. Runs under bash in the remote project "
+                "directory with the remote venv activated, so `python train_*.py ...` and "
+                "`nvidia-smi` work directly. Arbitrary commands are allowed.\n"
+                "Stateless executor: source syncs this-machine -> remote and runs/ syncs "
+                "remote -> this-machine on mutagen's own schedule (see sync_flush); "
+                "remote-side source edits get overwritten, so edit source locally instead. "
+                "Tag scratch/debug runs `debug_*` -- excluded from sync and backup, so "
+                "delete or leave them freely.\n"
+                "Leave cwd at its default (the remote project directory, not a worktree "
+                "checkout) for anything touching runs/: paths.py resolves runs/ off CWD, "
+                "and only that top-level runs/ is synced back. To run a script that lives "
+                "in a worktree, invoke it by absolute path rather than cd'ing into it.\n"
+                "stdin is closed, so nothing interactive will work. The call blocks until "
+                "the command finishes or timeout_s elapses, and a timeout closes the "
+                "connection without necessarily killing the remote process -- for anything "
+                "long-running (training), launch it detached instead, e.g. "
+                "`setsid nohup python train.py > logs/x.log 2>&1 < /dev/null &`, then poll "
+                "with further remote_exec calls that tail the log.\n"
+                "Output is truncated in the middle if very long; prefer piping through "
+                "head/tail/grep on the remote.\n"
+                "See /etc/vast-agents-guide.md on the remote for more. The in-container "
+                "vastai CLI is instance-scoped (cannot create new instances); instance "
+                "lifecycle (create/destroy) and sync management are handled by vast_setup/ "
+                "locally, per CLAUDE.md."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "Shell command to run on the remote (bash syntax; may contain pipes, &&, etc).",
+                    },
+                    "instance": {
+                        "type": "string",
+                        "description": instance_desc,
+                    },
+                    "cwd": {
+                        "type": "string",
+                        "description": "Absolute remote directory to run in. Defaults to the remote project directory -- see the tool description before pointing this at a worktree.",
+                    },
+                    "timeout_s": {
+                        "type": "number",
+                        "description": f"Seconds to wait before giving up (default {DEFAULT_TIMEOUT_S}, max {MAX_TIMEOUT_S}).",
+                    },
+                    "use_venv": {
+                        "type": "boolean",
+                        "description": "Activate the remote venv first (default true). Set false to use the system Python.",
+                    },
+                    "confirm_destructive": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true to allow a command that appears to delete runs/ or the "
+                            "workspace root. Such commands are refused by default because runs/ "
+                            "holds the only remote state worth keeping. Not needed to delete a "
+                            "runs/debug_* directory: those are disposable by convention and are "
+                            "never synced or backed up."
+                        ),
+                    },
                 },
-                "cwd": {
-                    "type": "string",
-                    "description": "Absolute remote directory to run in. Defaults to the remote project directory -- see the tool description before pointing this at a worktree.",
-                },
-                "timeout_s": {
-                    "type": "number",
-                    "description": f"Seconds to wait before giving up (default {DEFAULT_TIMEOUT_S}, max {MAX_TIMEOUT_S}).",
-                },
-                "use_venv": {
-                    "type": "boolean",
-                    "description": "Activate the remote venv first (default true). Set false to use the system Python.",
-                },
-                "confirm_destructive": {
-                    "type": "boolean",
-                    "description": (
-                        "Set true to allow a command that appears to delete runs/ or the "
-                        "workspace root. Such commands are refused by default because runs/ "
-                        "holds the only remote state worth keeping. Not needed to delete a "
-                        "runs/debug_* directory: those are disposable by convention and are "
-                        "never synced or backed up."
-                    ),
-                },
-            },
-            "required": ["command"],
-        },
-    },
-    {
-        "name": "sync_flush",
-        "description": (
-            "Force the local mutagen sync sessions to settle now, and report their "
-            "status. Source (*.py + configs/) flows local -> remote and runs/ flows "
-            "remote -> local, normally on mutagen's own schedule; this blocks until "
-            "both are in a steady state.\n"
-            "Call this after editing source locally and before launching anything on "
-            "the remote that depends on the edit, otherwise the remote may still be "
-            "running the previous version. Also call it before reading a finished "
-            "run's outputs locally, to pull runs/ back.\n"
-            "A non-zero exit usually means a session has HALTED on a conflict: the "
-            "sessions are one-way-safe, so mutagen stops rather than overwriting "
-            "either side. That needs resolving locally -- until it is, the remote "
-            "source stays stale and remote_exec will keep running old code."
-        ),
-        "inputSchema": {
-            "type": "object",
-            "properties": {
-                "timeout_s": {
-                    "type": "number",
-                    "description": f"Seconds to wait for the sync to settle (default {DEFAULT_SYNC_TIMEOUT_S}, max {MAX_TIMEOUT_S}).",
-                },
+                "required": ["command"],
             },
         },
-    },
-]
+        {
+            "name": "sync_flush",
+            "description": (
+                "Force the local mutagen sync sessions to settle now, and report their "
+                "status. Source (*.py + configs/) flows local -> remote and runs/ flows "
+                "remote -> local, normally on mutagen's own schedule; this blocks until "
+                "both are in a steady state.\n"
+                "Call this after editing source locally and before launching anything on "
+                "the remote that depends on the edit, otherwise the remote may still be "
+                "running the previous version. Also call it before reading a finished "
+                "run's outputs locally, to pull runs/ back.\n"
+                "A non-zero exit usually means a session has HALTED on a conflict: the "
+                "sessions are one-way-safe, so mutagen stops rather than overwriting "
+                "either side. That needs resolving locally -- until it is, the remote "
+                "source stays stale and remote_exec will keep running old code."
+            ),
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "instance": {
+                        "type": "string",
+                        "description": instance_desc,
+                    },
+                    "timeout_s": {
+                        "type": "number",
+                        "description": f"Seconds to wait for the sync to settle (default {DEFAULT_SYNC_TIMEOUT_S}, max {MAX_TIMEOUT_S}).",
+                    },
+                },
+            },
+        },
+    ]
+
 
 TOOL_HANDLERS = {"remote_exec": remote_exec, "sync_flush": sync_flush}
 
@@ -440,7 +544,11 @@ def _handle_request(config: Config, msg: dict[str, Any]) -> dict[str, Any] | Non
         return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
 
     if method == "tools/list":
-        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": TOOLS}}
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {"tools": build_tools(config)},
+        }
 
     if method == "tools/call":
         params = msg.get("params", {})
