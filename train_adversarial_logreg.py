@@ -188,6 +188,10 @@ def parse_args():
         )
     if not args.resume and args.seed is None:
         p.error("--seed required for a fresh run or --fork-from.")
+    if args.log_interval <= 0:
+        p.error(f"--log-interval must be positive, got {args.log_interval}.")
+    if args.ckpt_interval <= 0:
+        p.error(f"--ckpt-interval must be positive, got {args.ckpt_interval}.")
     if args.ckpt_interval % args.log_interval != 0:
         p.error(
             f"--ckpt-interval ({args.ckpt_interval}) must be an even multiple of "
@@ -1074,6 +1078,7 @@ def main(args):
 
     t0 = time.time()
     rate_meter = EMARateMeter(start_iter)
+    last_logged_iter = None
     try:
         for record in train_steps(
             model,
@@ -1103,6 +1108,7 @@ def main(args):
             ):
                 me = eval_max_err(model, gen, device=device)
                 _append_history(hist_path, _history_entry(record, max_err=me))
+                last_logged_iter = record.iter
                 rate = rate_meter.update(record.iter)
                 print(
                     f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
@@ -1130,12 +1136,21 @@ def main(args):
     # final logging + save
     save(last_path)
     me = eval_max_err(model, gen, device=device)
-    _append_history(
-        hist_path,
-        _history_entry(
-            record, loss=best_loss, l_task=None, l_probe=None, max_err=me, final=True
-        ),
-    )
+    # Skip the marker if this iter was already logged above (the common case
+    # now that the loop always logs its own last iter) -- avoids writing two
+    # history lines for the same iter.
+    if record.iter != last_logged_iter:
+        _append_history(
+            hist_path,
+            _history_entry(
+                record,
+                loss=best_loss,
+                l_task=None,
+                l_probe=None,
+                max_err=me,
+                final=True,
+            ),
+        )
     print(
         f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
         f"elapsed {time.time()-t0:.1f}s"
