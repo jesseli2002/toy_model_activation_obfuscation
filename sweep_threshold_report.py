@@ -22,19 +22,22 @@ shape is still changing, so argparse would just be churn for now. Plots are
 written under plot/sweep3/; a summary table prints to console."""
 
 RUN_GLOB = "sweep3_lam*_tr*"
-EXCLUDE_LAMBDAS = {}  # lam0 sweep is still running
-EXCLUDE_TRIAL_ABOVE = 9  # for partial trials greater than this index
+EXCLUDE_LAMBDAS = {"0.001"}  #  for partial lambdas currently running
+EXCLUDE_TRIAL_ABOVE = 10  # for partial trials greater than this index
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
-PERCENTILES = [10, 25, 50, 75, 90]
-N_PER_PERCENTILE = 3  # a few runs per bucket, not just the nearest one, so a single outlier run doesn't set the impression for its whole percentile
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see EVAL_NOISE_MULT for the probe-eval analog, tuned separately)
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
+LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
+import numpy as np
+
+PERCENTILES = np.arange(28, 95, 7)
+N_PER_PERCENTILE = 6  # a few runs per bucket, not just the nearest one, so a single outlier run doesn't set the impression for its whole percentile
+PROBE_N_TRAIN = 10000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 PROBE_N_TEST = 10_000  # per class
-PROBE_BACKEND = "auto"
 PROBE_BACKEND = "newton"
-EVAL_NOISE_MULT = 0.5
+PROBE_EVAL_NOISE_MULT = 0.5  # multiplier on resid_noise_std when retraining probe
 SEED = 20260718
 OUT_DIR = "plot/sweep3"
 
@@ -113,7 +116,7 @@ def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | 
     adv_cfg = resolve_adv_config(ck)
     if adv_cfg is None:
         return None
-    eval_noise_std = adv_cfg.resid_noise_std * EVAL_NOISE_MULT
+    eval_noise_std = adv_cfg.resid_noise_std * PROBE_EVAL_NOISE_MULT
     _metrics, plot_inputs = binary_probe_metrics_all_layers(
         model,
         1.0,

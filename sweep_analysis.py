@@ -23,13 +23,14 @@ PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
 
-LOSS_THRESHOLD = 0.05  # task "succeeded" iff final loss below this -- placeholder
+LOSS_THRESHOLD = 0.01  # task "succeeded" iff final loss below this -- placeholder
 AUROC_THRESHOLDS = [
     0.6,
     0.75,
+    0.9,
 ]  # ascending; splits "succeeded" runs into len+1 hiding bins -- placeholder
 
-SYMLOG_LINTHRESH = 0.002  # linear-region half-width (in ratio units) around lam=0
+SYMLOG_LINTHRESH = 0.001  # linear-region half-width (in ratio units) around lam=0
 
 import glob
 import json

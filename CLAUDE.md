@@ -68,8 +68,7 @@ This environment is in a sandbox. Writes, sensitive reads, and network access ar
     - `black` is automatically run as a hook; no need to manually run it. `black --check <file>` doubles as a read-only syntax check.
 - For non-trivial Python, write it to a temporary file and run `python tmp.py` rather than `python -c "…"`. Inline `-c` trips the command-safety classifier and forces a permission prompt — specifically a newline-then-`#` comment inside the quoted arg, or an embedded deny-listed path. Reserve `-c` for short, comment-free, single-line snippets.
 - If you run into permissions issues, prefer trying to solve the cause (and ask the user to help debug permissions), rather than working around the symptoms and trying a bunch of techniques to get past them.
-- Use the Github MCP servers to push features, instead of Bash git/gh commands.
-    - There are two identified servers (github-readonly and github-write): One dedicated for reading (highly permissive), and one dedicated for writing (highly restricted). USE THE READONLY SERVER IF ONLY READING; OTHERWISE THE COMMAND MAY GET REJECTED
-    - For git push, a custom git-push-broker MCP is used; the one from GitHub doesn't preserve commit history properly.
+- Use the Github MCP server to push features, instead of Bash git/gh commands.
+    - For git push, a custom git-push-broker MCP is used; the GitHub one doesn't preserve commit history properly.
 - If you get this error or something like it on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs occasionally when the machine is updated. Stop what you're doing and tell the user; there's a known fix which needs user intervention
 - If asking user to rm files - give a trash command instead since user disabled rm in bashrc.

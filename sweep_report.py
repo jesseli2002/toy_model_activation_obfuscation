@@ -6,16 +6,16 @@ shape is still changing, so argparse would just be churn for now. Prints to
 console / plt.show() only; nothing is written to disk.
 """
 
-RUN_TAGS = [f"sweep3_lam0.1_tr{i}" for i in range(10)]
+# RUN_TAGS = [f"sweep3_lam0_tr{i}" for i in range(10)]
 # RUN_TAGS = [f"sweep3_lam0.05_tr{i}" for i in range(10)]
-# RUN_TAGS = [f"sweep3_lam0.01_tr{i}" for i in range(10)]
+RUN_TAGS = [f"sweep3_lam0.01_tr{i}" for i in range(10)]
 # RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running min of loss over the past this-many iters
 EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
 N_TRAIN = 20_000  # per class, fit size for the refit probe
 N_TEST = 50_000  # per class, eval size for the refit probe
-PROBE_BACKEND = "auto"  # see adversarial_report.py's --probe-backend
+PROBE_BACKEND = "newton"  # see adversarial_report.py's --probe-backend
 
 import json
 import os
