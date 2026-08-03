@@ -476,11 +476,14 @@ def _restore_rng_state(rck: dict, device) -> torch.Generator:
             "[error] checkpoint predates RNG-state checkpointing and cannot "
             "be exactly --resume'd. Use --fork-from instead (reseeds fresh)."
         )
-    torch.set_rng_state(rck["rng_state"])
+    # RNG state tensors must be CPU ByteTensors regardless of which device
+    # they manage -- but ResidualMLP.load's map_location=device moves every
+    # tensor in the checkpoint (these included) onto that device, so undo it.
+    torch.set_rng_state(rck["rng_state"].cpu())
     if rck["cuda_rng_state"] is not None:
-        torch.cuda.set_rng_state(rck["cuda_rng_state"])
+        torch.cuda.set_rng_state(rck["cuda_rng_state"].cpu())
     gen = torch.Generator(device=device)
-    gen.set_state(rck["gen_state"])
+    gen.set_state(rck["gen_state"].cpu())
     return gen
 
 
