@@ -42,10 +42,9 @@ from adversarial_report import (
     _resolve_adv_config,
     plot_learned_curves,
 )
-from data import sample_fixed_c
-from paths import ckpt_dir, log_dir
+from paths import log_dir
 from probe_backend import resolve_probe_backend
-from probe_lib import LinearBoundary, capture_layers, load_model
+from probe_lib import LinearBoundary, load_model
 from probe_lib import plot_probe as plot_probe_separation
 from probe_lib import plot_probe_pca as plot_probe_pca_separation
 
@@ -102,31 +101,38 @@ def _final_loss(tag: str) -> float:
     return float(_running_mean(iters, losses, LOSS_LOWPASS_WINDOW)[-1])
 
 
-def _probe_auroc(tag: str, eval_n: int = 4096, seed: int = 0) -> float | None:
-    """Probe AUROC at the run's CKPT checkpoint, scored with the probe
-    (probe_w/probe_b/probe_layers) already fit and stored in the checkpoint --
-    cheap enough to run over every candidate run for sorting/percentile
-    selection. See _make_probe_plots for the heavier, freshly-refit probe
-    used for the actual diagnostic plots."""
+def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | None:
+    """Fit a fresh probe at PROBE_LAYER for `tag`'s CKPT checkpoint and return
+    its `plot_inputs` (see _binary_probe_metrics_all_layers) -- the single
+    source of truth for both AUROC sorting/filenames and the by_auroc
+    diagnostic plots, run once per run. (Previously these used two different
+    probes -- the checkpoint's own stored training-time probe for sorting vs.
+    a freshly-refit one for the plots -- so the AUROC in a plot's filename
+    never matched the AUROC in its own title.) None for a checkpoint with no
+    adversarial config (nothing to probe for)."""
     model, ck = load_model(tag, CKPT, DEVICE)
-    if "probe_w" not in ck:
+    adv_cfg = _resolve_adv_config(ck)
+    if adv_cfg is None:
         return None
-    gen = torch.Generator(device=DEVICE).manual_seed(seed)
-    noise_gen = torch.Generator(device=DEVICE).manual_seed(seed)
-    num_x = model.num_x
-    xf_lo, _ = sample_fixed_c(eval_n, num_x, 1.0, generator=gen, device=DEVICE)
-    xf_hi, _ = sample_fixed_c(eval_n, num_x, 2.0, generator=gen, device=DEVICE)
-    eval_x = torch.cat([xf_lo, xf_hi], dim=0)
-    eval_label = np.concatenate([np.zeros(eval_n), np.ones(eval_n)])
-    w = ck["probe_w"].to(DEVICE)
-    b = ck["probe_b"].to(DEVICE)
-    noise_std = ck["adv_config"]["resid_noise_std"] * EVAL_NOISE_MULT
-    with torch.no_grad():
-        feats = capture_layers(
-            model, eval_x, ck["probe_layers"], noise_std=noise_std, generator=noise_gen
-        )
-        s = (feats @ w + b).cpu().numpy()
-    return roc_auc_score(eval_label, s)
+    eval_noise_std = adv_cfg.resid_noise_std * EVAL_NOISE_MULT
+    _metrics, plot_inputs = _binary_probe_metrics_all_layers(
+        model,
+        1.0,
+        2.0,
+        [PROBE_LAYER],
+        PROBE_N_TRAIN,
+        PROBE_N_TEST,
+        g,
+        probe_backend_name,
+        desc=tag,
+        eval_noise_std=eval_noise_std,
+    )
+    return plot_inputs[PROBE_LAYER]
+
+
+def _probe_auroc(pi: dict) -> float:
+    probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
+    return roc_auc_score(pi["y_te"], probe.score(pi["X_te"]))
 
 
 def _select_percentile_indices(
@@ -156,31 +162,16 @@ def _make_curve_plots(tags_by_loss: list[str], losses: list[float]) -> None:
             plot_learned_curves(model, label, out_dir)
 
 
-def _make_probe_plots(tags_by_auroc: list[str], aurocs: list[float]) -> None:
+def _make_probe_plots(
+    tags_by_auroc: list[str], aurocs: list[float], probe_fits: dict[str, dict]
+) -> None:
     n = len(tags_by_auroc)
     out_dir = os.path.join(OUT_DIR, "by_auroc")
     os.makedirs(out_dir, exist_ok=True)
-    g = torch.Generator(device=DEVICE).manual_seed(SEED)
-    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
     for p, idxs in _select_percentile_indices(n, PERCENTILES, N_PER_PERCENTILE).items():
         for idx in idxs:
             tag = tags_by_auroc[idx]
-            model, ck = load_model(tag, CKPT, DEVICE)
-            adv_cfg = _resolve_adv_config(ck)
-            eval_noise_std = adv_cfg.resid_noise_std * EVAL_NOISE_MULT
-            _metrics, plot_inputs = _binary_probe_metrics_all_layers(
-                model,
-                1.0,
-                2.0,
-                [PROBE_LAYER],
-                PROBE_N_TRAIN,
-                PROBE_N_TEST,
-                g,
-                probe_backend_name,
-                desc=tag,
-                eval_noise_std=eval_noise_std,
-            )
-            pi = plot_inputs[PROBE_LAYER]
+            pi = probe_fits[tag]
             label = f"p{p:02d}_rank{idx:03d}_{tag}_auroc{aurocs[idx]:.4f}"
             # LinearBoundary scores as `w . x + b`, not `w . x - threshold`, so
             # its bias is the midpoint threshold negated (matches
@@ -202,11 +193,18 @@ def main():
     )
 
     losses = {t: _final_loss(t) for t in tags}
-    aurocs = {t: _probe_auroc(t) for t in tags}
+
+    g = torch.Generator(device=DEVICE).manual_seed(SEED)
+    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
+    probe_fits = {t: _fit_probe(t, g, probe_backend_name) for t in tags}
+    aurocs = {
+        t: (_probe_auroc(pi) if pi is not None else None)
+        for t, pi in probe_fits.items()
+    }
 
     missing = [t for t in tags if aurocs[t] is None]
     if missing:
-        print(f"no probe in checkpoint, excluded from AUROC ranking: {missing}")
+        print(f"no adversarial config, excluded from AUROC ranking: {missing}")
 
     tags_by_loss = sorted(tags, key=lambda t: losses[t])
     tags_by_auroc = sorted(
@@ -220,7 +218,7 @@ def main():
         print(f"{t:30s} {losses[t]:12.6g} {a_str:>8s}")
 
     _make_curve_plots(tags_by_loss, [losses[t] for t in tags_by_loss])
-    _make_probe_plots(tags_by_auroc, [aurocs[t] for t in tags_by_auroc])
+    _make_probe_plots(tags_by_auroc, [aurocs[t] for t in tags_by_auroc], probe_fits)
 
 
 if __name__ == "__main__":
