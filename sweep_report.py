@@ -48,12 +48,18 @@ def _load_history(tag: str) -> tuple[np.ndarray, np.ndarray]:
     return np.array(iters), np.array(losses)
 
 
-def _running_min(values: np.ndarray, window: int) -> np.ndarray:
-    """Causal low-pass: minimum value over the trailing `window` points,
-    ending at (and including) each point."""
+def _running_min(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarray:
+    """Causal low-pass: minimum value among logged points within the trailing
+    `window` iterations (not `window` logged points -- --log-interval
+    defaults to 100 and can vary run to run, so this has to key off `iters`,
+    not array index)."""
     out = np.empty_like(values)
-    for i in range(len(values)):
-        out[i] = values[max(0, i - window + 1) : i + 1].min()
+    lo = 0
+    for i in range(len(iters)):
+        cutoff = iters[i] - window + 1
+        while iters[lo] < cutoff:
+            lo += 1
+        out[i] = values[lo : i + 1].min()
     return out
 
 
@@ -90,7 +96,7 @@ def main():
 
     for tag in RUN_TAGS:
         iters, losses = _load_history(tag)
-        filtered = _running_min(losses, LOSS_LOWPASS_WINDOW)
+        filtered = _running_min(iters, losses, LOSS_LOWPASS_WINDOW)
         ax_loss.plot(iters, filtered, label=tag, alpha=0.8)
     ax_loss.set_xlabel("iter")
     ax_loss.set_ylabel(f"loss (min over past {LOSS_LOWPASS_WINDOW} iters)")
