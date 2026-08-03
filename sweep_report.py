@@ -13,6 +13,8 @@ RUN_TAGS = [f"sweep3_lam0.1_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running min of loss over the past this-many iters
 EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
+N_TRAIN = 20_000  # per class, fit size for the refit probe
+PROBE_BACKEND = "auto"  # see adversarial_report.py's --probe-backend
 
 import json
 import os
@@ -22,7 +24,8 @@ import numpy as np
 import torch
 
 from paths import log_dir
-from probe_lib import StoredProbeScorer
+from probe_backend import resolve_probe_backend
+from probe_lib import RefitProbeScorer
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 0
@@ -73,8 +76,15 @@ def main():
     ax_loss.legend(fontsize=8)
     ax_loss.grid(True, alpha=0.3)
 
-    print(f"probe AUROC at {CKPT} checkpoint:")
-    scorer = StoredProbeScorer(CKPT, DEVICE, eval_noise_mult=EVAL_NOISE_MULT, seed=SEED)
+    print(f"refit probe AUROC at {CKPT} checkpoint:")
+    scorer = RefitProbeScorer(
+        CKPT,
+        DEVICE,
+        n_train=N_TRAIN,
+        probe_backend_name=resolve_probe_backend(PROBE_BACKEND, DEVICE),
+        eval_noise_mult=EVAL_NOISE_MULT,
+        seed=SEED,
+    )
     aurocs = {tag: scorer.auroc(tag) for tag in RUN_TAGS}
     for tag in RUN_TAGS:
         if aurocs[tag] is None:

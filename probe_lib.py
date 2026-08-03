@@ -196,6 +196,73 @@ def stored_probe_auroc(
     return boundary_auroc(boundary, feats.cpu().numpy(), eval_set.y)
 
 
+@torch.no_grad()
+def refit_probe_auroc(
+    model: ResidualMLP,
+    ck: dict,
+    eval_set: BinaryEvalSet,
+    *,
+    n_train: int,
+    probe_backend_name: str,
+    eval_noise_mult: float = 1.0,
+    generator: torch.Generator | None = None,
+) -> float | None:
+    """AUROC of a probe freshly fit against the checkpoint (over the same
+    probed layers as the checkpoint's own stored probe, if any), scored over
+    `eval_set`. None when the checkpoint carries no probe, since there is
+    then no `probe_layers` to fit against.
+
+    Contrast `stored_probe_auroc`, which scores the probe the model was
+    actually trained against -- this instead answers "how visible is c to a
+    probe trained now," which stays meaningful even if the model has learned
+    to throw off the specific probe it saw during training."""
+    from probe_backend import build_probe_pipeline
+
+    stored = stored_probe(ck, str(next(model.parameters()).device))
+    if stored is None:
+        return None
+    _, layers = stored
+    adv_cfg = resolve_adv_config(ck)
+    assert adv_cfg is not None, "checkpoint has a stored probe but no adv_config"
+
+    device = str(next(model.parameters()).device)
+    train_ds = binary_dataset_all_layers(
+        model,
+        model.num_x,
+        n_train,
+        C_LOW,
+        C_HIGH,
+        layers,
+        generator,
+        device,
+        noise_std=adv_cfg.resid_noise_std,
+    )
+    r_lo_tr = torch.cat([train_ds[l][0] for l in layers], dim=-1)
+    r_hi_tr = torch.cat([train_ds[l][1] for l in layers], dim=-1)
+    X_tr = torch.cat([r_lo_tr, r_hi_tr], dim=0)
+    y_tr = torch.cat(
+        [
+            torch.zeros(n_train, dtype=torch.bool, device=device),
+            torch.ones(n_train, dtype=torch.bool, device=device),
+        ]
+    )
+    pipeline = build_probe_pipeline(
+        C=PROBE_C, max_iter=2000, backend=probe_backend_name
+    )
+    pipeline.fit(X_tr, y_tr)
+    w, b = pipeline.get_affine(device)
+    boundary = LinearBoundary(w.cpu().numpy(), float(b.cpu()))
+
+    feats = capture_layers(
+        model,
+        eval_set.x,
+        layers,
+        noise_std=adv_cfg.resid_noise_std * eval_noise_mult,
+        generator=generator,
+    )
+    return boundary_auroc(boundary, feats.cpu().numpy(), eval_set.y)
+
+
 class StoredProbeScorer:
     """Scores many runs' stored probes against one shared eval set.
 
@@ -232,6 +299,52 @@ class StoredProbeScorer:
             model,
             ck,
             self.eval_set,
+            eval_noise_mult=self.eval_noise_mult,
+            generator=self.g,
+        )
+
+
+class RefitProbeScorer:
+    """Like `StoredProbeScorer`, but scores a probe freshly fit against each
+    run's checkpoint (see `refit_probe_auroc`) instead of the one recorded
+    during training. Shares the same lazily-built eval set and RNG so scores
+    stay comparable across a sweep."""
+
+    def __init__(
+        self,
+        ckpt: str,
+        device: str,
+        *,
+        n_train: int = 20_000,
+        probe_backend_name: str,
+        eval_n: int = 4096,
+        eval_noise_mult: float = 1.0,
+        seed: int = 0,
+    ):
+        self.ckpt = ckpt
+        self.device = device
+        self.n_train = n_train
+        self.probe_backend_name = probe_backend_name
+        self.eval_n = eval_n
+        self.eval_noise_mult = eval_noise_mult
+        self.g = torch.Generator(device=device).manual_seed(seed)
+        self.eval_set: BinaryEvalSet | None = None
+
+    def auroc(self, tag: str) -> float | None:
+        """AUROC of a probe freshly fit against `tag`'s checkpoint, or None
+        if it carries no stored probe (and hence no `probe_layers` to fit
+        against)."""
+        model, ck = load_model(tag, self.ckpt, self.device)
+        if self.eval_set is None:
+            self.eval_set = make_binary_eval_set(
+                model.config.num_x, self.eval_n, generator=self.g, device=self.device
+            )
+        return refit_probe_auroc(
+            model,
+            ck,
+            self.eval_set,
+            n_train=self.n_train,
+            probe_backend_name=self.probe_backend_name,
             eval_noise_mult=self.eval_noise_mult,
             generator=self.g,
         )
