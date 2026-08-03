@@ -8,6 +8,7 @@ plans/rare_flags_config_plan.md: load_run_config's missing-required-key
 error, and the config.json write/read helpers."""
 
 import json
+import os
 import subprocess
 import sys
 import warnings
@@ -19,6 +20,7 @@ import torch
 from config import ForkedFrom, LogregAdversarialConfig
 from conftest import _logreg_config_file_fields, _make_adv_config, _make_model_config
 from train_adversarial_logreg import (
+    CheckpointWriter,
     TrainRecord,
     _append_history,
     _check_config_json,
@@ -762,3 +764,84 @@ class TestClipGradNormPerBlock:
     def test_no_grads_anywhere_is_a_noop(self):
         clip_grad_norm_per_block_(self._blocks(), 1.0)
         clip_grad_norm_per_block_(torch.nn.ModuleList([]), 1.0)
+
+
+class TestCheckpointWriter:
+    """The consistency guarantees the training loop relies on: history never
+    runs ahead of last.pt, and last.pt names a checkpoint that exists."""
+
+    def _writer(self, tmp_path, keep_every, saved=None):
+        ckpt_dir = tmp_path / "checkpoints"
+        ckpt_dir.mkdir()
+        hist = tmp_path / "history.jsonl"
+
+        def save_fn(path):
+            Path(path).write_text(path)
+            if saved is not None:
+                saved.append(path)
+
+        return (
+            CheckpointWriter(str(ckpt_dir), str(hist), save_fn, keep_every),
+            ckpt_dir,
+            hist,
+        )
+
+    def _numbered(self, ckpt_dir):
+        return sorted(int(p.stem[len("iter_") :]) for p in ckpt_dir.glob("iter_*.pt"))
+
+    def test_history_is_buffered_until_a_checkpoint(self, tmp_path):
+        writer, ckpt_dir, hist = self._writer(tmp_path, keep_every=10)
+        writer.log({"iter": 0})
+        writer.log({"iter": 10})
+        assert not hist.exists()
+
+        writer.checkpoint(10)
+        assert [json.loads(l)["iter"] for l in hist.read_text().splitlines()] == [0, 10]
+        assert (ckpt_dir / "iter_10.pt").exists()
+
+    def test_last_pt_is_a_relative_symlink_to_the_newest_checkpoint(self, tmp_path):
+        writer, ckpt_dir, _ = self._writer(tmp_path, keep_every=10)
+        writer.checkpoint(10)
+        writer.checkpoint(20)
+        last = ckpt_dir / "last.pt"
+        assert os.readlink(last) == "iter_20.pt"  # relative: run dir stays movable
+        assert last.resolve() == (ckpt_dir / "iter_20.pt").resolve()
+
+    def test_replaces_a_plain_last_pt_written_by_an_older_run(self, tmp_path):
+        writer, ckpt_dir, _ = self._writer(tmp_path, keep_every=10)
+        (ckpt_dir / "last.pt").write_text("stale regular file")
+        writer.checkpoint(10)
+        assert (ckpt_dir / "last.pt").is_symlink()
+
+    def test_non_snapshot_checkpoints_are_rotated_away(self, tmp_path):
+        writer, ckpt_dir, _ = self._writer(tmp_path, keep_every=20)
+        writer.checkpoint(10)
+        writer.checkpoint(20)  # a --save-every-n multiple: kept
+        writer.checkpoint(30)
+        writer.checkpoint(40)
+        # 10 and 30 rotated away by the checkpoint that followed them; 40 is
+        # still the live last.pt target.
+        assert self._numbered(ckpt_dir) == [20, 40]
+        assert (ckpt_dir / "last.pt").resolve() == (ckpt_dir / "iter_40.pt").resolve()
+
+    def test_keep_every_zero_keeps_only_the_live_checkpoint(self, tmp_path):
+        writer, ckpt_dir, _ = self._writer(tmp_path, keep_every=0)
+        for it in (10, 20, 30):
+            writer.checkpoint(it)
+        assert self._numbered(ckpt_dir) == [30]
+
+    def test_checkpoint_writes_through_a_temporary_file(self, tmp_path):
+        saved = []
+        writer, ckpt_dir, _ = self._writer(tmp_path, keep_every=10, saved=saved)
+        writer.checkpoint(10)
+        # the save itself never touches the final path, so a kill mid-write
+        # can't truncate a checkpoint last.pt might already point at
+        assert saved == [str(ckpt_dir / "iter_10.pt.tmp")]
+        assert not list(ckpt_dir.glob("*.tmp"))
+
+    def test_tracks_the_last_logged_iter_across_flushes(self, tmp_path):
+        writer, _, _ = self._writer(tmp_path, keep_every=10)
+        assert writer.last_logged_iter is None
+        writer.log({"iter": 10})
+        writer.checkpoint(10)
+        assert writer.last_logged_iter == 10  # survives the buffer flush
