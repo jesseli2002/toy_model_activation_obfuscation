@@ -3,6 +3,8 @@ The two main entry points are:
 - train_adversarial_logreg.py (training models)
 - adversarial_report.py (reporting on results)
 
+As of writing, there is active development on sweep_*.py (various reporting scripts for sweeps) - while the scripts themselves haven't stabilized, they should still be considered when refactoring.
+
 ### Key directories
 - vast_setup/
 	- Scripts to setup and manage a VastAI instance. Gitignored here and tracked as a separate repo; to work in it, user must /cd into vast_setup/; otherwise your worktree changes will not be reflected.

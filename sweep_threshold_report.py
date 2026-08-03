@@ -15,7 +15,8 @@ shape is still changing, so argparse would just be churn for now. Plots are
 written under plot/sweep3/; a summary table prints to console."""
 
 RUN_GLOB = "sweep3_lam*_tr*"
-EXCLUDE_LAMBDAS = {0.0}  # lam0 sweep is still running
+EXCLUDE_LAMBDAS = {}  # lam0 sweep is still running
+EXCLUDE_TRIAL_ABOVE = 9  # for partial trials greater than this index
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
@@ -24,7 +25,8 @@ N_PER_PERCENTILE = 3  # a few runs per bucket, not just the nearest one, so a si
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "auto"
-EVAL_NOISE_MULT = 1.0
+PROBE_BACKEND = "newton"
+EVAL_NOISE_MULT = 0.5
 SEED = 20260718
 OUT_DIR = "plot/sweep3"
 
@@ -62,6 +64,8 @@ def _discover_tags() -> list[str]:
             continue
         if float(m.group(1)) in EXCLUDE_LAMBDAS:
             continue
+        if int(m.group(2)) > EXCLUDE_TRIAL_ABOVE:
+            continue
         tags.append(tag)
     return tags
 
@@ -81,24 +85,25 @@ def _load_history(tag: str) -> tuple[np.ndarray, np.ndarray]:
     return np.array(iters), np.array(losses)
 
 
-def _running_mean(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarray:
-    """Causal low-pass: mean value among logged points within the trailing
-    `window` iterations (not `window` logged points -- --log-interval
-    defaults to 100 and can vary run to run, so this has to key off `iters`,
-    not array index). Matches sweep_report.py's smoothing."""
-    out = np.empty_like(values, dtype=float)
-    lo = 0
-    for i in range(len(iters)):
-        cutoff = iters[i] - window + 1
-        while iters[lo] < cutoff:
-            lo += 1
-        out[i] = values[lo : i + 1].mean()
-    return out
+# def _running_mean(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarray:
+#     """Causal low-pass: mean value among logged points within the trailing
+#     `window` iterations (not `window` logged points -- --log-interval
+#     defaults to 100 and can vary run to run, so this has to key off `iters`,
+#     not array index). Matches sweep_report.py's smoothing."""
+#     out = np.empty_like(values, dtype=float)
+#     lo = 0
+#     for i in range(len(iters)):
+#         cutoff = iters[i] - window + 1
+#         while iters[lo] < cutoff:
+#             lo += 1
+#         out[i] = values[lo : i + 1].mean()
+#     return out
 
 
 def _final_loss(tag: str) -> float:
     iters, losses = _load_history(tag)
-    return float(_running_mean(iters, losses, LOSS_LOWPASS_WINDOW)[-1])
+    return float(losses[-1])
+    # return float(_running_mean(iters, losses, LOSS_LOWPASS_WINDOW)[-1])
 
 
 def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | None:
