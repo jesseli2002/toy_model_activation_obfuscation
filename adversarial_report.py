@@ -119,12 +119,11 @@ import torch
 from matplotlib.collections import PolyCollection
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
 from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score, roc_auc_score
+from sklearn.metrics import r2_score
 from tqdm import tqdm
 
 from analytic import reference_task_losses
 from data import sample_batch, sample_fixed_c
-from model import ResidualMLP
 from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
@@ -132,11 +131,13 @@ from probe_backend import build_probe_pipeline, resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
     boundary_accuracy,
-    capture_layers,
     capture_layers_dict,
     forward_steered,
     load_model,
+    load_model_path,
+    make_binary_eval_set,
     save_plot,
+    stored_probe_auroc,
 )
 from probe_lib import plot_probe as plot_probe_separation
 from probe_lib import plot_probe_pca as plot_probe_pca_separation
@@ -321,12 +322,10 @@ def _auroc_snapshots(
 
     Snapshots are approximately-uniformly strided down to ~n_snapshots (a
     simple stride, not an exact pick) since loading + a forward pass per
-    snapshot is the expensive part. All snapshots are scored against the same
-    fixed c=1/c=2 pair (not the continuous c~U[1,2] training distribution),
-    sampled once and reused across snapshots for a trace that's comparable
-    point to point -- the same binary contrast used everywhere else in this
-    module, with `eval_noise_mult` * each snapshot's own
-    adv_config.resid_noise_std injected into the eval forward pass."""
+    snapshot is the expensive part. All snapshots share one eval set, so the
+    trace is comparable point to point (see probe_lib.BinaryEvalSet), with
+    `eval_noise_mult` * each snapshot's own adv_config.resid_noise_std
+    injected into the eval forward pass."""
     paths = sorted(
         glob.glob(os.path.join(ckpt_dir(tag), "iter_*.pt")),
         key=lambda p: int(os.path.basename(p)[len("iter_") : -len(".pt")]),
@@ -334,39 +333,21 @@ def _auroc_snapshots(
     stride = max(1, len(paths) // n_snapshots)
     paths = paths[::stride]
 
-    gen = torch.Generator(device=device).manual_seed(seed)
-    noise_gen = torch.Generator(device=device).manual_seed(seed)
-    eval_x = eval_label = None
+    g = torch.Generator(device=device).manual_seed(seed)
+    eval_set = None
     out = []
     for path in paths:
-        model, ck = ResidualMLP.load(path, map_location=device)
-        if "probe_w" not in ck:
-            continue  # not a logreg-probe checkpoint (some have no adv_config at all)
-        model = model.to(device).eval()
-        if eval_x is None:
-            # "probe_w" present (checked above) guarantees this is a
-            # train_adversarial_logreg.py checkpoint written by
-            # save_checkpoint, so adv_config is always there -- fail loudly
-            # (direct indexing) rather than silently falling back on a
-            # corrupt/unexpected checkpoint.
-            num_x = model.config.num_x
-            xf_lo, _ = sample_fixed_c(eval_n, num_x, 1.0, generator=gen, device=device)
-            xf_hi, _ = sample_fixed_c(eval_n, num_x, 2.0, generator=gen, device=device)
-            eval_x = torch.cat([xf_lo, xf_hi], dim=0)
-            eval_label = np.concatenate([np.zeros(eval_n), np.ones(eval_n)])
-        w = ck["probe_w"].to(device)
-        b = ck["probe_b"].to(device)
-        noise_std = ck["adv_config"]["resid_noise_std"] * eval_noise_mult
-        with torch.no_grad():
-            feats = capture_layers(
-                model,
-                eval_x,
-                ck["probe_layers"],
-                noise_std=noise_std,
-                generator=noise_gen,
+        model, ck = load_model_path(path, device)
+        if eval_set is None:
+            eval_set = make_binary_eval_set(
+                model.config.num_x, eval_n, generator=g, device=device
             )
-            s = (feats @ w + b).cpu().numpy()
-        out.append((ck["iter"], roc_auc_score(eval_label, s)))
+        auroc = stored_probe_auroc(
+            model, ck, eval_set, eval_noise_mult=eval_noise_mult, generator=g
+        )
+        if auroc is None:
+            continue  # not a logreg-probe checkpoint (some have no adv_config at all)
+        out.append((ck["iter"], auroc))
     return out
 
 

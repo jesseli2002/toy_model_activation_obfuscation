@@ -84,15 +84,23 @@ def boundary_auroc(
     return float(roc_auc_score(y, b.score(X)))
 
 
-def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
-    """Returns (model, full checkpoint dict) -- the dict carries any non-
-    architecture fields (opt state, iter, adversarial-run metadata, ...) that
-    rode along in the checkpoint; architecture lives on model.config."""
-    path = os.path.join(ckpt_dir(tag), f"{ckpt}.pt")
+def load_model_path(path: str, device: str) -> tuple[ResidualMLP, dict]:
+    """Returns (model, full checkpoint dict) for a checkpoint path -- the dict
+    carries any non-architecture fields (opt state, iter, adversarial-run
+    metadata, ...) that rode along in the checkpoint; architecture lives on
+    model.config. Use when walking checkpoint files directly, e.g. the
+    numbered iter_*.pt snapshots; see `load_model` to load a run's named
+    checkpoint by tag."""
     model, ck = ResidualMLP.load(path, map_location=device)
     model = model.to(device)
     model.eval()
     return model, ck
+
+
+def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
+    """`load_model_path` for a run's named checkpoint (runs/<tag>/checkpoints/
+    <ckpt>.pt)."""
+    return load_model_path(os.path.join(ckpt_dir(tag), f"{ckpt}.pt"), device)
 
 
 @torch.no_grad()
