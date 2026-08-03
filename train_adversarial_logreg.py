@@ -188,6 +188,12 @@ def parse_args():
         )
     if not args.resume and args.seed is None:
         p.error("--seed required for a fresh run or --fork-from.")
+    if args.ckpt_interval % args.log_interval != 0:
+        p.error(
+            f"--ckpt-interval ({args.ckpt_interval}) must be an even multiple of "
+            f"--log-interval ({args.log_interval}), so every checkpoint iter has "
+            f"a corresponding history log entry."
+        )
 
     arch_flags = {
         "num_x": "--num-x",
@@ -1087,7 +1093,14 @@ def main(args):
                 best_loss = record.loss
                 save(best_path)
 
-            if record.iter % args.log_interval == 0:
+            # Also log the run's actual last iteration (max_iters - 1) even if
+            # it isn't a log_interval multiple -- otherwise the final,
+            # unconditional last.pt save below (iter max_iters - 1) has no
+            # matching history entry with real l_task/l_probe to plot.
+            if (
+                record.iter % args.log_interval == 0
+                or record.iter == args.max_iters - 1
+            ):
                 me = eval_max_err(model, gen, device=device)
                 _append_history(hist_path, _history_entry(record, max_err=me))
                 rate = rate_meter.update(record.iter)
