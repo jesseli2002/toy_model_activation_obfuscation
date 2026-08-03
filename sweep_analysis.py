@@ -14,14 +14,26 @@ LOSS_THRESHOLD / AUROC_THRESHOLDS are provisional -- a separate exercise is
 picking the final values -- so they're constants here, not a CLI, alongside
 everything else that may still change. Prints a summary table; plt.show()
 only, nothing written to disk.
+
+"Loss" and "AUROC" are both freshly recomputed at CKPT -- loss via
+data.eval_task_loss (deliberately excluding the adversarial/probe penalty,
+since this only cares about task performance), and AUROC via a freshly
+refit probe at PROBE_LAYER -- rather than read from history.jsonl or the
+checkpoint's own stored training-time probe. See sweep_threshold_report.py,
+which uses the same recomputation for the same reasons (some runs' final
+checkpoint predates their last history record).
 """
 
 RUN_GLOB = "sweep3_lam*_tr*"
 EXCLUDE_LAMBDAS: set[float] = set()
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
-LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
-EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
+TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
+TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std
+PROBE_N_TRAIN = 5000  # per class; refit per run, across many runs in a sweep
+PROBE_N_TEST = 10_000  # per class
+PROBE_BACKEND = "newton"
+EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
 
 LOSS_THRESHOLD = 0.01  # task "succeeded" iff final loss below this -- placeholder
 AUROC_THRESHOLDS = [
@@ -33,7 +45,6 @@ AUROC_THRESHOLDS = [
 SYMLOG_LINTHRESH = 0.001  # linear-region half-width (in ratio units) around lam=0
 
 import glob
-import json
 import os
 import re
 
@@ -41,8 +52,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from paths import log_dir
-from probe_lib import StoredProbeScorer
+from data import eval_task_loss
+from probe_backend import resolve_probe_backend
+from probe_lib import (
+    LinearBoundary,
+    binary_probe_metrics_all_layers,
+    boundary_auroc,
+    load_model,
+    resolve_adv_config,
+)
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 0
@@ -82,39 +100,55 @@ def _discover_tags_by_lambda() -> dict[float, list[str]]:
     return by_lambda
 
 
-def _load_history(tag: str) -> tuple[np.ndarray, np.ndarray]:
-    """(iters, loss) from a run's logs/history.jsonl. Skips the trailing
-    'final' summary record, which repeats the last iter with loss fields
-    nulled out."""
-    iters, losses = [], []
-    with open(os.path.join(log_dir(tag), "history.jsonl")) as f:
-        for line in f:
-            rec = json.loads(line)
-            if rec.get("final"):
-                continue
-            iters.append(rec["iter"])
-            losses.append(rec["loss"])
-    return np.array(iters), np.array(losses)
+def _final_loss(tag: str, g: torch.Generator) -> float:
+    """Task loss (data.eval_task_loss), freshly recomputed at CKPT -- not
+    read from history.jsonl (some runs' final checkpoint predates their last
+    history record) and deliberately excludes the adversarial/probe penalty,
+    since this script only cares about task performance here."""
+    model, ck = load_model(tag, CKPT, DEVICE)
+    adv_cfg = resolve_adv_config(ck)
+    x_p_outer = adv_cfg.x_p_outer if adv_cfg is not None else None
+    x_threshold = adv_cfg.x_threshold if adv_cfg is not None else 1.0
+    noise_std = (
+        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
+    )
+    return eval_task_loss(
+        model,
+        g,
+        DEVICE,
+        n=TASK_LOSS_N_EVAL,
+        x_p_outer=x_p_outer,
+        x_threshold=x_threshold,
+        noise_std=noise_std,
+    )
 
 
-def _running_mean(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarray:
-    """Causal low-pass: mean value among logged points within the trailing
-    `window` iterations (not `window` logged points -- --log-interval
-    defaults to 100 and can vary run to run, so this has to key off `iters`,
-    not array index). Matches sweep_report.py's smoothing."""
-    out = np.empty_like(values, dtype=float)
-    lo = 0
-    for i in range(len(iters)):
-        cutoff = iters[i] - window + 1
-        while iters[lo] < cutoff:
-            lo += 1
-        out[i] = values[lo : i + 1].mean()
-    return out
-
-
-def _final_loss(tag: str) -> float:
-    iters, losses = _load_history(tag)
-    return float(_running_mean(iters, losses, LOSS_LOWPASS_WINDOW)[-1])
+def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float | None:
+    """AUROC of a freshly refit probe at PROBE_LAYER for `tag`'s CKPT
+    checkpoint -- not the checkpoint's own stored training-time probe, so
+    this stays comparable across a sweep whose runs may have trained with
+    different probe settings. None for a checkpoint with no adversarial
+    config (nothing to probe for)."""
+    model, ck = load_model(tag, CKPT, DEVICE)
+    adv_cfg = resolve_adv_config(ck)
+    if adv_cfg is None:
+        return None
+    eval_noise_std = adv_cfg.resid_noise_std * EVAL_NOISE_MULT
+    _metrics, plot_inputs = binary_probe_metrics_all_layers(
+        model,
+        1.0,
+        2.0,
+        [PROBE_LAYER],
+        PROBE_N_TRAIN,
+        PROBE_N_TEST,
+        g,
+        probe_backend_name,
+        desc=tag,
+        eval_noise_std=eval_noise_std,
+    )
+    pi = plot_inputs[PROBE_LAYER]
+    probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
+    return boundary_auroc(probe, pi["X_te"], pi["y_te"])
 
 
 def _classify(loss: float, auroc: float, thresholds: list[float]) -> int:
@@ -156,8 +190,10 @@ def main():
 
     ratios: list[float] = []
     fractions: list[np.ndarray] = []  # one length-n_bands array per lambda
-    # One scorer across every lambda, so all runs share a single eval set.
-    scorer = StoredProbeScorer(CKPT, DEVICE, eval_noise_mult=EVAL_NOISE_MULT, seed=SEED)
+    # One RNG across every lambda, so its draws (eval noise, probe train/test
+    # sampling) are reproducible across a full run of the script.
+    g = torch.Generator(device=DEVICE).manual_seed(SEED)
+    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
 
     print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
     for lam in sorted(by_lambda):
@@ -166,8 +202,8 @@ def main():
         n_ok = 0
         for tag in tags:
             try:
-                loss = _final_loss(tag)
-                auroc = scorer.auroc(tag)
+                loss = _final_loss(tag, g)
+                auroc = _probe_auroc(tag, g, probe_backend_name)
             except FileNotFoundError:
                 print(f"  {tag}: no history/checkpoint yet, skipped")
                 continue
