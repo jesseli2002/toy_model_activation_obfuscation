@@ -230,13 +230,27 @@ def main():
     fig, ax = plt.subplots(figsize=(8, 5))
     # stackplot stacks bottom-to-top in argument order; we want "failed" on
     # top and "most hidden" at the bottom, so feed bands in reverse.
+    stacked = frac_matrix.T[::-1]
     ax.stackplot(
         x,
-        *frac_matrix.T[::-1],
+        *stacked,
         labels=labels[::-1],
         colors=colors[::-1],
         alpha=0.9,
     )
+    # stackplot doesn't support markers itself; overlay them on each band's
+    # upper boundary (cumulative sum) to show the underlying data points.
+    cum = np.cumsum(stacked, axis=0)
+    for row, color in zip(cum, colors[::-1]):
+        ax.plot(
+            x,
+            row,
+            marker="o",
+            ls="none",
+            color=color,
+            markeredgecolor="black",
+            markeredgewidth=0.5,
+        )
     ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH)
     ax.axvline(0, ls="--", lw=1, color="#52514e", label="lam=0")
     ax.set_xlabel("lam / (1 - lam)  (probe-loss weight / task-loss weight)")
