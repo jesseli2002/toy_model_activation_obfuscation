@@ -113,7 +113,7 @@ def load_config_from_env() -> Config:
         control_path=os.environ.get(
             "VAST_REMOTE_CONTROL_PATH", "/tmp/vast-remote-broker-%C"
         ),
-        control_persist=os.environ.get("VAST_REMOTE_CONTROL_PERSIST", "10m"),
+        control_persist=os.environ.get("VAST_REMOTE_CONTROL_PERSIST", "5m"),
         sync_script=os.environ.get("VAST_REMOTE_SYNC_SCRIPT", DEFAULT_SYNC_SCRIPT),
     )
 

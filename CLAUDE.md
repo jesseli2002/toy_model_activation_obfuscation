@@ -48,6 +48,7 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
 
 ## Autonomous engineering
 - Due to machine resource limitations, realistically at most one agent should be running training code at a time. If tasking subagents to complete work, this should be considered for task allocation.
+    - This only applies for local code. For remote work on a vastai instance, it's a case-by-case situation; ask the user if you're unsure. Generally, only use the remote vastai box if the user directs you to.
 - For pure code-location tasks (Explore agent, "quick"/"medium" breadth), use model: "haiku". Reserve Sonnet/Opus for exploration that requires judging ambiguous matches or synthesizing findings.
 - There are some unit tests but they only cover specific parts of the codebase - unit tests passing DOES NOT mean that the codebase is working.
 
