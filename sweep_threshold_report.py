@@ -22,7 +22,7 @@ shape is still changing, so argparse would just be churn for now. Plots are
 written under plot/sweep3/; a summary table prints to console."""
 
 RUN_GLOB = "sweep3_lam*_tr*"
-EXCLUDE_LAMBDAS = {"0.001"}  #  for partial lambdas currently running
+EXCLUDE_LAMBDAS = {}  #  for partial lambdas currently running
 EXCLUDE_TRIAL_ABOVE = 10  # for partial trials greater than this index
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json

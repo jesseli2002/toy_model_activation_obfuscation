@@ -8,7 +8,7 @@ console / plt.show() only; nothing is written to disk.
 
 # RUN_TAGS = [f"sweep3_lam0_tr{i}" for i in range(10)]
 # RUN_TAGS = [f"sweep3_lam0.05_tr{i}" for i in range(10)]
-RUN_TAGS = [f"sweep3_lam0.01_tr{i}" for i in range(10)]
+RUN_TAGS = [f"sweep3_lam0.001_tr{i}" for i in range(10)]
 # RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running min of loss over the past this-many iters

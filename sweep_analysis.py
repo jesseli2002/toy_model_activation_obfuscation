@@ -46,7 +46,6 @@ AUROC_THRESHOLDS = [
     0.9,
 ]  # ascending; splits "succeeded" runs into len+1 hiding bins -- placeholder
 
-SYMLOG_LINTHRESH = 0.001  # linear-region half-width (in ratio units) around lam=0
 
 import glob
 import os
@@ -268,21 +267,25 @@ def main():
     # stackplot doesn't support markers itself; overlay them on each band's
     # upper boundary (cumulative sum) to show the underlying data points.
     cum = np.cumsum(stacked, axis=0)
-    for row, color in zip(cum, colors[::-1]):
+    for row, color in zip(cum[:-1], colors[::-1][:-1]):  # don't plot top row, always 1
         ax.plot(
             x,
             row,
             marker="o",
-            ls="none",
+            ls="-",
             color=color,
             markeredgecolor="black",
             markeredgewidth=0.5,
         )
+
+    SYMLOG_LINTHRESH = x[1]  # linear-region half-width (in ratio units) around lam=0
     ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH)
-    ax.axvline(0, ls="--", lw=1, color="#52514e", label="lam=0")
+    # ax.axvline(x[1] / 2, ls="--", lw=1, color="#52514e")
+    ax.axvline(x[1] / 2, ls="--", lw=1, color="black")
     ax.set_xlabel("lam / (1 - lam)  (probe-loss weight / task-loss weight)")
     ax.set_ylabel("fraction of runs")
     ax.set_ylim(0, 1)
+    ax.set_xlim(0, x[-1])
     ax.set_title(f"task success / probe hiding vs. adversarial weight ({RUN_GLOB})")
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     ax.grid(True, alpha=0.3)
