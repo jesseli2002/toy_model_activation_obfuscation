@@ -785,8 +785,8 @@ class TestWriteCheckpoint:
 
     def test_last_pt_is_a_relative_symlink_to_the_newest_checkpoint(self, tmp_path):
         d, ckpt_dir, save_fn = self._dir(tmp_path)
-        write_checkpoint(d, 10, save_fn, keep_every=10)
-        write_checkpoint(d, 20, save_fn, keep_every=10)
+        write_checkpoint(d, 10, save_fn)
+        write_checkpoint(d, 20, save_fn)
         last = ckpt_dir / "last.pt"
         assert os.readlink(last) == "iter_20.pt"  # relative: run dir stays movable
         assert last.resolve() == (ckpt_dir / "iter_20.pt").resolve()
@@ -794,36 +794,20 @@ class TestWriteCheckpoint:
     def test_replaces_a_plain_last_pt_written_by_an_older_run(self, tmp_path):
         d, ckpt_dir, save_fn = self._dir(tmp_path)
         (ckpt_dir / "last.pt").write_text("stale regular file")
-        write_checkpoint(d, 10, save_fn, keep_every=10)
+        write_checkpoint(d, 10, save_fn)
         assert (ckpt_dir / "last.pt").is_symlink()
 
-    def test_non_snapshot_checkpoints_are_rotated_away(self, tmp_path):
+    def test_every_checkpoint_is_kept(self, tmp_path):
         d, ckpt_dir, save_fn = self._dir(tmp_path)
-        for it in (10, 20, 30, 40):  # 20/40 are --save-every-n multiples: kept
-            write_checkpoint(d, it, save_fn, keep_every=20)
-        # 10 and 30 rotated away by the checkpoint that followed them; 40 is
-        # still the live last.pt target.
-        assert self._numbered(ckpt_dir) == [20, 40]
+        for it in (10, 20, 30, 40):
+            write_checkpoint(d, it, save_fn)
+        assert self._numbered(ckpt_dir) == [10, 20, 30, 40]
         assert (ckpt_dir / "last.pt").resolve() == (ckpt_dir / "iter_40.pt").resolve()
-
-    def test_keep_every_zero_keeps_only_the_live_checkpoint(self, tmp_path):
-        d, ckpt_dir, save_fn = self._dir(tmp_path)
-        for it in (10, 20, 30):
-            write_checkpoint(d, it, save_fn, keep_every=0)
-        assert self._numbered(ckpt_dir) == [30]
-
-    def test_rotation_reads_the_symlink_so_it_survives_a_resume(self, tmp_path):
-        """The checkpoint to rotate comes from last.pt on disk, not in-memory
-        state, so a --resume'd process still cleans up its predecessor's."""
-        d, ckpt_dir, save_fn = self._dir(tmp_path)
-        write_checkpoint(d, 10, save_fn, keep_every=0)  # "previous process"
-        write_checkpoint(d, 20, save_fn, keep_every=0)  # fresh process, no state
-        assert self._numbered(ckpt_dir) == [20]
 
     def test_writes_through_a_temporary_file(self, tmp_path):
         saved = []
         d, ckpt_dir, save_fn = self._dir(tmp_path, saved=saved)
-        write_checkpoint(d, 10, save_fn, keep_every=10)
+        write_checkpoint(d, 10, save_fn)
         # the save itself never touches the final path, so a kill mid-write
         # can't truncate a checkpoint last.pt might already point at
         assert saved == [str(ckpt_dir / "iter_10.pt.tmp")]
@@ -833,7 +817,7 @@ class TestWriteCheckpoint:
         d, ckpt_dir, save_fn = self._dir(tmp_path)
         (ckpt_dir / "best.pt").write_text("best")
         os.symlink("best.pt", ckpt_dir / "last.pt")
-        write_checkpoint(d, 10, save_fn, keep_every=0)
+        write_checkpoint(d, 10, save_fn)
         assert (ckpt_dir / "best.pt").exists()
 
 
