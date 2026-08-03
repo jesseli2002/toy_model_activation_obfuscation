@@ -43,6 +43,26 @@ the `--config` file, kept reusable as a later `--config` argument (e.g. for
 Hand-editing either after creation has no effect except tripping the
 mismatch warning on a later `--resume`.
 
+Progress is written as numbered `runs/<tag>/checkpoints/iter_<n>.pt` files
+with `last.pt` a symlink to the newest, plus `logs/history.jsonl`. Two
+invariants hold between them for a run at rest -- one that finished, or that
+stopped on a Ctrl-C:
+
+  - the last line of `history.jsonl` describes the iteration `last.pt`
+    resolves to;
+  - every `iter_<n>.pt` on disk has a history entry.
+
+Both come from `--ckpt-interval` being a multiple of `--log-interval` (so
+periodic checkpoints only land on logged iterations) plus the loop logging
+and checkpointing whichever iteration it actually stopped at. `best.pt` is
+outside this: it is written whenever the loss improves, which is generally
+not a logged iteration.
+
+"At rest" is the limit of the guarantee. Mid-run, history legitimately runs
+ahead of `last.pt` between checkpoints, and a run killed without a SIGINT
+(SIGKILL, OOM, power) can be left that way -- a later `--resume` then logs
+those iterations a second time.
+
 Configuration is split two ways, and the split is a near-invariant worth
 naming: a setting lives in the `--config` JSON file (i.e. on
 `LogregAdversarialConfig`) if and only if it can change across a
@@ -170,8 +190,9 @@ def parse_args():
         const=-1,
         default=-1,
         help=(
-            "also save a numbered snapshot checkpoint every N iters "
-            "(-1 = --ckpt-interval, 0 = disable)"
+            "keep the numbered checkpoint permanently every N iters "
+            "(-1 = --ckpt-interval, 0 = keep none, i.e. only the rotating "
+            "checkpoint last.pt points at)"
         ),
     )
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
@@ -188,6 +209,25 @@ def parse_args():
         )
     if not args.resume and args.seed is None:
         p.error("--seed required for a fresh run or --fork-from.")
+
+    if args.save_every_n == -1:
+        args.save_every_n = args.ckpt_interval
+    # Every checkpoint iter must also be a log iter, so each checkpoint on
+    # disk has a matching history.jsonl entry.
+    if args.log_interval <= 0:
+        p.error(f"--log-interval must be positive, got {args.log_interval}.")
+    if args.ckpt_interval <= 0:
+        p.error(f"--ckpt-interval must be positive, got {args.ckpt_interval}.")
+    for dest, flag in (
+        ("ckpt_interval", "--ckpt-interval"),
+        ("save_every_n", "--save-every-n"),
+    ):
+        interval = getattr(args, dest)
+        if interval != 0 and interval % args.log_interval != 0:
+            p.error(
+                f"{flag} ({interval}) must be a multiple of --log-interval "
+                f"({args.log_interval})."
+            )
 
     arch_flags = {
         "num_x": "--num-x",
@@ -826,53 +866,127 @@ def train_steps(
         )
 
 
+class _Interruptible:
+    """Records whether a SIGINT arrived while it was installed."""
+
+    def __init__(self):
+        self.interrupted = False
+
+
 @contextmanager
 def _defer_keyboard_interrupt():
     """Ignore SIGINT for the duration of the wrapped block, then re-raise it
-    (as KeyboardInterrupt) immediately after -- so a Ctrl-C during the block
-    can't leave a half-written checkpoint on disk."""
-    interrupted = False
+    (as KeyboardInterrupt) on the way out. Yields an object whose
+    `.interrupted` flag lets the block stop at a point of its own choosing --
+    a Ctrl-C therefore never lands mid-write, however hard it is spammed.
+
+    The flip side: nothing inside the block can be interrupted promptly, so
+    wrap only code that reaches a safe stopping point quickly. Genuinely
+    wedged code needs SIGQUIT/SIGKILL instead."""
+    state = _Interruptible()
     old_handler = signal.getsignal(signal.SIGINT)
 
     def _handler(signum, frame):
-        nonlocal interrupted
-        interrupted = True
+        state.interrupted = True
 
     signal.signal(signal.SIGINT, _handler)
     try:
-        yield
+        yield state
     finally:
         signal.signal(signal.SIGINT, old_handler)
-    if interrupted:
+    if state.interrupted:
         raise KeyboardInterrupt
+
+
+def _atomic_write(write_fn, path: str) -> None:
+    """Run `write_fn(tmp_path)` and rename the result over `path`, so `path`
+    is always either the previous complete file or the new one."""
+    tmp = path + ".tmp"
+    write_fn(tmp)
+    os.replace(tmp, path)
+
+
+def _point_symlink(link_path: str, target_name: str) -> None:
+    """Atomically (re)point `link_path` at a sibling file. Replaces whatever
+    is already there, including the plain file older runs wrote. The target is
+    stored relative, so the run directory stays relocatable."""
+    tmp = link_path + ".tmp"
+    if os.path.lexists(tmp):
+        os.remove(tmp)
+    os.symlink(target_name, tmp)
+    os.replace(tmp, link_path)
 
 
 def save_checkpoint(
     path, record: TrainRecord, model, opt, best_loss, hidden_layers, adv_config, gen
 ):
-    """Save all training state needed to resume from disk, atomically (a
-    SIGINT can't corrupt the file). Includes every RNG's state (`gen` -- the
-    training loop's own generator -- plus torch's global default generator,
-    which model-init and any generator-less randomness still draw from) so
-    --resume can continue the interrupted run's RNG stream in place, rather
-    than reseeding a fresh one."""
+    """Save all training state needed to resume from disk. Includes every
+    RNG's state (`gen` -- the training loop's own generator -- plus torch's
+    global default generator, which model-init and any generator-less
+    randomness still draw from) so --resume can continue the interrupted
+    run's RNG stream in place, rather than reseeding a fresh one.
+
+    Callers are responsible for crash-safety: wrap in `_atomic_write` (so a
+    kill can't leave a half-written file at `path`) and in
+    `_defer_keyboard_interrupt` (so a Ctrl-C can't split the save from the
+    bookkeeping that goes with it)."""
     w_eff, b_eff = record.affine
-    with _defer_keyboard_interrupt():
-        model.save(
-            path,
-            iter=record.iter,
-            opt=opt.state_dict(),
-            best_loss=best_loss,
-            probe_w=w_eff.cpu(),
-            probe_b=b_eff.cpu(),
-            probe_layers=hidden_layers,
-            adv_config=adv_config.to_dict(),
-            rng_state=torch.get_rng_state(),
-            cuda_rng_state=(
-                torch.cuda.get_rng_state() if torch.cuda.is_available() else None
-            ),
-            gen_state=gen.get_state(),
+    model.save(
+        path,
+        iter=record.iter,
+        opt=opt.state_dict(),
+        best_loss=best_loss,
+        probe_w=w_eff.cpu(),
+        probe_b=b_eff.cpu(),
+        probe_layers=hidden_layers,
+        adv_config=adv_config.to_dict(),
+        rng_state=torch.get_rng_state(),
+        cuda_rng_state=(
+            torch.cuda.get_rng_state() if torch.cuda.is_available() else None
+        ),
+        gen_state=gen.get_state(),
+    )
+
+
+def checkpoint_path(run_ckpt_dir: str, iter: int) -> str:
+    return os.path.join(run_ckpt_dir, f"iter_{iter}.pt")
+
+
+def _checkpoint_iter(path: str) -> int | None:
+    """The iteration a numbered checkpoint's filename refers to, or None for
+    any other file (best.pt, a stale plain last.pt from an older run, ...)."""
+    name = os.path.basename(path)
+    stem = name[len("iter_") : -len(".pt")]
+    if not name.startswith("iter_") or not name.endswith(".pt") or not stem.isdigit():
+        return None
+    return int(stem)
+
+
+def write_checkpoint(run_ckpt_dir: str, iter: int, save_fn, keep_every: int) -> str:
+    """Write `iter_<iter>.pt` and repoint `last.pt` at it.
+
+    The checkpoint `last.pt` previously named is deleted unless --save-every-n
+    keeps it, so a run with snapshots disabled costs one checkpoint file
+    rather than one per --ckpt-interval. Which checkpoint that is comes from
+    the symlink itself, so rotation stays correct across a --resume.
+
+    Callers are responsible for deferring SIGINT around this (see
+    `_defer_keyboard_interrupt`)."""
+    last_path = os.path.join(run_ckpt_dir, "last.pt")
+    previous = os.path.realpath(last_path) if os.path.islink(last_path) else None
+
+    path = checkpoint_path(run_ckpt_dir, iter)
+    _atomic_write(save_fn, path)
+    _point_symlink(last_path, os.path.basename(path))
+
+    if previous is not None and previous != os.path.realpath(path):
+        previous_iter = _checkpoint_iter(previous)
+        keep = previous_iter is not None and (
+            keep_every != 0 and previous_iter % keep_every == 0
         )
+        if previous_iter is not None and not keep and os.path.exists(previous):
+            os.remove(previous)
+    return path
 
 
 def _start_resume(args, last_path: str, device):
@@ -919,8 +1033,6 @@ def _start_fork_from(args, hist_path: str, device):
 
 
 def main(args):
-    if args.save_every_n == -1:
-        args.save_every_n = args.ckpt_interval
     warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
     device = "cuda" if torch.cuda.is_available() else "cpu"
     probe_backend = resolve_probe_backend(args.probe_backend, device)
@@ -1046,11 +1158,9 @@ def main(args):
     )
 
     # Placeholder record for the (edge-case) zero-iteration run, e.g.
-    # --resume past --max-iters: train_steps() then yields nothing, and the
-    # final save/log below still needs a record to work with. iter is
-    # start_iter - 1 (the last iteration actually completed, not the next
-    # one train_steps would have run) so a no-op resume's final save doesn't
-    # falsely mark an unexecuted iteration as done.
+    # --resume past --max-iters: train_steps() then yields nothing and there
+    # is nothing to save (the run's existing last.pt already describes iter
+    # start_iter - 1), but the closing summary still reports off a record.
     record = TrainRecord(
         iter=start_iter - 1,
         loss=best_loss,
@@ -1068,7 +1178,33 @@ def main(args):
 
     t0 = time.time()
     rate_meter = EMARateMeter(start_iter)
-    try:
+    max_err = None
+    last_logged_iter = None
+
+    def log_iter():
+        """Append a history entry for `record`'s iteration and print it."""
+        nonlocal max_err, last_logged_iter
+        max_err = eval_max_err(model, gen, device=device)
+        _append_history(hist_path, _history_entry(record, max_err=max_err))
+        last_logged_iter = record.iter
+        rate = rate_meter.update(record.iter)
+        print(
+            f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
+            f"probe {record.l_probe:.3e}  max_err {max_err:.3e}  "
+            f"n_exploded {record.n_exploded}  {rate:.1f} it/s"
+        )
+
+    def checkpoint():
+        return write_checkpoint(
+            run_ckpt_dir, record.iter, save, keep_every=args.save_every_n
+        )
+
+    ran_any_iters = False
+    # SIGINT is deferred for the whole loop, so a Ctrl-C (however hard it is
+    # spammed) only takes effect at the end of an iteration, after the saves
+    # below have run to completion. Every write in here is covered by this one
+    # block -- nothing inside needs its own.
+    with _defer_keyboard_interrupt() as sigint:
         for record in train_steps(
             model,
             opt,
@@ -1083,48 +1219,44 @@ def main(args):
             probe_label,
             device,
         ):
+            ran_any_iters = True
             if record.loss < best_loss:
                 best_loss = record.loss
-                save(best_path)
+                _atomic_write(save, best_path)
 
             if record.iter % args.log_interval == 0:
-                me = eval_max_err(model, gen, device=device)
-                _append_history(hist_path, _history_entry(record, max_err=me))
-                rate = rate_meter.update(record.iter)
+                log_iter()
+
+            # --save-every-n snapshots and the periodic last.pt refresh are the
+            # same write: both produce iter_<n>.pt, and write_checkpoint keeps
+            # or rotates it depending on --save-every-n.
+            due = record.iter % args.ckpt_interval == 0 or (
+                args.save_every_n != 0 and record.iter % args.save_every_n == 0
+            )
+            if due and record.iter > start_iter:
+                checkpoint()
+
+            if sigint.interrupted:
                 print(
-                    f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
-                    f"probe {record.l_probe:.3e}  max_err {me:.3e}  "
-                    f"n_exploded {record.n_exploded}  {rate:.1f} it/s"
+                    f"\n[interrupt] Ctrl-C, stopping after iter {record.iter}...",
+                    flush=True,
                 )
+                break
 
-            if record.iter % args.ckpt_interval == 0 and record.iter > start_iter:
-                save(last_path)
+        # Checkpoint wherever the run actually stopped -- the end of
+        # --max-iters, or the interrupted iteration. That iteration is
+        # generally not a --log-interval multiple, so log it first; this is
+        # what establishes the two history/checkpoint invariants described at
+        # the top of this module.
+        if ran_any_iters:
+            if last_logged_iter != record.iter:
+                log_iter()
+            print(f"[save] {last_path} -> {os.path.basename(checkpoint())}")
+    # _defer_keyboard_interrupt re-raises here if a Ctrl-C arrived above.
 
-            if (
-                args.save_every_n != 0  # i.e. not disabled
-                and record.iter % args.save_every_n == 0
-                and record.iter > start_iter
-            ):
-                save(os.path.join(run_ckpt_dir, f"iter_{record.iter}.pt"))
-    except KeyboardInterrupt:
-        print(
-            f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.iter}..."
-        )
-        save(last_path)
-        print(f"[interrupt] saved to {last_path}")
-        raise
-
-    # final logging + save
-    save(last_path)
-    me = eval_max_err(model, gen, device=device)
-    _append_history(
-        hist_path,
-        _history_entry(
-            record, loss=best_loss, l_task=None, l_probe=None, max_err=me, final=True
-        ),
-    )
+    max_err_str = "n/a" if max_err is None else f"{max_err:.3e}"
     print(
-        f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
+        f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {max_err_str}  "
         f"elapsed {time.time()-t0:.1f}s"
     )
     print(f"[done] checkpoints in {run_ckpt_dir}, history in {hist_path}")
