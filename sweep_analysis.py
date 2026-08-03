@@ -24,6 +24,10 @@ which uses the same recomputation for the same reasons (some runs' final
 checkpoint predates their last history record).
 """
 
+SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
+# -- lets you preview the plot's layout without waiting on a full sweep's
+# worth of checkpoint loading / task-loss / probe recomputation.
+
 RUN_GLOB = "sweep3_lam*_tr*"
 EXCLUDE_LAMBDAS: set[float] = set()
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
@@ -183,42 +187,65 @@ def _band_colors(thresholds: list[float]) -> list[str]:
     return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
 
 
+def _smoke_data(n_bands: int) -> tuple[list[float], list[np.ndarray]]:
+    """Synthetic (ratios, fractions) standing in for a real sweep's results,
+    just to preview the plot's layout/styling without a full analysis run."""
+    rng = np.random.default_rng(SEED)
+    lambdas = np.concatenate([[0.0], np.geomspace(1e-4, 0.9, 12)])
+    ratios = (lambdas / (1 - lambdas)).tolist()
+    fractions = []
+    for ratio in ratios:
+        # p: 0..1 knob, low ratio -> low p, high ratio -> high p
+        p = np.clip((np.log10(ratio + 1e-4) + 4) / 4, 0, 1)
+        failed = 0.05 + 0.5 * p
+        weights = np.linspace(1 - p, p, n_bands - 1) + 0.1
+        weights = weights / weights.sum() * (1 - failed)
+        counts = np.clip(np.concatenate([[failed], weights]), 0.001, None)
+        counts += rng.normal(0, 0.02, size=n_bands)
+        counts = np.clip(counts, 0.001, None)
+        fractions.append(counts / counts.sum())
+    return ratios, fractions
+
+
 def main():
-    by_lambda = _discover_tags_by_lambda()
     thresholds = sorted(AUROC_THRESHOLDS)
     n_bands = len(thresholds) + 2
 
-    ratios: list[float] = []
-    fractions: list[np.ndarray] = []  # one length-n_bands array per lambda
-    # One RNG across every lambda, so its draws (eval noise, probe train/test
-    # sampling) are reproducible across a full run of the script.
-    g = torch.Generator(device=DEVICE).manual_seed(SEED)
-    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
+    if SMOKE:
+        ratios, fractions = _smoke_data(n_bands)
+    else:
+        by_lambda = _discover_tags_by_lambda()
+        ratios = []
+        fractions = []  # one length-n_bands array per lambda
+        # One RNG across every lambda, so its draws (eval noise, probe
+        # train/test sampling) are reproducible across a full run of the script.
+        g = torch.Generator(device=DEVICE).manual_seed(SEED)
+        probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
 
-    print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
-    for lam in sorted(by_lambda):
-        tags = by_lambda[lam]
-        counts = np.zeros(n_bands)
-        n_ok = 0
-        for tag in tags:
-            try:
-                loss = _final_loss(tag, g)
-                auroc = _probe_auroc(tag, g, probe_backend_name)
-            except FileNotFoundError:
-                print(f"  {tag}: no history/checkpoint yet, skipped")
+        print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
+        for lam in sorted(by_lambda):
+            tags = by_lambda[lam]
+            counts = np.zeros(n_bands)
+            n_ok = 0
+            for tag in tags:
+                try:
+                    loss = _final_loss(tag, g)
+                    auroc = _probe_auroc(tag, g, probe_backend_name)
+                except FileNotFoundError:
+                    print(f"  {tag}: no history/checkpoint yet, skipped")
+                    continue
+                if auroc is None:
+                    print(f"  {tag}: no probe in checkpoint, skipped")
+                    continue
+                counts[_classify(loss, auroc, thresholds)] += 1
+                n_ok += 1
+            if n_ok == 0:
+                print(f"  {lam}: no usable runs, skipped")
                 continue
-            if auroc is None:
-                print(f"  {tag}: no probe in checkpoint, skipped")
-                continue
-            counts[_classify(loss, auroc, thresholds)] += 1
-            n_ok += 1
-        if n_ok == 0:
-            print(f"  {lam}: no usable runs, skipped")
-            continue
-        ratio = lam / (1 - lam)
-        ratios.append(ratio)
-        fractions.append(counts / n_ok)
-        print(f"{lam:10g} {ratio:10.4g} {n_ok:5d} {len(tags):7d}")
+            ratio = lam / (1 - lam)
+            ratios.append(ratio)
+            fractions.append(counts / n_ok)
+            print(f"{lam:10g} {ratio:10.4g} {n_ok:5d} {len(tags):7d}")
 
     order = np.argsort(ratios)
     x = np.array(ratios)[order]
@@ -230,13 +257,27 @@ def main():
     fig, ax = plt.subplots(figsize=(8, 5))
     # stackplot stacks bottom-to-top in argument order; we want "failed" on
     # top and "most hidden" at the bottom, so feed bands in reverse.
+    stacked = frac_matrix.T[::-1]
     ax.stackplot(
         x,
-        *frac_matrix.T[::-1],
+        *stacked,
         labels=labels[::-1],
         colors=colors[::-1],
         alpha=0.9,
     )
+    # stackplot doesn't support markers itself; overlay them on each band's
+    # upper boundary (cumulative sum) to show the underlying data points.
+    cum = np.cumsum(stacked, axis=0)
+    for row, color in zip(cum, colors[::-1]):
+        ax.plot(
+            x,
+            row,
+            marker="o",
+            ls="none",
+            color=color,
+            markeredgecolor="black",
+            markeredgewidth=0.5,
+        )
     ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH)
     ax.axvline(0, ls="--", lw=1, color="#52514e", label="lam=0")
     ax.set_xlabel("lam / (1 - lam)  (probe-loss weight / task-loss weight)")
