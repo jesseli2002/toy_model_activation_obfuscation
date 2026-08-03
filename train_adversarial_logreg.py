@@ -1140,24 +1140,11 @@ def main(args):
         print(f"[interrupt] saved to {last_path}")
         raise
 
-    # final logging + save
+    # final save -- the loop above already logged this run's true last iter
+    # for real (with l_task/l_probe), whether it finished normally or was
+    # interrupted, so there's nothing left to log here.
     save(last_path)
     me = eval_max_err(model, gen, device=device)
-    # Skip the marker if this iter was already logged above (the common case
-    # now that the loop always logs its own last iter) -- avoids writing two
-    # history lines for the same iter.
-    if record.iter != last_logged_iter:
-        _append_history(
-            hist_path,
-            _history_entry(
-                record,
-                loss=best_loss,
-                l_task=None,
-                l_probe=None,
-                max_err=me,
-                final=True,
-            ),
-        )
     print(
         f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {me:.3e}  "
         f"elapsed {time.time()-t0:.1f}s"
