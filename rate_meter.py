@@ -12,7 +12,7 @@ class EMARateMeter:
     results whether you log every iteration or every N iterations.
     """
 
-    def __init__(self, start_iter: int, window: float = 200.0):
+    def __init__(self, start_iter: int, window: float = 1000.0):
         self.window = window
         self._ema: float | None = None
         self._last_time = time.time()
