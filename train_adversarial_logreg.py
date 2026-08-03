@@ -1130,6 +1130,13 @@ def main(args):
             f"\n[interrupt] KeyboardInterrupt caught, saving checkpoint at iter {record.iter}..."
         )
         save(last_path)
+        # record.iter may not have hit the log check yet (SIGINT can land
+        # anywhere in the loop body) -- without this, an interrupted last.pt
+        # can have no matching history entry at all.
+        if record.iter != last_logged_iter:
+            me = eval_max_err(model, gen, device=device)
+            _append_history(hist_path, _history_entry(record, max_err=me))
+            last_logged_iter = record.iter
         print(f"[interrupt] saved to {last_path}")
         raise
 
