@@ -193,14 +193,17 @@ which is precisely what forces the model to decay it again.
 
 - The lam=0.1 LN arm is n=4, not the planned 15. The divergence was unambiguous
   (all 4 worse than all 15 baselines, gap widening), so the remaining 11 were
-  paused rather than deleted -- resumable by setting the pool's concurrency
-  file `/home/agent/work/conc.txt` back to 10 on the remote, where the queue
-  still holds them. n=4 supports "LN is much worse"; it does not support a
-  precise effect size.
-- The LN+warmup arm's final numbers are pending; the figures quoted here are at
-  matched iteration (10k-40k), where it had already plateaued around 1.2e-1
-  against a baseline at 1.7e-2. Its conclusion ("mitigates, does not fix") rests
-  on trajectory, not on 100k endpoints.
+  never run. n=4 supports "LN is much worse"; it does not support a precise
+  effect size. The full 21-job queue is preserved at
+  `/home/agent/work/queue.txt` on the remote if anyone wants them later --
+  relaunching needs the pool manager restarted, not just a concurrency edit,
+  since it was shut down to free the GPU.
+- The LN+warmup arm was stopped at ~41k of 100k rather than run to completion,
+  to free the GPU for unrelated experiments. Its numbers are therefore at
+  matched iteration, not final. It had plateaued at 1.66e-1 across iters
+  15k-40k against a baseline at 1.30e-2, so "mitigates, does not fix" rests on
+  that plateau rather than on 100k endpoints. Checkpoints exist every 2000
+  iters, so `--resume` can finish them.
 - Reported p-values are two-sided; halve for the directional reading.
 - The mechanism claim in section 3 is correlational (n=15 baseline, n=10 LN)
   plus a coherent account, not a causal intervention.
