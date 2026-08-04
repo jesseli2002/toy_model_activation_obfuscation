@@ -100,12 +100,16 @@ class PublishData:
 
 @torch.no_grad()
 def _sample_errors(model, n, g, device) -> np.ndarray:
-    """Per-input Euclidean distance ||pred - y|| between the model's task
-    output and the true sat(x, c), over `n` fresh c ~ U[C_LOW, C_HIGH]
-    inputs."""
+    """Per-input RMS error between the model's task output and the true
+    sat(x, c), over `n` fresh c ~ U[C_LOW, C_HIGH] inputs.
+
+    RMS (mean over the num_x coordinates, not summed) rather than the raw
+    Euclidean norm -- the latter grows like sqrt(num_x) for i.i.d.
+    per-coordinate errors of fixed typical size, which would make the
+    histogram's scale an artifact of num_x rather than of the model."""
     x_full, y = sample_batch(n, model.num_x, generator=g, device=device)
     pred = model.task_output(x_full)
-    return ((pred - y) ** 2).sum(dim=-1).sqrt().cpu().numpy()
+    return ((pred - y) ** 2).mean(dim=-1).sqrt().cpu().numpy()
 
 
 def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> PublishData:
@@ -192,7 +196,7 @@ def _plot_learned_curves(model, task_loss, plot_dir, tag, show=False):
 def _plot_error_histogram(err_samples, plot_dir, tag, show=False):
     fig, ax = plt.subplots(figsize=(6, 4.2))
     ax.hist(err_samples, bins=80, color="steelblue")
-    ax.set_xlabel(r"Euclidean error $\|\hat{y} - y\|$")
+    ax.set_xlabel("RMS error (per coordinate)")
     ax.set_ylabel("count")
     ax.set_title(f"Prediction error distribution (n={len(err_samples):,})")
     ax.grid(True, alpha=0.3)
