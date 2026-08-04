@@ -1,8 +1,10 @@
 # Does LayerNorm improve training reliability?
 
-**Answer: no. At lam=0.1 it makes things dramatically worse, and an LR warmup
-mitigates but does not fix it.** LayerNorm is not the dial to turn for this
-problem; the residual-stream evidence below points at a different one.
+**Answer: no. At lam=0.1 it makes things dramatically worse -- 0/4 runs below
+7e-3 against the baseline's 6/15. A 5000-iter LR warmup removes the acute
+blowup but had plateaued 12.8x above baseline when it was stopped at 41k of
+100k.** LayerNorm is not the dial to turn for this problem; the residual-stream
+evidence below points at a different one.
 
 ## Runs used
 
@@ -74,9 +76,11 @@ See `sweep4_layernorm_report.py`.
 Mann-Whitney U = 84 = 6x14, the maximum: *complete separation*, every LN run
 worse than every no-LN run (p=1e-4, two-sided).
 
-Note LN is markedly **more repeatable** here (spread 0.18e-3 vs 0.71e-3). It
-raises the floor while tightening the distribution -- worth knowing, but at
-lam=0 nothing was failing anyway, so it buys nothing.
+Across the 6 LN runs observed the spread was tighter than the baseline's
+(0.18e-3 vs 0.71e-3). Read that cautiously: a variance ratio at n=6 vs n=14 is
+not a stable estimate, and it is the one place LN looks favorable. Even taking
+it at face value, at lam=0 nothing was failing, so a tighter distribution
+around a higher floor buys nothing.
 
 ## 2. lam=0.1: LN is catastrophic
 
