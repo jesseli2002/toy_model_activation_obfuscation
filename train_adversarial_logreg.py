@@ -131,6 +131,16 @@ def parse_args():
     g_init.add_argument("--d-model", type=int, default=None)
     g_init.add_argument("--d-mlp", type=int, default=None)
     g_init.add_argument("--num-blocks", type=int, default=None)
+    # Optional (unlike the four above): omitting it means no LayerNorm, which
+    # is what every run before this flag existed did. default=None, not False,
+    # so the --resume/--fork-from guard below can tell "not passed" from
+    # "passed --no-layer-norm".
+    g_init.add_argument(
+        "--layer-norm",
+        action=argparse.BooleanOptionalAction,
+        default=None,
+        help="pre-norm each block's input (see ResidualMLPBlock). Off when " "omitted.",
+    )
 
     g_book = p.add_argument_group("bookkeeping")
     g_book.add_argument(
@@ -211,15 +221,21 @@ def parse_args():
             f"--log-interval ({args.log_interval})."
         )
 
+    # Required for a fresh run, and forbidden under --resume/--fork-from.
     arch_flags = {
         "num_x": "--num-x",
         "d_model": "--d-model",
         "d_mlp": "--d-mlp",
         "num_blocks": "--num-blocks",
     }
+    # Also architecture, so equally forbidden under --resume/--fork-from, but
+    # optional on a fresh run (ResidualMLPConfig supplies the default).
+    optional_arch_flags = {"layer_norm": "--layer-norm"}
     if args.resume or args.fork_from is not None:
         offending = [
-            flag for dest, flag in arch_flags.items() if getattr(args, dest) is not None
+            flag
+            for dest, flag in (arch_flags | optional_arch_flags).items()
+            if getattr(args, dest) is not None
         ]
         if offending:
             mode = "--resume" if args.resume else "--fork-from"
@@ -1030,6 +1046,7 @@ def main(args):
             d_model=args.d_model,
             d_mlp=args.d_mlp,
             num_blocks=args.num_blocks,
+            layer_norm=bool(args.layer_norm),
         )
         model = ResidualMLP(model_config).to(device)
         start_iter = 0
