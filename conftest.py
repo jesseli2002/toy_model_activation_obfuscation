@@ -24,6 +24,7 @@ def _logreg_config_file_fields(**overrides) -> dict:
     d = dict(
         lam=0.5,
         penalty_layers=[1, 2],
+        lam0_warmup_iters=0,
         lam_warmup_iters=0,
         probe_C=1.0,
         probe_init_iters=1000,

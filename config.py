@@ -113,6 +113,11 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # No default -- required key in --config JSON.
     lam: float
     penalty_layers: list | str  # "all", or an explicit list of layer indices
+    # Three phases, run in order: lam=0 for lam0_warmup_iters, then lam
+    # ramping linearly 0 -> lam over lam_warmup_iters, then lam held constant
+    # for the remainder of training. Either or both may be 0 to skip that
+    # phase.
+    lam0_warmup_iters: int
     lam_warmup_iters: int
     probe_C: float
     probe_init_iters: int
@@ -194,6 +199,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
 
     _LEGACY_DEFAULTS: ClassVar[dict] = {
         "lam": 0.5,
+        "lam0_warmup_iters": 0,
         "lam_warmup_iters": 0,
         "lr_warmup_iters": 0,
         "lr_min_frac": 1.0,

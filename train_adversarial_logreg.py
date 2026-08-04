@@ -404,6 +404,18 @@ def _lr_at(it: int, max_iters: int, adv_config: LogregAdversarialConfig) -> floa
     return adv_config.lr * frac
 
 
+def _lam_at(it: int, adv_config: LogregAdversarialConfig) -> float:
+    """Three phases, run in order: lam=0 for lam0_warmup_iters, then lam
+    ramping linearly 0 -> lam over lam_warmup_iters, then lam held constant
+    -- see LogregAdversarialConfig.lam0_warmup_iters/lam_warmup_iters."""
+    if it < adv_config.lam0_warmup_iters:
+        return 0.0
+    ramp_it = it - adv_config.lam0_warmup_iters
+    if ramp_it < adv_config.lam_warmup_iters:
+        return adv_config.lam * ramp_it / adv_config.lam_warmup_iters
+    return adv_config.lam
+
+
 def _make_optimizer(
     params, adv_config: LogregAdversarialConfig
 ) -> torch.optim.Optimizer:
@@ -755,10 +767,7 @@ def train_steps(
                 "resampled probe batch has only one class present -- check "
                 "--class-threshold against c's range."
             )
-        if adv_config.lam_warmup_iters > 0:
-            lam_eff = adv_config.lam * min(1.0, it / adv_config.lam_warmup_iters)
-        else:
-            lam_eff = adv_config.lam
+        lam_eff = _lam_at(it, adv_config)
 
         lr_eff = _lr_at(it, max_iters, adv_config)
         for group in opt.param_groups:
