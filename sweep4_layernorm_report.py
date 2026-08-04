@@ -128,6 +128,15 @@ def main():
                 print(f"  [skip] {tag}: {e}")
                 continue
             print(f"  {tag:32s} {losses[tag]:.4e}")
+        if not losses:
+            # Distinct from the no-match case above: the tags exist but none
+            # had a loadable checkpoint (e.g. a run dir that synced as an
+            # empty shell), which would otherwise surface as a ZeroDivisionError
+            # in the summary table.
+            raise SystemExit(
+                f"[error] arm {label!r}: {len(tags)} run(s) matched {pattern!r} "
+                f"but none had a loadable {args.ckpt!r} checkpoint."
+            )
         arms[label] = losses
 
     thr = args.threshold
