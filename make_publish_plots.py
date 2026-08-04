@@ -1,0 +1,461 @@
+"""Publication plots for a single tag: clean, presentation-ready figures with
+no debugging info (tag names, checkpoint iters, ...) baked into their titles.
+
+adversarial_report.py and the sweep_*.py scripts are diagnostic tools -- their
+titles deliberately embed the tag/run so a reader flipping between many runs
+knows which is which. This script is for the opposite situation: one run,
+already chosen, going into a writeup. It reuses adversarial_report.py's and
+probe_lib.py's data-computation helpers directly (so the numbers agree with
+the diagnostic reports) but supplies its own plotting code with quieter
+titles and different layouts (e.g. 2x2 instead of 1x4).
+
+Structured the same way as adversarial_report.py: a data-computation phase
+(`_run_analysis`) produces a `PublishData`, then a separate plotting phase
+(`_make_plots`) turns it into figures -- so adding a plot never needs a new
+forward pass through data already computed, and vice versa.
+
+Currently hard-codes a single tag; broaden once more tags need plots.
+"""
+
+import argparse
+
+TAG = "sweep3_lam0.1_tr0"
+STEER_LAYERS = [1, 2, 3, 4, 5]
+
+
+def parse_args():
+    p = argparse.ArgumentParser(
+        description=__doc__.splitlines()[0],
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p.add_argument("--tag", type=str, default=TAG)
+    p.add_argument(
+        "--ckpt",
+        choices=["last", "best", "both"],
+        default="both",
+        help="which checkpoint(s) to plot; 'both' writes to separate "
+        "publish/<tag>/<ckpt>/ subdirectories.",
+    )
+    p.add_argument("--n-train", type=int, default=20_000, help="per class/set")
+    p.add_argument("--n-test", type=int, default=50_000, help="per class/set")
+    p.add_argument("--n-err-samples", type=int, default=10_000)
+    p.add_argument("--seed", type=int, default=20260718)
+    p.add_argument(
+        "--probe-backend",
+        choices=config.PROBE_BACKEND_CHOICES,
+        default="auto",
+    )
+    p.add_argument("--show", action="store_true")
+    return p.parse_args()
+
+
+# parse_args early-exits on --help before the heavy imports below are reached.
+if __name__ == "__main__":
+    import config  # noqa: E402 (needs to be visible to parse_args' choices=)
+
+    args = parse_args()
+
+import dataclasses
+import os
+
+import matplotlib.pyplot as plt
+import numpy as np
+import torch
+from sklearn.metrics import roc_auc_score, roc_curve
+
+import config
+from adversarial_report import _linear_y_reconstruction, _steer_vectors
+from data import eval_task_loss, sample_batch
+from probe_backend import resolve_probe_backend
+from probe_lib import (
+    LinearBoundary,
+    binary_probe_metrics_all_layers,
+    boundary_auroc,
+    forward_steered,
+    load_model,
+    resolve_adv_config,
+    save_plot,
+)
+
+PUBLISH_DIR = "publish"
+
+
+# ----------------------------------------------------------------------------
+# Phase 1: data computation (no plotting)
+# ----------------------------------------------------------------------------
+@dataclasses.dataclass
+class PublishData:
+    """Everything phase 2 (`_make_plots`) needs, all recomputed fresh against
+    the checkpoint rather than pulled from training history."""
+
+    task_loss: float
+    err_samples: np.ndarray  # (n_err_samples,) per-input Euclidean error
+    hidden_layers: list[int]
+    gap_plot_inputs: (
+        dict  # {layer: {"w_dom", "midpoint", "w_probe", "b_probe", "X_te", "y_te"}}
+    )
+    auroc: dict  # {layer: {"dom": auroc, "logreg": auroc}}
+    linear_y_r2: dict  # {layer: R^2}
+
+
+@torch.no_grad()
+def _sample_errors(model, n, g, device) -> np.ndarray:
+    """Per-input Euclidean distance ||pred - y|| between the model's task
+    output and the true sat(x, c), over `n` fresh c ~ U[C_LOW, C_HIGH]
+    inputs."""
+    x_full, y = sample_batch(n, model.num_x, generator=g, device=device)
+    pred = model.task_output(x_full)
+    return ((pred - y) ** 2).sum(dim=-1).sqrt().cpu().numpy()
+
+
+def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> PublishData:
+    task_loss = eval_task_loss(model, g, device=device)
+    err_samples = _sample_errors(model, args.n_err_samples, g, device)
+
+    hidden_layers = list(range(1, model.num_blocks))
+    gap, gap_plot_inputs = binary_probe_metrics_all_layers(
+        model,
+        1.0,
+        2.0,
+        hidden_layers,
+        args.n_train,
+        args.n_test,
+        g,
+        probe_backend_name,
+        desc="probe gap @ {1,2}",
+        eval_noise_std=adv_cfg.resid_noise_std,
+    )
+    del gap  # accuracy metrics; unused here (AUROC is recomputed below instead)
+
+    auroc = {}
+    for lyr in hidden_layers:
+        pi = gap_plot_inputs[lyr]
+        dom_boundary = LinearBoundary(pi["w_dom"], -pi["midpoint"])
+        probe_boundary = LinearBoundary(pi["w_probe"], pi["b_probe"])
+        auroc[lyr] = {
+            "dom": boundary_auroc(dom_boundary, pi["X_te"], pi["y_te"]),
+            "logreg": boundary_auroc(probe_boundary, pi["X_te"], pi["y_te"]),
+        }
+
+    linear_y_r2 = _linear_y_reconstruction(
+        model, model.num_x, model.num_blocks, args.n_train, args.n_test, g, device
+    )
+
+    return PublishData(
+        task_loss=task_loss,
+        err_samples=err_samples,
+        hidden_layers=hidden_layers,
+        gap_plot_inputs=gap_plot_inputs,
+        auroc=auroc,
+        linear_y_r2=linear_y_r2,
+    )
+
+
+# ----------------------------------------------------------------------------
+# Phase 2: plots (titles deliberately omit the tag -- see module docstring)
+# ----------------------------------------------------------------------------
+@torch.no_grad()
+def _plot_learned_curves(model, task_loss, plot_dir, tag, show=False):
+    """2x2 grid of learned y(x) per coordinate, one panel per fixed c."""
+    c_values = (1.0, 1.333, 1.667, 2.0)
+    num_x = model.num_x
+    device = next(model.parameters()).device
+    xs = torch.linspace(-3, 3, 400, device=device)
+    fig, axes = plt.subplots(2, 2, figsize=(8, 8), sharex=True, sharey=True)
+    for ax, c in zip(axes.flat, c_values):
+        for j in range(num_x):
+            x = torch.zeros(len(xs), num_x, device=device)
+            x[:, j] = xs
+            x_full = torch.cat([x, torch.full((len(xs), 1), c, device=device)], dim=1)
+            y = model.task_output(x_full)[:, j]
+            ax.plot(xs.cpu().numpy(), y.cpu().numpy(), alpha=0.5, zorder=5)
+        ax.plot(
+            xs.cpu().numpy(),
+            torch.clamp(xs, -c, c).cpu().numpy(),
+            "k--",
+            lw=1,
+            label="target sat",
+            zorder=2,
+        )
+        ax.set_title(f"c = {c:.3f}")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+    for ax in axes[-1]:
+        ax.set_xlabel("x")
+    for ax in axes[:, 0]:
+        ax.set_ylabel("y")
+    fig.suptitle(f"Learned y(x, c)  (task loss = {task_loss:.3e})")
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_curves.png", close=not show)
+
+
+def _plot_error_histogram(err_samples, plot_dir, tag, show=False):
+    fig, ax = plt.subplots(figsize=(6, 4.2))
+    ax.hist(err_samples, bins=80, color="steelblue")
+    ax.set_xlabel(r"Euclidean error $\|\hat{y} - y\|$")
+    ax.set_ylabel("count")
+    ax.set_title(f"Prediction error distribution (n={len(err_samples):,})")
+    ax.grid(True, alpha=0.3)
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_err_hist.png", close=not show)
+
+
+def _plot_auroc_bar(auroc, hidden_layers, plot_dir, tag, show=False):
+    x = np.arange(len(hidden_layers))
+    fig, ax = plt.subplots(figsize=(max(5, 1.1 * len(hidden_layers)), 4.2))
+    ax.bar(x - 0.2, [auroc[l]["dom"] for l in hidden_layers], 0.4, label="DoM")
+    ax.bar(x + 0.2, [auroc[l]["logreg"] for l in hidden_layers], 0.4, label="LogReg")
+    ax.axhline(0.5, color="k", ls="--", lw=1, label="chance")
+    ax.set_ylim(0.4, 1.02)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"L{l}" for l in hidden_layers])
+    ax.set_ylabel("AUROC")
+    ax.set_title("Probe AUROC by layer")
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_auroc_bar.png", close=not show)
+
+
+def _plot_probe_pca(lyr, pi, plot_dir, tag, show=False):
+    """Same content as probe_lib.plot_probe_pca, minus the tag in the title."""
+    from sklearn.decomposition import PCA
+
+    X_test, y_test = pi["X_te"], pi["y_te"]
+    dom = LinearBoundary(pi["w_dom"], -pi["midpoint"])
+    probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
+    pca_xy = PCA(n_components=2).fit_transform(X_test)
+
+    def _resid_pc1(w):
+        w_hat = w / np.linalg.norm(w)
+        X_resid = X_test - np.outer(X_test @ w_hat, w_hat)
+        pc1 = PCA(n_components=1).fit_transform(X_resid)[:, 0]
+        return w_hat, pc1
+
+    w_dom_hat, pc1_resid_dom = _resid_pc1(dom.w)
+    w_logreg_hat, pc1_resid_logreg = _resid_pc1(probe.w)
+    proj_dom_raw = X_test @ w_dom_hat
+    proj_logreg_raw = X_test @ w_logreg_hat
+    dom_threshold = float(-dom.b / np.linalg.norm(dom.w))
+    logreg_threshold = float(-probe.b / np.linalg.norm(probe.w))
+
+    lo_mask = y_test == 0.0
+    hi_mask = y_test == 1.0
+
+    fig, (ax_pca, ax_dom_resid, ax_logreg_resid) = plt.subplots(1, 3, figsize=(15, 4.5))
+
+    ax_pca.scatter(pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1")
+    ax_pca.scatter(pca_xy[hi_mask, 0], pca_xy[hi_mask, 1], s=4, alpha=0.4, label="c=2")
+    ax_pca.set_title("PCA (top 2 components)")
+    ax_pca.set_xlabel("PC1")
+    ax_pca.set_ylabel("PC2")
+    ax_pca.legend(fontsize=8)
+    ax_pca.grid(True, alpha=0.3)
+    ax_pca.set_aspect("equal", adjustable="datalim")
+
+    for ax, proj_raw, pc1_resid, threshold, title, xlabel in (
+        (
+            ax_dom_resid,
+            proj_dom_raw,
+            pc1_resid_dom,
+            dom_threshold,
+            "DoM vs residual PCA",
+            "DoM projection (data coords)",
+        ),
+        (
+            ax_logreg_resid,
+            proj_logreg_raw,
+            pc1_resid_logreg,
+            logreg_threshold,
+            "logreg vs residual PCA",
+            "logreg projection (data coords)",
+        ),
+    ):
+        ax.scatter(proj_raw[lo_mask], pc1_resid[lo_mask], s=4, alpha=0.4, label="c=1")
+        ax.scatter(proj_raw[hi_mask], pc1_resid[hi_mask], s=4, alpha=0.4, label="c=2")
+        ax.axvline(threshold, color="k", ls="--", lw=1, label="threshold")
+        ax.set_title(title)
+        ax.set_xlabel(xlabel)
+        ax.set_ylabel("PC1 of orthogonal residual")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    fig.suptitle(f"Probe separation, PCA (layer {lyr})")
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_L{lyr}_probe_pca.png", close=not show)
+
+
+def _plot_probe_hist_roc(lyr, pi, plot_dir, tag, show=False):
+    """Same content as probe_lib.plot_probe, minus the tag in the title."""
+    X_test, y_test = pi["X_te"], pi["y_te"]
+    dom = LinearBoundary(pi["w_dom"], -pi["midpoint"])
+    probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
+
+    proj_dom = dom.score(X_test)
+    proj_logreg = probe.score(X_test)
+    auroc_dom = roc_auc_score(y_test, proj_dom)
+    auroc_logreg = roc_auc_score(y_test, proj_logreg)
+    fpr_dom, tpr_dom, _ = roc_curve(y_test, proj_dom)
+    fpr_logreg, tpr_logreg, _ = roc_curve(y_test, proj_logreg)
+
+    lo_mask = y_test == 0.0
+    hi_mask = y_test == 1.0
+
+    fig, (ax_dom, ax_logreg, ax_roc) = plt.subplots(1, 3, figsize=(15, 4.5))
+    for ax, proj, title in (
+        (ax_dom, proj_dom, "DoM projection"),
+        (ax_logreg, proj_logreg, "logreg decision function"),
+    ):
+        ax.hist(proj[lo_mask], bins=60, alpha=0.6, label="c=1")
+        ax.hist(proj[hi_mask], bins=60, alpha=0.6, label="c=2")
+        p5, p95 = np.percentile(proj, [5, 95])
+        pad = (p95 - p5) * 0.5
+        ax.set_xlim([p5 - pad, p95 + pad])
+        ax.axvline(0.0, color="k", ls="--", lw=1, label="threshold")
+        ax.set_title(title)
+        ax.set_xlabel("projection (test set)")
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    ax_roc.plot(fpr_dom, tpr_dom, label="DoM")
+    ax_roc.plot(fpr_logreg, tpr_logreg, label="logreg")
+    ax_roc.plot([0, 1], [0, 1], "k--", lw=1, label="chance")
+    ax_roc.set_xlabel("FPR")
+    ax_roc.set_ylabel("TPR")
+    ax_roc.set_title(f"AUROC: DoM {auroc_dom:.3f}; LogReg {auroc_logreg:.3f}")
+    ax_roc.legend(fontsize=8, loc="lower right")
+    ax_roc.grid(True, alpha=0.3)
+    ax_roc.set_aspect("equal", adjustable="box")
+
+    fig.suptitle(f"Probe separation (layer {lyr})")
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_L{lyr}_probe.png", close=not show)
+
+
+@torch.no_grad()
+def _plot_steer_comparison(
+    steer_layer, num_x, model, w_dom, w_probe, plot_dir, tag, device, show=False
+):
+    """Same content as adversarial_report._plot_steer_comparison, minus the
+    tag in the title."""
+    w_dom_vec, w_logreg_vec = _steer_vectors(w_dom, w_probe, 1.0)
+    dtype = next(model.parameters()).dtype
+    vecs = {
+        "DoM": torch.tensor(w_dom_vec, dtype=dtype, device=device),
+        "logreg": torch.tensor(w_logreg_vec, dtype=dtype, device=device),
+    }
+    xs = torch.linspace(-3, 3, 400, device=device)
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True)
+    for ax, (label, vec) in zip(axes, vecs.items()):
+        for j in range(num_x):
+            x = torch.zeros(len(xs), num_x, device=device)
+            x[:, j] = xs
+            x_full = torch.cat([x, torch.full((len(xs), 1), 1.0, device=device)], dim=1)
+            y = forward_steered(model, x_full, steer_layer, vec)[:, j]
+            ax.plot(
+                xs.cpu().numpy(), y.cpu().numpy(), color="blue", alpha=0.3, zorder=5
+            )
+        for t, (ls, lbl) in {
+            1.0: ("k--", "target sat(x,1)"),
+            2.0: ("r--", "target sat(x,2)"),
+        }.items():
+            ax.plot(
+                xs.cpu().numpy(),
+                torch.clamp(xs, -t, t).cpu().numpy(),
+                ls,
+                lw=1.5,
+                label=lbl,
+                zorder=2,
+            )
+        ax.set_title(f"{label} direction")
+        ax.set_xlabel("x")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+    axes[0].set_ylabel("y (c=1 input, steered toward c=2)")
+    axes[0].set_ylim([-2.8, 2.8])
+    fig.suptitle(
+        f"Steering effectiveness, DoM vs logreg direction (layer {steer_layer})"
+    )
+    fig.tight_layout()
+    return save_plot(
+        fig, plot_dir, f"{tag}_L{steer_layer}_steer_cmp.png", close=not show
+    )
+
+
+def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
+    layers = sorted(r2)
+    baseline = r2[0]
+    rel_r2 = {l: (r2[l] - baseline) / (1 - baseline + 1e-9) for l in layers}
+    x = np.arange(len(layers))
+    fig, ax = plt.subplots(figsize=(max(3.5, 0.65 * len(layers)), 4.2))
+    ax.bar(x, [rel_r2[l] for l in layers], color="steelblue")
+    ax.axhline(1.0, color="k", ls="--", lw=1, label="perfect linear reconstruction")
+    ax.axhline(0.0, color="k", lw=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"L{l}" for l in layers])
+    ax.set_ylabel("R² relative to L0 (embedding) baseline")
+    ax.set_title("Linear reconstruction of final y, per layer")
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_linear_y.png", close=not show)
+
+
+def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
+    _plot_learned_curves(model, data.task_loss, plot_dir, tag, show=show)
+    _plot_error_histogram(data.err_samples, plot_dir, tag, show=show)
+    _plot_auroc_bar(data.auroc, data.hidden_layers, plot_dir, tag, show=show)
+    for lyr in data.hidden_layers:
+        _plot_probe_pca(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
+        _plot_probe_hist_roc(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
+    _plot_linear_y_reconstruction(data.linear_y_r2, plot_dir, tag, show=show)
+    for lyr in STEER_LAYERS:
+        assert lyr in data.hidden_layers, (
+            f"steer layer {lyr} must be one of the hidden layers "
+            f"probed above: {data.hidden_layers}"
+        )
+        pi = data.gap_plot_inputs[lyr]
+        _plot_steer_comparison(
+            lyr,
+            model.num_x,
+            model,
+            pi["w_dom"],
+            pi["w_probe"],
+            plot_dir,
+            tag,
+            device,
+            show=show,
+        )
+
+    if show:
+        plt.show()
+        plt.close("all")
+
+
+# ----------------------------------------------------------------------------
+def _run_one(args, ckpt, device):
+    model, ck = load_model(args.tag, ckpt, device)
+    adv_cfg = resolve_adv_config(ck)
+    assert adv_cfg is not None, (
+        f"{args.tag}/{ckpt} has no adv_config (c-blind demonstration run) -- "
+        "nothing to probe or steer."
+    )
+    plot_dir = os.path.join(PUBLISH_DIR, args.tag, ckpt)
+    os.makedirs(plot_dir, exist_ok=True)
+
+    g = torch.Generator(device=device).manual_seed(args.seed)
+    probe_backend_name = resolve_probe_backend(args.probe_backend, device)
+
+    data = _run_analysis(model, adv_cfg, args, g, device, probe_backend_name)
+    _make_plots(model, data, plot_dir, args.tag, device, show=args.show)
+
+
+def main(args):
+    device = "cuda" if torch.cuda.is_available() else "cpu"
+    ckpts = ["last", "best"] if args.ckpt == "both" else [args.ckpt]
+    for ckpt in ckpts:
+        _run_one(args, ckpt, device)
+
+
+if __name__ == "__main__":
+    main(args)
