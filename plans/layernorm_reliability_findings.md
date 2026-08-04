@@ -4,9 +4,48 @@
 mitigates but does not fix it.** LayerNorm is not the dial to turn for this
 problem; the residual-stream evidence below points at a different one.
 
-Run tags: `sweep4_ln_lam0_tr*` (n=6), `sweep4_ln_lam0.1_tr*` (n=4),
-`sweep4_lnwarm_lam0.1_tr*` (n=6). Baselines are the existing
-`sweep3_lam0_tr*` (n=14 with checkpoints) and `sweep3_lam0.1_tr*` (n=15).
+## Runs used
+
+Every arm below is config-identical within itself apart from `seed`, verified
+by comparing each run's own `runs/<tag>/config.json` (not the launch command).
+Across **all five** arms exactly three fields differ -- also computed from the
+config files rather than asserted:
+
+| arm | tags | n | seeds | `layer_norm` | `lam` | `lr_warmup_iters` |
+|---|---|---|---|---|---|---|
+| baseline, lam=0 | `sweep3_lam0_tr{0..13}` | 14 | 0-13 | false | 0 | 0 |
+| baseline, lam=0.1 | `sweep3_lam0.1_tr{0..14}` | 15 | 0-14 | false | 0.1 | 0 |
+| LN, lam=0 | `sweep4_ln_lam0_tr{0..5}` | 6 | 0-5 | **true** | 0 | 0 |
+| LN, lam=0.1 | `sweep4_ln_lam0.1_tr{0..3}` | 4 | 0-3 | **true** | 0.1 | 0 |
+| LN + warmup, lam=0.1 | `sweep4_lnwarm_lam0.1_tr{0..5}` | 6 | 0-5 | **true** | 0.1 | **5000** |
+
+`sweep3_lam0_tr14` exists but has no checkpoint, hence n=14 rather than 15.
+
+All other settings are shared by every arm:
+
+```
+model:  num_x=32  d_model=64  d_mlp=16  num_blocks=12
+        out_init_scale=0.1  activation=gelu  leaky_relu_slope=0.0
+adversarial:
+        penalty_layers=[2]  lam_warmup_iters=0  probe_C=1.0
+        probe_init_iters=1000  class_threshold=1.5
+        probe_loss_kind=probe-report  probe_subsample=4
+        probe_retrain_interval=2  probe_resample_interval=512
+        probe_loss_trim_frac=0.05  resid_noise_std=0.03  grad_clip=1.0
+        x_p_outer=null  x_threshold=1.0  batch_size=16384  lr=0.003
+        adam_eps=1e-05  adam_beta1=0.7  adam_beta2=0.97
+        optimizer_kind=stableadamw  stableadamw_d=1.0
+        explode_factor=0.0  explode_clip_divisor=20  explode_window_iters=10
+        lr_min_frac=0.1
+CLI:    --max-iters 100000  --probe-backend newton
+        --log-interval 125  --ckpt-interval 2000
+```
+
+The `sweep4_*` runs were trained on the vast.ai remote and synced back to
+local `runs/`. The warmup arm's config lives at
+`/home/agent/work/configs/lam0.1_warmup5k.json` **on the remote** (outside the
+repo, so the source sync could not delete it); it is reproduced verbatim into
+each of those runs' `runs/<tag>/config.json`, which is the durable copy.
 
 ## Method
 
