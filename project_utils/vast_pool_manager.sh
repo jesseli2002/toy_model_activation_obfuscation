@@ -18,6 +18,8 @@
 #   disown
 #
 # Check progress/failures: grep -c 'rc=[1-9]' MGRLOG (should be 0); tail MGRLOG.
+#
+# Note: Setting the concurrency file to 0 is one way to gracefully pause training, allowing existing runs to finish without starting new ones.
 set -u
 
 QUEUE="$1"
