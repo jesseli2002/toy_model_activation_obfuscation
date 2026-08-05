@@ -35,6 +35,7 @@ def _logreg_config_file_fields(**overrides) -> dict:
         probe_resample_interval=512,
         probe_loss_trim_frac=0.05,
         resid_noise_std=0.1,
+        probe_noise=False,
         grad_clip=1.0,
         x_p_outer=None,
         x_threshold=1.0,

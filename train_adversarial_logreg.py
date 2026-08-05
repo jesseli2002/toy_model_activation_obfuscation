@@ -621,12 +621,6 @@ class TrainRecord:
     loss: float
     l_task: float | None
     l_probe: float | None
-    # Same penalty, same affine, but scored on a clean (noise-free) probe
-    # pass instead of the noisy one l_probe uses -- diagnostic only, not
-    # part of `loss`. Compare against l_probe to see how much of the noisy
-    # penalty is the noise-amplified-by-w_eff term (see plans/archive/
-    # resid_stream_noise_plan.md's fit/eval-mismatch warning) vs. real signal.
-    l_probe_clean: float | None
     lam_eff: float | None
     lr: float
     affine: tuple[torch.Tensor, torch.Tensor]
@@ -695,50 +689,38 @@ def train_steps(
         probe_x: torch.Tensor,
         probe_label: torch.Tensor,
         noise: torch.Tensor,
-        probe_noise: torch.Tensor,
+        probe_noise: torch.Tensor | None,
         *,
         retrain_probe: bool,
-    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """One full forward at the model's current weights, returning
-        (loss, l_task, l_probe, l_probe_clean).
+        (loss, l_task, l_probe).
 
         task: noisy pass -- this is what forbids shrinking c's encoding below
         the noise floor (see plans/resid_stream_noise_plan.md); `noise` is a
         pre-drawn blob (see `model.generate_noise`) rather than a generator,
         so callers can replay the identical noise across multiple calls
-        within one iteration (see the explode-check/redo passes below).
-
-        probe fit: clean pass over the probe set, full resolution, so the
-        probe can still out-resolve the model; `retrain_probe` first advances
-        the probe on those activations and updates `affine`.
-
-        probe penalty (`l_probe`, the one that enters `loss`): a *separate*
-        noisy pass (`probe_noise`, drawn independently of `noise` -- probe_x
-        isn't x_task, no reason to correlate their noise), so the model is
-        evaluated on the same noise floor it's trained against on the task
-        side, instead of getting a noise-free readout of its own hiding.
-        `l_probe_clean` re-scores the same affine on the clean pass instead,
-        purely for comparison -- see resid_stream_noise_plan.md's warning
-        that a clean-fitted `w_eff` can blow up on noise added to
-        near-zero-variance directions; watch `l_probe` vs `l_probe_clean` for
-        that.
-
-        Under lam=0 the probe pass is skipped entirely (l_probe/l_probe_clean
-        are nan) rather than paying for a value that gets multiplied by
-        zero.
+        within one iteration (see the explode-check/redo passes below). probe:
+        one pass over the probe set feeds both the fit (when `retrain_probe`)
+        and the penalty -- `probe_noise` (None unless adv_config.probe_noise,
+        see there) puts that pass on the same noise floor the task pass uses,
+        so a probe fit on noisy activations is also scored on noisy
+        activations rather than mixing a noisy fit with a clean readout or
+        vice versa (see adv_config.probe_noise's docstring for why that
+        mismatch matters). Under lam=0 the probe pass is skipped entirely
+        (l_probe is nan) rather than paying for a value that gets multiplied
+        by zero.
         """
         nonlocal affine
         y_pred_full = model.forward(x_task, noise=noise)
         l_task = torch.mean((y_pred_full[:, :num_x] - y) ** 2)
         if skip_probe:
-            nan = torch.tensor(float("nan"))
-            return l_task, l_task, nan, nan
+            return l_task, l_task, torch.tensor(float("nan"))
 
-        with torch.no_grad():
-            _, caches_clean = model.forward(probe_x, return_cache=True)
-        cat_clean = concat_caches_torch(caches_clean, hidden_layers)
+        _, caches = model.forward(probe_x, return_cache=True, noise=probe_noise)
+        cat_live = concat_caches_torch(caches, hidden_layers)
         if retrain_probe:
-            X_fit = cat_clean[:: adv_config.probe_subsample]  # no-op at 1
+            X_fit = cat_live.detach()[:: adv_config.probe_subsample]  # no-op at 1
             label_fit = probe_label[:: adv_config.probe_subsample]
             assert label_fit.any() and (~label_fit).any(), (
                 "subsampled probe batch has only one class present -- lower "
@@ -747,29 +729,14 @@ def train_steps(
             fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
             affine = probe.get_affine(device)
 
-        _, caches_noisy = model.forward(probe_x, return_cache=True, noise=probe_noise)
-        cat_noisy = concat_caches_torch(caches_noisy, hidden_layers)
         l_probe = score_penalty(
-            cat_noisy,
+            cat_live,
             affine,
             probe_label,
             adv_config.probe_loss_kind,
             adv_config.probe_loss_trim_frac,
         )
-        with torch.no_grad():
-            l_probe_clean = score_penalty(
-                cat_clean,
-                affine,
-                probe_label,
-                adv_config.probe_loss_kind,
-                adv_config.probe_loss_trim_frac,
-            )
-        return (
-            lam_eff * l_probe + (1 - lam_eff) * l_task,
-            l_task,
-            l_probe,
-            l_probe_clean,
-        )
+        return lam_eff * l_probe + (1 - lam_eff) * l_task, l_task, l_probe
 
     def optimizer_step(loss: torch.Tensor, grad_clip: float) -> None:
         opt.zero_grad(set_to_none=True)
@@ -816,15 +783,19 @@ def train_steps(
         # an explicit, replayable blob instead of snapshotting/resetting
         # `gen`'s RNG state around the draw (see plans/model_noise_blob_plan.md).
         # probe_noise is a separate draw, same std, same reuse-across-calls
-        # reasoning -- it's for the probe's noisy penalty pass, not the task
-        # pass `noise` covers, and there's no reason to correlate the two.
+        # reasoning -- it's for the probe's forward, not the task pass `noise`
+        # covers, and there's no reason to correlate the two. Only drawn when
+        # adv_config.probe_noise is set, so a disabled probe_noise consumes
+        # no extra RNG state and stays bit-identical to a pre-probe_noise run.
         noise = model.generate_noise(
             adv_config.batch_size, adv_config.resid_noise_std, gen
         )
-        probe_noise = model.generate_noise(
-            adv_config.batch_size, adv_config.resid_noise_std, gen
+        probe_noise = (
+            model.generate_noise(adv_config.batch_size, adv_config.resid_noise_std, gen)
+            if adv_config.probe_noise
+            else None
         )
-        loss, l_task, l_probe, l_probe_clean = forward_loss(
+        loss, l_task, l_probe = forward_loss(
             x_task,
             y,
             lam_eff,
@@ -852,7 +823,7 @@ def train_steps(
 
         if adv_config.explode_factor > 0:
             with torch.no_grad():
-                loss_after, _, _, _ = forward_loss(
+                loss_after, _, _ = forward_loss(
                     x_task,
                     y,
                     lam_eff,
@@ -891,7 +862,7 @@ def train_steps(
                 # Fresh forward: the previous graph was freed by backward()
                 # above, and this is otherwise numerically the same
                 # pre-step state already used for l_task/l_probe/loss.
-                loss, l_task, l_probe, l_probe_clean = forward_loss(
+                loss, l_task, l_probe = forward_loss(
                     x_task,
                     y,
                     lam_eff,
@@ -912,7 +883,6 @@ def train_steps(
             loss=loss.item(),
             l_task=float(l_task.item()),
             l_probe=float(l_probe.item()),
-            l_probe_clean=float(l_probe_clean.item()),
             lam_eff=lam_eff,
             lr=lr_eff,
             affine=affine,
@@ -1176,7 +1146,8 @@ def main(args):
         f"probe_retrain_interval={adv_config.probe_retrain_interval} "
         f"probe_resample_interval={adv_config.probe_resample_interval} "
         f"probe_loss_trim_frac={adv_config.probe_loss_trim_frac} "
-        f"resid_noise_std={adv_config.resid_noise_std} grad_clip={adv_config.grad_clip} "
+        f"resid_noise_std={adv_config.resid_noise_std} probe_noise={adv_config.probe_noise} "
+        f"grad_clip={adv_config.grad_clip} "
         f"lr={adv_config.lr} lr_warmup_iters={adv_config.lr_warmup_iters} "
         f"lr_min_frac={adv_config.lr_min_frac} adam_eps={adv_config.adam_eps} "
         f"adam_beta1={adv_config.adam_beta1} adam_beta2={adv_config.adam_beta2} "
@@ -1196,7 +1167,6 @@ def main(args):
         loss=best_loss,
         l_task=None,
         l_probe=None,
-        l_probe_clean=None,
         lam_eff=None,
         lr=adv_config.lr,
         affine=affine,
@@ -1221,8 +1191,8 @@ def main(args):
         rate = rate_meter.update(record.iter)
         print(
             f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
-            f"probe {record.l_probe:.3e} (clean {record.l_probe_clean:.3e})  "
-            f"max_err {max_err:.3e}  n_exploded {record.n_exploded}  {rate:.1f} it/s"
+            f"probe {record.l_probe:.3e}  max_err {max_err:.3e}  "
+            f"n_exploded {record.n_exploded}  {rate:.1f} it/s"
         )
 
     def checkpoint():
