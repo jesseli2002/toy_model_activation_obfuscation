@@ -296,6 +296,32 @@ def _plot_probe_pca(lyr, pi, plot_dir, tag, show=False):
     return save_plot(fig, plot_dir, f"{tag}_L{lyr}_probe_pca.png", close=not show)
 
 
+def _plot_pca_scatter(lyr, pi, plot_dir, tag, show=False):
+    """Just the top-2-component PCA scatter from `_plot_probe_pca`, without
+    the DoM/logreg residual subplots."""
+    from sklearn.decomposition import PCA
+
+    X_test, y_test = pi["X_te"], pi["y_te"]
+    pca_xy = PCA(n_components=2).fit_transform(X_test)
+
+    lo_mask = y_test == 0.0
+    hi_mask = y_test == 1.0
+
+    fig, ax_pca = plt.subplots(figsize=(5, 4.5))
+
+    ax_pca.scatter(pca_xy[lo_mask, 0], pca_xy[lo_mask, 1], s=4, alpha=0.4, label="c=1")
+    ax_pca.scatter(pca_xy[hi_mask, 0], pca_xy[hi_mask, 1], s=4, alpha=0.4, label="c=2")
+    ax_pca.set_title(f"PCA (top 2 components, layer {lyr})")
+    ax_pca.set_xlabel("PC1")
+    ax_pca.set_ylabel("PC2")
+    ax_pca.legend(fontsize=8)
+    ax_pca.grid(True, alpha=0.3)
+    ax_pca.set_aspect("equal", adjustable="datalim")
+
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_L{lyr}_pca.png", close=not show)
+
+
 def _plot_probe_hist_roc(lyr, pi, plot_dir, tag, show=False):
     """Same content as probe_lib.plot_probe, minus the tag in the title."""
     X_test, y_test = pi["X_te"], pi["y_te"]
@@ -417,7 +443,7 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
     _plot_error_histogram(data.err_samples, plot_dir, tag, show=show)
     _plot_auroc_bar(data.auroc, data.hidden_layers, plot_dir, tag, show=show)
     for lyr in data.hidden_layers:
-        _plot_probe_pca(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
+        _plot_pca_scatter(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
         _plot_probe_hist_roc(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
     _plot_linear_y_reconstruction(data.linear_y_r2, plot_dir, tag, show=show)
     for lyr in STEER_LAYERS:
