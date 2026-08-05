@@ -45,6 +45,7 @@ def _make_record(**overrides):
         loss=1.0,
         l_task=0.5,
         l_probe=0.5,
+        l_probe_clean=0.5,
         lam_eff=0.3,
         lr=3e-3,
         affine=("w", "b"),

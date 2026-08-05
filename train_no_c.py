@@ -217,12 +217,14 @@ def main(args):
                 )
                 # Same keys train_adversarial_logreg.py's history.jsonl
                 # entries have (see TrainRecord/_history_entry) -- no probe
-                # here, so l_probe/lam_eff/n_exploded are nan/None/0.
+                # here, so l_probe/l_probe_clean/lam_eff/n_exploded are
+                # nan/nan/None/0.
                 entry = {
                     "iter": it,
                     "loss": loss.item(),
                     "l_task": ev_loss,
                     "l_probe": float("nan"),
+                    "l_probe_clean": float("nan"),
                     "lam_eff": None,
                     "n_exploded": 0,
                     "max_err": eval_max_err(model, gen, device),
