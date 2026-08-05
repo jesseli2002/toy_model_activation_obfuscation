@@ -28,6 +28,7 @@ SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
 # -- lets you preview the plot's layout without waiting on a full sweep's
 # worth of checkpoint loading / task-loss / probe recomputation.
 
+PLOT_DIR = "plot/sweep3"
 RUN_GLOB = "sweep3_lam*_tr*"
 EXCLUDE_LAMBDAS: set[float] = set()
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
@@ -39,7 +40,7 @@ PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
 EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
 
-LOSS_THRESHOLD = 0.006  # task "succeeded" iff final loss below this
+LOSS_THRESHOLD = 0.01  # task "succeeded" iff final loss below this
 AUROC_THRESHOLDS = [
     0.6,
     0.75,
@@ -290,6 +291,7 @@ def main():
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     ax.grid(True, alpha=0.3)
 
+    fig.savefig(f"{PLOT_DIR}/lam_sweep_task{LOSS_THRESHOLD}.png", bbox_inches="tight")
     plt.tight_layout()
     plt.show()
 

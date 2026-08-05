@@ -6,9 +6,10 @@ shape is still changing, so argparse would just be churn for now. Prints to
 console / plt.show() only; nothing is written to disk.
 """
 
-RUN_TAGS = [f"sweep3_lam0_tr{i}" for i in range(10)]
-# RUN_TAGS = [f"sweep3_lam0.1_tr{i}" for i in range(15)]
-# RUN_TAGS = [f"sweep3_lam0.001_tr{i}" for i in range(10)]
+# RUN_TAGS = [f"sweep3_lam0_tr{i}" for i in range(10)]
+# RUN_TAGS = [f"sweep3_lam0.1_tr{i}" for i in range(14)]
+# RUN_TAGS = [f"sweep5_ramp20k_tr{i}" for i in range(5)]
+RUN_TAGS = [f"sweep5_step3k_tr{i}" for i in range(12)]
 # RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running min of loss over the past this-many iters
