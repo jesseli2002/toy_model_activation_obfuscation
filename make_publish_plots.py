@@ -43,7 +43,7 @@ def parse_args():
     p.add_argument(
         "--probe-backend",
         choices=config.PROBE_BACKEND_CHOICES,
-        default="auto",
+        default="newton",
     )
     p.add_argument("--show", action="store_true")
     return p.parse_args()
@@ -113,7 +113,14 @@ def _sample_errors(model, n, g, device) -> np.ndarray:
 
 
 def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> PublishData:
-    task_loss = eval_task_loss(model, g, device=device)
+    task_loss = eval_task_loss(
+        model,
+        g,
+        device=device,
+        x_p_outer=adv_cfg.x_p_outer,
+        x_threshold=adv_cfg.x_threshold,
+        noise_std=adv_cfg.resid_noise_std,
+    )
     err_samples = _sample_errors(model, args.n_err_samples, g, device)
 
     hidden_layers = list(range(1, model.num_blocks))
