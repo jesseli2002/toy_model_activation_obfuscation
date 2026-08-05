@@ -9,6 +9,7 @@ __pycache__
 
 # Result plots
 plot
+publish
 
 # Per-run checkpoints & logs (ephemeral)
 runs
