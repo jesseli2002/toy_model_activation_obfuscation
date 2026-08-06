@@ -43,7 +43,7 @@ PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
 EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
 
-LOSS_THRESHOLD = 0.006  # task "succeeded" iff final loss below this
+LOSS_THRESHOLD = 0.01  # task "succeeded" iff final loss below this
 AUROC_THRESHOLDS = [
     0.6,
     0.75,

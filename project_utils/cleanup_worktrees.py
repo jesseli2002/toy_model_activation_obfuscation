@@ -1,3 +1,4 @@
+# /usr/bin/env python
 """Delete all linked git worktrees (and their branches) after confirmation.
 
 Lists every worktree except the main one, asks for a single y/N confirmation,
