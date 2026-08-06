@@ -133,4 +133,4 @@ def eval_task_loss(
         )
         total += ((pred - y) ** 2).sum()
         done += b
-    return (total / (done * model.num_x)).item()
+    return (total / (n * model.num_x)).item()
