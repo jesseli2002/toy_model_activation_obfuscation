@@ -41,9 +41,8 @@ ONE_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for the one-hot OOD loss
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 
-RANK_STEP = (
-    7  # plot every Nth rank (0-indexed, ascending) in each metric's sorted order
-)
+# plot every Nth rank (0-indexed, ascending) in each metric's sorted order
+RANK_STEP = 1
 PROBE_N_TRAIN = 10000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
