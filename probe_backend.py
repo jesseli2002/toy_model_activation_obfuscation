@@ -109,7 +109,9 @@ class TorchProbePipeline:
 
 def resolve_probe_backend(backend: str, device: str) -> str:
     if backend == "auto":
-        return "torch" if device == "cuda" else "sklearn"
+        # startswith, not ==: device may be "cuda:N" for a pinned GPU
+        # (see --device in train_adversarial_logreg.py).
+        return "torch" if device.startswith("cuda") else "sklearn"
     return backend
 
 
