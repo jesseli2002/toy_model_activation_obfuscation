@@ -329,11 +329,7 @@ def main():
     if missing:
         print(f"no adversarial config, excluded from AUROC ranking: {missing}")
 
-    # Own generator (not `g`) so this pass doesn't shift the probe-fit draws
-    # above -- appending here keeps `aurocs` and its plot filenames unchanged
-    # from before this metric was added.
-    g_one_hot = torch.Generator(device=DEVICE).manual_seed(SEED)
-    one_hot_losses = {t: _one_hot_loss(t, g_one_hot) for t in tags}
+    one_hot_losses = {t: _one_hot_loss(t, g) for t in tags}
 
     tags_by_loss = sorted(tags, key=lambda t: losses[t])
     tags_by_one_hot_loss = sorted(tags, key=lambda t: one_hot_losses[t])
