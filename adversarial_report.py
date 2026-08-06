@@ -146,8 +146,13 @@ def plot_learned_curves(
     plot_dir,
     c_values=(1.0, 1.333, 1.667, 2.0),
     show=False,
+    filename_tag=None,
 ):
-    """Plot learned y(x) per coordinate at fixed c, for an already-loaded model."""
+    """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
+    `tag` names the plot title; `filename_tag` (defaults to `tag`) names the
+    output file, for callers that want a shorter/different filename than the
+    title (e.g. sweep_threshold_report.py, where the title carries the full
+    run tag but the filename stays short)."""
     num_x = model.num_x
     device = next(model.parameters()).device
     xs = torch.linspace(-3, 3, 400, device=device)
@@ -180,7 +185,8 @@ def plot_learned_curves(
     axes[0].set_ylabel("y")
     fig.suptitle(f"learned y(x) per coordinate, fixed c ({tag}); {num_x} lines/panel")
     fig.tight_layout()
-    return save_plot(fig, plot_dir, f"{tag}_curves.png", close=not show)
+    fname = filename_tag if filename_tag is not None else tag
+    return save_plot(fig, plot_dir, f"{fname}_curves.png", close=not show)
 
 
 # ----------------------------------------------------------------------------
@@ -281,7 +287,7 @@ def _plot_training_traces(
         )
     ax_loss.set_title("loss terms")
     ax_loss.set_xlabel("iter")
-    ax_loss.set_ylim(bottom=3e-3)
+    # ax_loss.set_ylim(bottom=3e-3)
     ax_loss.legend(fontsize=7)
     ax_loss.grid(True, alpha=0.3)
 

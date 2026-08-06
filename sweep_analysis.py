@@ -24,14 +24,17 @@ which uses the same recomputation for the same reasons (some runs' final
 checkpoint predates their last history record).
 """
 
+import re
+
 SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
 # -- lets you preview the plot's layout without waiting on a full sweep's
 # worth of checkpoint loading / task-loss / probe recomputation.
 
-PLOT_DIR = "plot/sweep3"
-RUN_GLOB = "sweep3_lam*_tr*"
+PLOT_DIR = "plot/sweep7"
+RUN_GLOB = "sweep7_lam*_tr*"
+TAG_RE = re.compile(r"sweep7_lam([0-9\.]+)_tr(\d+)$")
 EXCLUDE_LAMBDAS: set[float] = set()
-CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
+CKPT = "best"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std
@@ -40,7 +43,7 @@ PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
 EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
 
-LOSS_THRESHOLD = 0.01  # task "succeeded" iff final loss below this
+LOSS_THRESHOLD = 0.006  # task "succeeded" iff final loss below this
 AUROC_THRESHOLDS = [
     0.6,
     0.75,
@@ -50,7 +53,6 @@ AUROC_THRESHOLDS = [
 
 import glob
 import os
-import re
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -69,7 +71,6 @@ from probe_lib import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 0
 
-TAG_RE = re.compile(r"sweep3_lam([0-9.]+)_tr(\d+)$")
 
 # Sequential blue ramp (references/palette.md), lightest -> darkest, 100..700.
 SEQ_RAMP = [

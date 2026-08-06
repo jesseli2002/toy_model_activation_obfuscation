@@ -135,6 +135,14 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # 0.0 disables trimming (plain mean).
     probe_loss_trim_frac: float
     resid_noise_std: float
+    # False (legacy): probe fit and penalty both read a clean probe pass, as
+    # before this field existed. True: both instead read one pass noised at
+    # resid_noise_std -- fit and penalty share that single noisy pass (not
+    # noisy-eval-of-a-clean-fit), which is what keeps a clean-fitted w_eff
+    # from blowing up on noise landing in near-zero-clean-variance
+    # directions (see plans/archive/resid_stream_noise_plan.md). The task
+    # pass is unaffected either way -- always noisy at resid_noise_std.
+    probe_noise: bool
     # Clipped per-block, not whole-model: a global L2 norm sums correlated
     # per-block gradient contributions (every block shares the same backprop
     # signal) under one sqrt, so its natural scale grows with num_blocks even
@@ -213,6 +221,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "probe_resample_interval": 0,  # legacy runs never resampled the probe set
         "probe_loss_trim_frac": 0.0,  # legacy runs used the plain (untrimmed) mean
         "resid_noise_std": 0.0,  # legacy runs trained with no residual-stream noise
+        "probe_noise": False,  # legacy runs fit/scored the probe on a clean pass
         "grad_clip": 0.0,  # legacy runs trained with no gradient clipping
         "x_p_outer": None,  # legacy runs sampled x plain-uniform, unbiased
         "x_threshold": 1.0,
