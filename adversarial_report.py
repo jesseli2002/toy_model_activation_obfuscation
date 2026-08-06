@@ -281,7 +281,7 @@ def _plot_training_traces(
         )
     ax_loss.set_title("loss terms")
     ax_loss.set_xlabel("iter")
-    ax_loss.set_ylim(bottom=3e-3)
+    # ax_loss.set_ylim(bottom=3e-3)
     ax_loss.legend(fontsize=7)
     ax_loss.grid(True, alpha=0.3)
 

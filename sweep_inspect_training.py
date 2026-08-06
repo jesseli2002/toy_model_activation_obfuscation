@@ -7,9 +7,9 @@ console / plt.show() only; nothing is written to disk.
 """
 
 # RUN_TAGS = [f"sweep3_lam0_tr{i}" for i in range(10)]
-# RUN_TAGS = [f"sweep3_lam0.1_tr{i}" for i in range(14)]
+RUN_TAGS = [f"noisyprobe_lam0.1_tr{i}" for i in range(2)]
 # RUN_TAGS = [f"sweep5_ramp20k_tr{i}" for i in range(5)]
-RUN_TAGS = [f"sweep5_step3k_tr{i}" for i in range(12)]
+# RUN_TAGS = [f"sweep5_step3k_tr{i}" for i in range(12)]
 # RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running min of loss over the past this-many iters
@@ -17,7 +17,7 @@ EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
 N_TRAIN = 20_000  # per class, fit size for the refit probe
 N_TEST = 50_000  # per class, eval size for the refit probe
 PROBE_BACKEND = "newton"  # see adversarial_report.py's --probe-backend
-LOSS_TYPE = "total"
+LOSS_TYPE = "task"
 
 import json
 import os

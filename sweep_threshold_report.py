@@ -21,7 +21,12 @@ Settings live in the constants below rather than a CLI -- this script's
 shape is still changing, so argparse would just be churn for now. Plots are
 written under plot/sweep3/; a summary table prints to console."""
 
-RUN_GLOB = "sweep3_lam*_tr*"
+import numpy as np
+import re
+
+RUN_GLOB = "sweep7_lam*_tr*"
+OUT_DIR = "plot/sweep7"
+TAG_RE = re.compile(r"sweep7_lam([0-9\.]+)_tr(\d+)$")
 EXCLUDE_LAMBDAS = {}  #  for partial lambdas currently running
 EXCLUDE_TRIAL_ABOVE = 10  # for partial trials greater than this index
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
@@ -30,7 +35,6 @@ TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see EVAL_NOISE_MULT for the probe-eval analog, tuned separately)
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
-import numpy as np
 
 PERCENTILES = np.arange(28, 95, 7)
 N_PER_PERCENTILE = 6  # a few runs per bucket, not just the nearest one, so a single outlier run doesn't set the impression for its whole percentile
@@ -39,11 +43,9 @@ PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
 PROBE_EVAL_NOISE_MULT = 0.5  # multiplier on resid_noise_std when retraining probe
 SEED = 20260718
-OUT_DIR = "plot/sweep3"
 
 import glob
 import os
-import re
 
 import matplotlib.pyplot as plt
 import torch
@@ -61,8 +63,6 @@ from probe_lib import (
 )
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-
-TAG_RE = re.compile(r"sweep3_lam([0-9.]+)_tr(\d+)$")
 
 
 def _discover_tags() -> list[str]:
