@@ -185,6 +185,17 @@ def parse_args():
     g_book.add_argument("--ckpt-interval", type=int, default=200)
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
     g_book.add_argument("--rate-meter-window", type=float, default=1000.0)
+    g_book.add_argument(
+        "--device",
+        type=str,
+        default=None,
+        metavar="DEVICE",
+        help="'cpu', 'cuda', or 'cuda:N' to pin a specific GPU -- e.g. for "
+        "running several instances in parallel across a multi-GPU box, "
+        "which otherwise all default to cuda:0. Default: cuda iff "
+        "available, else cpu. Checked against torch.cuda.device_count() "
+        "once heavy imports land, since that check isn't available here.",
+    )
 
     args = p.parse_args()
     if args.resume and args.fork_from is not None:
@@ -264,6 +275,36 @@ from model import ResidualMLP, ResidualMLPConfig
 from data import eval_max_err
 from probe_backend import build_probe_pipeline, fit_probe, resolve_probe_backend
 from stableadamw import StableAdamW
+
+
+def resolve_device(device_arg: str | None) -> str:
+    """Validate --device against the devices actually visible to this process.
+
+    None (unset) reproduces the old auto-detect behavior: cuda iff
+    available, else cpu. An explicit 'cuda:N' is checked against
+    torch.cuda.device_count() so a typo'd or out-of-range index fails fast
+    here rather than surfacing as a confusing CUDA error mid-training.
+    """
+    if device_arg is None:
+        return "cuda" if torch.cuda.is_available() else "cpu"
+    if device_arg == "cpu":
+        return "cpu"
+    if device_arg == "cuda" or device_arg.startswith("cuda:"):
+        if not torch.cuda.is_available():
+            raise SystemExit(
+                f"[error] --device {device_arg} requested but CUDA is not available."
+            )
+        idx = int(device_arg.split(":", 1)[1]) if ":" in device_arg else 0
+        num_devices = torch.cuda.device_count()
+        if not 0 <= idx < num_devices:
+            raise SystemExit(
+                f"[error] --device {device_arg} requested but only {num_devices} "
+                f"CUDA device(s) visible (0..{num_devices - 1})."
+            )
+        return device_arg
+    raise SystemExit(
+        f"[error] --device {device_arg!r} not recognized; expected 'cpu', 'cuda', or 'cuda:N'."
+    )
 
 
 def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
@@ -1034,7 +1075,7 @@ def _start_fork_from(args, hist_path: str, device):
 
 def main(args):
     warnings.filterwarnings(action="ignore", category=ConvergenceWarning)
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = resolve_device(args.device)
     probe_backend = resolve_probe_backend(args.probe_backend, device)
 
     if os.path.exists(run_dir(args.tag)) and not args.resume:
