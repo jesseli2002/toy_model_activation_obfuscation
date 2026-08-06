@@ -85,17 +85,24 @@ def read_log(path: str):
     return launches, finishes, last_event_ts
 
 
-def main():
-    args = parse_args()
-    launches, finishes, last_event_ts = read_log(args.manager_log)
+def compute_health(
+    manager_log: str,
+    launched_idx: str | None = None,
+    window_minutes: float = 60.0,
+    stall_threshold_seconds: float = 600.0,
+) -> dict:
+    """Importable core of this script -- used directly by sweep_pool.py's ETA
+    calculator (same process, no subprocess/JSON round-trip needed) as well
+    as this module's own CLI."""
+    launches, finishes, last_event_ts = read_log(manager_log)
 
     finished_pids = {pid for _, pid, _ in finishes}
     running = [pid for _, pid, _ in launches if pid not in finished_pids]
     failures = sum(1 for _, _, rc in finishes if rc != 0)
 
-    if args.launched_idx:
+    if launched_idx:
         try:
-            with open(args.launched_idx) as f:
+            with open(launched_idx) as f:
                 high_water_mark = int(f.read().strip())
         except (FileNotFoundError, ValueError):
             high_water_mark = None
@@ -104,11 +111,10 @@ def main():
 
     now = time.time()
     stalled = (
-        last_event_ts is not None
-        and (now - last_event_ts) > args.stall_threshold_seconds
+        last_event_ts is not None and (now - last_event_ts) > stall_threshold_seconds
     )
 
-    window_start = now - args.window_minutes * 60
+    window_start = now - window_minutes * 60
     recent_finishes = [(ts, rc) for ts, _, rc in finishes if ts >= window_start]
     if recent_finishes:
         # Denominator is the window itself, not the span between the first
@@ -117,7 +123,7 @@ def main():
         # by the 3min sub-span). Cap to time-since-first-launch so a
         # manager that's only been alive 5min doesn't get diluted by a
         # window mostly spent not existing yet.
-        window_hours = args.window_minutes / 60.0
+        window_hours = window_minutes / 60.0
         if launches:
             hours_since_first_launch = (now - launches[0][0]) / 3600.0
             window_hours = min(window_hours, hours_since_first_launch)
@@ -127,7 +133,7 @@ def main():
     else:
         jobs_per_hour = None
 
-    result = {
+    return {
         "running_count": len(running),
         "high_water_mark": high_water_mark,
         "failure_count": failures,
@@ -137,9 +143,19 @@ def main():
         ),
         "stalled": stalled,
         "jobs_per_hour_trailing": jobs_per_hour,
-        "trailing_window_minutes": args.window_minutes,
+        "trailing_window_minutes": window_minutes,
         "trailing_window_sample_size": len(recent_finishes),
     }
+
+
+def main():
+    args = parse_args()
+    result = compute_health(
+        args.manager_log,
+        launched_idx=args.launched_idx,
+        window_minutes=args.window_minutes,
+        stall_threshold_seconds=args.stall_threshold_seconds,
+    )
     print(json.dumps(result, indent=2))
 
 
