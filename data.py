@@ -134,3 +134,40 @@ def eval_task_loss(
         total += ((pred - y) ** 2).sum()
         done += b
     return (total / (n * model.num_x)).item()
+
+
+@torch.no_grad()
+def eval_one_hot_loss(
+    model: ResidualMLP,
+    generator: torch.Generator,
+    device: str = "cpu",
+    n: int = 100_000,
+    batch: int = 20_000,
+    noise_std: float = 0.0,
+) -> float:
+    """Mean-squared task error with only one input coordinate nonzero per
+    example (the rest held at 0) -- the same input construction used by
+    adversarial_report.plot_learned_curves, but scored as a loss instead of
+    plotted. Every training example has all `num_x` coordinates simultaneously
+    nonzero, so this checks generalization to an OOD corner of input space.
+    Scored only on the active coordinate's output (the passive coordinates'
+    target is trivially 0, which would just dilute the number), so this is
+    directly comparable to eval_task_loss's per-coordinate MSE."""
+    total = torch.zeros((), device=device)
+    done = 0
+    while done < n:
+        b = min(batch, n - done)
+        j = torch.randint(0, model.num_x, (b,), generator=generator, device=device)
+        x = torch.zeros((b, model.num_x), device=device)
+        active = _uniform((b,), X_LOW, X_HIGH, generator, device)
+        x[torch.arange(b, device=device), j] = active
+        c = _uniform((b, 1), C_LOW, C_HIGH, generator, device)
+        x_full = torch.cat([x, c], dim=1)
+        y = torch.minimum(torch.maximum(active, -c.squeeze(1)), c.squeeze(1))
+        pred: Float[Tensor, "b num_x"] = model.task_output(
+            x_full, noise=noise_std, generator=generator
+        )
+        pred_active = pred[torch.arange(b, device=device), j]
+        total += ((pred_active - y) ** 2).sum()
+        done += b
+    return (total / n).item()

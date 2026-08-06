@@ -3,7 +3,7 @@ task", "is the model hidden from a linear probe") by rendering diagnostic
 plots for every RANK_STEP-th run in each metric's sorted order, across
 runs/sweep3_lam*_tr* (lam0 excluded -- that sweep is still running).
 
-Loss ranks get a learned-function-curves plot each (from
+Loss and one-hot-loss ranks each get a learned-function-curves plot (from
 adversarial_report.plot_learned_curves); AUROC ranks get a probe
 histogram+ROC plot and a PCA/residual plot (local, logreg-only trims of
 probe_lib.plot_probe / plot_probe_pca, which also plot a difference-of-means
@@ -15,6 +15,11 @@ from each checkpoint -- not the combined lam-weighted training-loss field
 logged to history.jsonl, and not read from history.jsonl at all (some runs'
 final checkpoint predates their last history record, a past checkpoint-saving
 bug).
+
+"One-hot loss" (data.eval_one_hot_loss) is the same task loss but evaluated
+OOD: only one input coordinate is nonzero per example (the rest held at 0),
+as in plot_learned_curves's curve construction, instead of all coordinates
+simultaneously nonzero as in training.
 
 Settings live in the constants below rather than a CLI -- this script's
 shape is still changing, so argparse would just be churn for now. Plots are
@@ -32,6 +37,7 @@ CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see EVAL_NOISE_MULT for the probe-eval analog, tuned separately)
+ONE_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for the one-hot OOD loss
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 
@@ -51,7 +57,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from adversarial_report import plot_learned_curves
-from data import eval_task_loss
+from data import eval_one_hot_loss, eval_task_loss
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -103,6 +109,26 @@ def _final_loss(tag: str, g: torch.Generator) -> float:
     )
 
 
+def _one_hot_loss(tag: str, g: torch.Generator) -> float:
+    """One-hot OOD loss (data.eval_one_hot_loss), freshly recomputed at CKPT
+    -- only one input coordinate nonzero per example, unlike _final_loss's
+    plain training-distribution eval. Uses the checkpoint's own
+    resid_noise_std (TASK_LOSS_NOISE_MULT) so the two loss columns differ
+    only in the input distribution, not the noise."""
+    model, ck = load_model(tag, CKPT, DEVICE)
+    adv_cfg = resolve_adv_config(ck)
+    noise_std = (
+        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
+    )
+    return eval_one_hot_loss(
+        model,
+        g,
+        DEVICE,
+        n=ONE_HOT_LOSS_N_EVAL,
+        noise_std=noise_std,
+    )
+
+
 def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | None:
     """Fit a fresh probe at PROBE_LAYER for `tag`'s CKPT checkpoint and return
     its `plot_inputs` (see _binary_probe_metrics_all_layers) -- the single
@@ -147,15 +173,20 @@ def _select_rank_indices(n: int) -> list[int]:
     return idxs
 
 
-def _make_curve_plots(tags_by_loss: list[str], losses: list[float]) -> None:
+def _make_curve_plots(
+    tags_by_loss: list[str],
+    losses: list[float],
+    out_subdir: str = "by_loss",
+    metric_tag: str = "loss",
+) -> None:
     n = len(tags_by_loss)
-    out_dir = os.path.join(OUT_DIR, "by_loss")
+    out_dir = os.path.join(OUT_DIR, out_subdir)
     os.makedirs(out_dir, exist_ok=True)
     for idx in _select_rank_indices(n):
         tag = tags_by_loss[idx]
         model, _ck = load_model(tag, CKPT, DEVICE)
-        title = f"rank{idx:03d}_{tag}_loss{losses[idx]:.4g}"
-        file_tag = f"rank{idx:03d}_loss{losses[idx]:.4g}"
+        title = f"rank{idx:03d}_{tag}_{metric_tag}{losses[idx]:.4g}"
+        file_tag = f"rank{idx:03d}_{metric_tag}{losses[idx]:.4g}"
         plot_learned_curves(model, title, out_dir, filename_tag=file_tag)
 
 
@@ -298,18 +329,27 @@ def main():
     if missing:
         print(f"no adversarial config, excluded from AUROC ranking: {missing}")
 
+    one_hot_losses = {t: _one_hot_loss(t, g) for t in tags}
+
     tags_by_loss = sorted(tags, key=lambda t: losses[t])
+    tags_by_one_hot_loss = sorted(tags, key=lambda t: one_hot_losses[t])
     tags_by_auroc = sorted(
         (t for t in tags if aurocs[t] is not None), key=lambda t: aurocs[t]
     )
 
-    print(f"\n{'tag':30s} {'loss':>12s} {'auroc':>8s}")
+    print(f"\n{'tag':30s} {'loss':>12s} {'one_hot_loss':>14s} {'auroc':>8s}")
     for t in tags_by_loss:
         a = aurocs[t]
         a_str = f"{a:.4f}" if a is not None else "n/a"
-        print(f"{t:30s} {losses[t]:12.6g} {a_str:>8s}")
+        print(f"{t:30s} {losses[t]:12.6g} {one_hot_losses[t]:14.6g} {a_str:>8s}")
 
     _make_curve_plots(tags_by_loss, [losses[t] for t in tags_by_loss])
+    _make_curve_plots(
+        tags_by_one_hot_loss,
+        [one_hot_losses[t] for t in tags_by_one_hot_loss],
+        out_subdir="by_one_hot_loss",
+        metric_tag="ohloss",
+    )
     _make_probe_plots(tags_by_auroc, [aurocs[t] for t in tags_by_auroc], probe_fits)
 
 
