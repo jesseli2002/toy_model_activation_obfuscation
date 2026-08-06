@@ -20,6 +20,16 @@
 # Check progress/failures: grep -c 'rc=[1-9]' MGRLOG (should be 0); tail MGRLOG.
 #
 # Note: Setting the concurrency file to 0 is one way to gracefully pause training, allowing existing runs to finish without starting new ones.
+#
+# Multi-GPU: on a box with more than one visible GPU, each launched command
+# gets `--device cuda:N` appended, N chosen as whichever GPU currently has
+# the fewest running jobs (ties -> lowest index), not by launch order --
+# queue weights vary a lot (see generate_sweep8.py), so a static round-robin
+# could stack several heavy jobs on one GPU while others sit idle; picking
+# by current occupancy instead rebalances as jobs of different lengths
+# finish. Queued commands must accept --device (see resolve_device() in
+# train_adversarial_logreg.py). Every command still defaults to cuda:0 on a
+# single-GPU box, so this is a no-op there.
 set -u
 
 QUEUE="$1"
@@ -32,9 +42,16 @@ VENV_ACTIVATE="$6"
 cd "$PROJECT_DIR"
 source "$VENV_ACTIVATE"
 
+NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
+
 idx=0
 total=$(wc -l < "$QUEUE")
 declare -A NAME_OF
+declare -A DEVICE_OF     # pid -> gpu index, for decrementing GPU_COUNT on reap
+declare -A GPU_COUNT      # gpu index -> currently-running job count
+if [ "$NUM_GPUS" -gt 1 ]; then
+  for ((g = 0; g < NUM_GPUS; g++)); do GPU_COUNT[$g]=0; done
+fi
 while [ $idx -lt $total ] || [ $(jobs -rp | wc -l) -gt 0 ]; do
   # re-read each pass (not just once at launch) so lines appended to QUEUE
   # after this manager started still get picked up. Safe only because QUEUE
@@ -46,10 +63,25 @@ while [ $idx -lt $total ] || [ $(jobs -rp | wc -l) -gt 0 ]; do
   while [ "$running" -lt "$target" ] && [ $idx -lt $total ]; do
     idx=$((idx+1))
     CMD=$(sed -n "${idx}p" "$QUEUE")
+    gpu=""
+    if [ "$NUM_GPUS" -gt 1 ]; then
+      # pick the least-loaded GPU (lowest running-job count; ties -> lowest index)
+      gpu=0
+      best=${GPU_COUNT[0]}
+      for ((g = 1; g < NUM_GPUS; g++)); do
+        if [ "${GPU_COUNT[$g]}" -lt "$best" ]; then
+          gpu=$g
+          best=${GPU_COUNT[$g]}
+        fi
+      done
+      CMD="$CMD --device cuda:$gpu"
+      GPU_COUNT[$gpu]=$((GPU_COUNT[$gpu] + 1))
+    fi
     LOGFILE="$LOGDIR/job${idx}.log"
     bash -c "$CMD" > "$LOGFILE" 2>&1 &
     newpid=$!
     NAME_OF[$newpid]="job${idx}"
+    [ -n "$gpu" ] && DEVICE_OF[$newpid]=$gpu
     echo "$(date -Iseconds) launched pid=$newpid idx=$idx/${total}: ${CMD:0:120}..." >> "$MGRLOG"
     running=$(jobs -rp | wc -l)
   done
@@ -61,6 +93,10 @@ while [ $idx -lt $total ] || [ $(jobs -rp | wc -l) -gt 0 ]; do
       rc=$?
       echo "$(date -Iseconds) finished pid=$pid ${NAME_OF[$pid]} rc=$rc" >> "$MGRLOG"
       unset 'NAME_OF[$pid]'
+      if [ -n "${DEVICE_OF[$pid]+x}" ]; then
+        GPU_COUNT[${DEVICE_OF[$pid]}]=$((GPU_COUNT[${DEVICE_OF[$pid]}] - 1))
+        unset 'DEVICE_OF[$pid]'
+      fi
     fi
   done
 done
