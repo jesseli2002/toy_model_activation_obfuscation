@@ -173,13 +173,14 @@ def parse_args():
     g_book.add_argument(
         "--probe-backend",
         choices=config.PROBE_BACKEND_CHOICES,
-        default="auto",
-        help="'auto' (default): torch (GPU-resident) probe iff CUDA is "
-        "available, else sklearn. The others force a backend regardless of "
-        "device -- e.g. to smoke-test a GPU backend on a CPU-only machine. "
-        "'newton' solves the same probe objective by damped Newton instead "
-        "of L-BFGS: far cheaper per fit on launch-latency-bound hardware, at "
-        "equal-or-better accuracy (see probe_newton.py).",
+        default="newton",
+        help="'newton' (default): solves the probe objective by damped "
+        "Newton instead of L-BFGS -- far cheaper per fit on "
+        "launch-latency-bound hardware, at equal-or-better accuracy, and "
+        "runs fine on CPU (see probe_newton.py). 'auto': torch "
+        "(GPU-resident) probe iff CUDA is available, else sklearn. The "
+        "others force a backend regardless of device -- e.g. to smoke-test "
+        "a GPU backend on a CPU-only machine.",
     )
     g_book.add_argument("--log-interval", type=int, default=100)
     g_book.add_argument("--ckpt-interval", type=int, default=200)
