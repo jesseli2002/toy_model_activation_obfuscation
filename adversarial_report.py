@@ -65,9 +65,11 @@ def parse_args():
     p.add_argument(
         "--probe-backend",
         choices=config.PROBE_BACKEND_CHOICES,
-        default="auto",
-        help="'auto': torch (GPU-resident) probe iff CUDA is available, else "
-        "sklearn. 'sklearn'/'torch' force a backend regardless of device.",
+        default="newton",
+        help="'newton' (default): damped-Newton solve, cheap per fit and "
+        "runs fine on CPU (see probe_newton.py). 'auto': torch "
+        "(GPU-resident) probe iff CUDA is available, else sklearn. "
+        "'sklearn'/'torch' force a backend regardless of device.",
     )
     p.add_argument("--show", action="store_true")
     p.add_argument(
