@@ -110,10 +110,19 @@ def main():
 
     window_start = now - args.window_minutes * 60
     recent_finishes = [(ts, rc) for ts, _, rc in finishes if ts >= window_start]
-    if len(recent_finishes) >= 2:
-        span_hours = (recent_finishes[-1][0] - recent_finishes[0][0]) / 3600.0
+    if recent_finishes:
+        # Denominator is the window itself, not the span between the first
+        # and last finish in it -- two finishes 3min apart in a 60min
+        # window means ~2/hr (little happened since), not ~20/hr (dividing
+        # by the 3min sub-span). Cap to time-since-first-launch so a
+        # manager that's only been alive 5min doesn't get diluted by a
+        # window mostly spent not existing yet.
+        window_hours = args.window_minutes / 60.0
+        if launches:
+            hours_since_first_launch = (now - launches[0][0]) / 3600.0
+            window_hours = min(window_hours, hours_since_first_launch)
         jobs_per_hour = (
-            (len(recent_finishes) - 1) / span_hours if span_hours > 0 else None
+            len(recent_finishes) / window_hours if window_hours > 0 else None
         )
     else:
         jobs_per_hour = None

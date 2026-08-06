@@ -73,8 +73,12 @@ source "$VENV_ACTIVATE"
 NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
 
 # dedicated fd for the queue/launched_idx lock, held only for the brief
-# read-decide-write critical section below -- never across the job fork or
-# the 5s poll sleep.
+# read-decide-write critical section below -- never across the 5s poll
+# sleep. The job fork does happen inside that section (it needs the
+# just-incremented idx), so it explicitly closes its inherited copy of
+# LOCKFD (see the launch line below) -- otherwise a manager that died
+# mid-critical-section would leave the lock held for as long as that
+# training job runs.
 exec {LOCKFD}>"$LOCK"
 
 write_launched_idx() {
@@ -137,7 +141,12 @@ while :; do
         GPU_COUNT[$gpu]=$((GPU_COUNT[$gpu] + 1))
       fi
       LOGFILE="$LOGDIR/job${idx}.log"
-      bash -c "$CMD" > "$LOGFILE" 2>&1 &
+      # close the lock fd in the child -- it's forked from inside the
+      # locked section below, and without this it'd inherit the open file
+      # description. If the manager ever dies mid-critical-section, that
+      # inherited fd would keep the lock held for as long as the training
+      # job runs (hours), wedging queue_trim.sh/queue_append.sh.
+      bash -c "$CMD" {LOCKFD}>&- > "$LOGFILE" 2>&1 &
       newpid=$!
       NAME_OF[$newpid]="job${idx}"
       [ -n "$gpu" ] && DEVICE_OF[$newpid]=$gpu

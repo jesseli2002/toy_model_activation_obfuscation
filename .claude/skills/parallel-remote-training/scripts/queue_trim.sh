@@ -17,17 +17,30 @@
 #
 # Locking: holds QUEUE.lock (the same flock vast_pool_manager.sh uses)
 # across the read-launched_idx/decide-cutoff/truncate sequence -- see that
-# script's header comment for why this is required, not optional.
+# script's header comment for why this is required, not optional. Waits at
+# most 30s for the lock rather than blocking forever -- a manager that died
+# holding it (see that script's fd-inheritance comment) shouldn't be able
+# to silently wedge a monitor agent calling this via remote_exec.
 set -u
 
 QUEUE="$1"
 MAX_MARGIN="$2"
 
+if [ "$MAX_MARGIN" -lt 0 ]; then
+  echo "[error] MAX_MARGIN must be >= 0 (got $MAX_MARGIN) -- a negative value" \
+    "would compute a cutoff below the high-water mark and delete" \
+    "already-dispatched lines" >&2
+  exit 1
+fi
+
 LOCK="${QUEUE}.lock"
 LAUNCHED_IDX="${QUEUE}.launched_idx"
 
 exec {LOCKFD}>"$LOCK"
-flock -x "$LOCKFD"
+if ! flock -w 30 -x "$LOCKFD"; then
+  echo "[error] could not acquire ${LOCK} within 30s" >&2
+  exit 1
+fi
 
 idx=$(cat "$LAUNCHED_IDX" 2>/dev/null || echo 0)
 total=$(wc -l < "$QUEUE")

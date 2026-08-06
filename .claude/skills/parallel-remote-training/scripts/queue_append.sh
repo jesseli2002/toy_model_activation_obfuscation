@@ -10,7 +10,9 @@
 #           another instance, or a generate_sweep8.py/sweep_pool.py delta)
 #
 # Locking: holds QUEUE.lock (the same flock vast_pool_manager.sh and
-# queue_trim.sh use) across the read-append-write sequence.
+# queue_trim.sh use) across the read-append-write sequence. Waits at most
+# 30s for the lock rather than blocking forever -- see queue_trim.sh's
+# header comment.
 set -u
 
 QUEUE="$1"
@@ -19,7 +21,10 @@ FILE="$2"
 LOCK="${QUEUE}.lock"
 
 exec {LOCKFD}>"$LOCK"
-flock -x "$LOCKFD"
+if ! flock -w 30 -x "$LOCKFD"; then
+  echo "[error] could not acquire ${LOCK} within 30s" >&2
+  exit 1
+fi
 
 tmp="${QUEUE}.tmp.$$"
 cat "$QUEUE" "$FILE" > "$tmp"
