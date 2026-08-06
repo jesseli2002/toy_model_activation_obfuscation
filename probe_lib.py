@@ -286,6 +286,7 @@ def binary_probe_metrics_all_layers(
     g,
     probe_backend_name,
     desc="layers",
+    train_noise_std=0.0,
     eval_noise_std=0.0,
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
@@ -302,7 +303,10 @@ def binary_probe_metrics_all_layers(
     pair -- returned unconditionally since the forward pass and the fit
     already happened regardless of whether the caller wants a plot.
 
-    `eval_noise_std` only affects the test forward pass, not the fit.
+    `train_noise_std` and `eval_noise_std` are independent: the former
+    affects the fit forward pass, the latter the test forward pass -- lets a
+    caller ask whether a probe fit under noise generalizes differently than
+    one fit clean.
     """
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from tqdm import tqdm
@@ -312,7 +316,7 @@ def binary_probe_metrics_all_layers(
     num_x = model.num_x
     device = next(model.parameters()).device
     train_ds = binary_dataset_all_layers(
-        model, num_x, n_train, c_lo, c_hi, layers, g, device
+        model, num_x, n_train, c_lo, c_hi, layers, g, device, noise_std=train_noise_std
     )
     test_ds = binary_dataset_all_layers(
         model, num_x, n_test, c_lo, c_hi, layers, g, device, noise_std=eval_noise_std

@@ -96,10 +96,19 @@ def parse_args():
         type=float,
         default=1.0,
         help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
-        "injected into the residual stream only when EVALUATING probes (never "
-        "when fitting them, since a probe fit is a large-n limit that noise "
-        "doesn't move) -- replicates the noisy environment the model itself "
-        "saw at train time. 0 disables.",
+        "injected into the residual stream when EVALUATING probes -- "
+        "replicates the noisy environment the model itself saw at train "
+        "time. 0 disables.",
+    )
+    p.add_argument(
+        "--train-noise-mult",
+        type=float,
+        default=0.0,
+        help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
+        "injected into the residual stream when FITTING probes. Default 0 "
+        "(fit clean) matches the historical assumption that a probe fit is "
+        "a large-n limit noise doesn't move; set >0 to test that assumption "
+        "against --eval-noise-mult independently.",
     )
     return p.parse_args()
 
@@ -706,8 +715,10 @@ def _run_analysis(
         return AnalysisResult(me, None, None, None, None)
 
     hidden_layers = list(range(1, model.num_blocks))
-    # Multiplier on the model's OWN training-time noise, injected only when
-    # evaluating probes (see --eval-noise-mult help).
+    # Multiplier on the model's OWN training-time noise, injected into probe
+    # fit and/or eval forward passes independently (see --train-noise-mult
+    # and --eval-noise-mult help).
+    train_noise_std = adv_cfg.resid_noise_std * args.train_noise_mult
     eval_noise_std = adv_cfg.resid_noise_std * args.eval_noise_mult
 
     gap, gap_plot_inputs = binary_probe_metrics_all_layers(
@@ -720,6 +731,7 @@ def _run_analysis(
         g,
         probe_backend_name,
         desc="probe gap @ {1,2}",
+        train_noise_std=train_noise_std,
         eval_noise_std=eval_noise_std,
     )
 
@@ -736,6 +748,7 @@ def _run_analysis(
                 g,
                 probe_backend_name,
                 desc=f"held-out {c_lo:g}-{c_hi:g}",
+                train_noise_std=train_noise_std,
                 eval_noise_std=eval_noise_std,
             )
             for lyr in hidden_layers:
