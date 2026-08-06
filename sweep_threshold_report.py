@@ -1,11 +1,10 @@
 """Help pick training-loss / probe-AUROC thresholds ("did the model solve the
 task", "is the model hidden from a linear probe") by rendering diagnostic
-plots for a handful of representative runs at each percentile of each
-metric's distribution, across runs/sweep3_lam*_tr* (lam0 excluded -- that
-sweep is still running).
+plots for every RANK_STEP-th run in each metric's sorted order, across
+runs/sweep3_lam*_tr* (lam0 excluded -- that sweep is still running).
 
-Loss percentiles get a learned-function-curves plot each (from
-adversarial_report.plot_learned_curves); AUROC percentiles get a probe
+Loss ranks get a learned-function-curves plot each (from
+adversarial_report.plot_learned_curves); AUROC ranks get a probe
 histogram+ROC plot and a PCA/residual plot (local, logreg-only trims of
 probe_lib.plot_probe / plot_probe_pca, which also plot a difference-of-means
 comparison this report doesn't need), both scored at PROBE_LAYER -- the layer
@@ -36,8 +35,9 @@ TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 
-PERCENTILES = np.arange(28, 95, 7)
-N_PER_PERCENTILE = 6  # a few runs per bucket, not just the nearest one, so a single outlier run doesn't set the impression for its whole percentile
+RANK_STEP = (
+    7  # plot every Nth rank (0-indexed, ascending) in each metric's sorted order
+)
 PROBE_N_TRAIN = 10000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
@@ -137,40 +137,36 @@ def _probe_auroc(pi: dict) -> float:
     return boundary_auroc(probe, pi["X_te"], pi["y_te"])
 
 
-def _select_percentile_indices(
-    n: int, percentiles: list[int], k: int
-) -> dict[int, list[int]]:
-    """For each target percentile, up to `k` rank indices into a length-`n`
-    sorted array, spread around the percentile (clipped/deduped at the
-    array's edges) rather than just the single nearest rank."""
-    selected = {}
-    for p in percentiles:
-        center = round(p / 100 * (n - 1))
-        offsets = range(-(k // 2), k - k // 2)
-        idxs = sorted({min(max(center + o, 0), n - 1) for o in offsets})
-        selected[p] = idxs
-    return selected
+def _select_rank_indices(n: int) -> list[int]:
+    """Every RANK_STEP-th rank index into a length-`n` sorted array, plus the
+    last rank if it wasn't already hit, so the single best run always gets a
+    plot."""
+    idxs = list(range(0, n, RANK_STEP))
+    if idxs and idxs[-1] != n - 1:
+        idxs.append(n - 1)
+    return idxs
 
 
 def _make_curve_plots(tags_by_loss: list[str], losses: list[float]) -> None:
     n = len(tags_by_loss)
     out_dir = os.path.join(OUT_DIR, "by_loss")
     os.makedirs(out_dir, exist_ok=True)
-    for p, idxs in _select_percentile_indices(n, PERCENTILES, N_PER_PERCENTILE).items():
-        for idx in idxs:
-            tag = tags_by_loss[idx]
-            model, _ck = load_model(tag, CKPT, DEVICE)
-            label = f"p{p:02d}_rank{idx:03d}_{tag}_loss{losses[idx]:.4g}"
-            plot_learned_curves(model, label, out_dir)
+    for idx in _select_rank_indices(n):
+        tag = tags_by_loss[idx]
+        model, _ck = load_model(tag, CKPT, DEVICE)
+        title = f"rank{idx:03d}_{tag}_loss{losses[idx]:.4g}"
+        file_tag = f"rank{idx:03d}_loss{losses[idx]:.4g}"
+        plot_learned_curves(model, title, out_dir, filename_tag=file_tag)
 
 
 def _plot_probe_hist_auroc(
-    tag, layers, probe: LinearBoundary, X_test, y_test, plot_dir
+    tag, layers, probe: LinearBoundary, X_test, y_test, plot_dir, file_tag=None
 ):
     """Trimmed variant of probe_lib.plot_probe: this report only cares about
     the logreg probe (no difference-of-means comparison), so it's just a
-    logreg decision-function histogram plus its ROC/AUROC
-    ({tag}_L{layers}_probe.png)."""
+    logreg decision-function histogram plus its ROC/AUROC. `tag` names the
+    plot title; `file_tag` (defaults to `tag`) names the output file
+    ({file_tag}_L{layers}_probe.png)."""
     from sklearn.metrics import roc_auc_score, roc_curve
 
     proj = probe.score(X_test)
@@ -210,14 +206,18 @@ def _plot_probe_hist_auroc(
 
     fig.suptitle(f"probe separation ({tag}, layers={layer_str})")
     fig.tight_layout()
-    return save_plot(fig, plot_dir, f"{tag}_L{layer_str}_probe.png")
+    fname = file_tag if file_tag is not None else tag
+    return save_plot(fig, plot_dir, f"{fname}_L{layer_str}_probe.png")
 
 
-def _plot_probe_pca_resid(tag, layers, probe: LinearBoundary, X_test, y_test, plot_dir):
+def _plot_probe_pca_resid(
+    tag, layers, probe: LinearBoundary, X_test, y_test, plot_dir, file_tag=None
+):
     """Trimmed variant of probe_lib.plot_probe_pca: logreg-only companion to
     `_plot_probe_hist_auroc`, dropping the difference-of-means residual panel
     -- a shared top-2-component PCA plus the logreg direction projected out
-    and PC1 of what's left ({tag}_L{layers}_probe_pca.png)."""
+    and PC1 of what's left. `tag` names the plot title; `file_tag` (defaults
+    to `tag`) names the output file ({file_tag}_L{layers}_probe_pca.png)."""
     from sklearn.decomposition import PCA
 
     pca_xy = PCA(n_components=2).fit_transform(X_test)
@@ -254,7 +254,8 @@ def _plot_probe_pca_resid(tag, layers, probe: LinearBoundary, X_test, y_test, pl
 
     fig.suptitle(f"probe separation, PCA ({tag}, layers={layer_str})")
     fig.tight_layout()
-    return save_plot(fig, plot_dir, f"{tag}_L{layer_str}_probe_pca.png")
+    fname = file_tag if file_tag is not None else tag
+    return save_plot(fig, plot_dir, f"{fname}_L{layer_str}_probe_pca.png")
 
 
 def _make_probe_plots(
@@ -263,18 +264,18 @@ def _make_probe_plots(
     n = len(tags_by_auroc)
     out_dir = os.path.join(OUT_DIR, "by_auroc")
     os.makedirs(out_dir, exist_ok=True)
-    for p, idxs in _select_percentile_indices(n, PERCENTILES, N_PER_PERCENTILE).items():
-        for idx in idxs:
-            tag = tags_by_auroc[idx]
-            pi = probe_fits[tag]
-            label = f"p{p:02d}_rank{idx:03d}_{tag}_auroc{aurocs[idx]:.4f}"
-            probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
-            _plot_probe_hist_auroc(
-                label, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir
-            )
-            _plot_probe_pca_resid(
-                label, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir
-            )
+    for idx in _select_rank_indices(n):
+        tag = tags_by_auroc[idx]
+        pi = probe_fits[tag]
+        title = f"rank{idx:03d}_{tag}_auroc{aurocs[idx]:.4f}"
+        file_tag = f"rank{idx:03d}_auroc{aurocs[idx]:.4f}"
+        probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
+        _plot_probe_hist_auroc(
+            title, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
+        )
+        _plot_probe_pca_resid(
+            title, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
+        )
 
 
 def main():
