@@ -272,14 +272,19 @@ def cmd_reassign(args):
     assignments_path = os.path.join(args.out_dir, "assignments.json")
     with _Lock(args.out_dir):
         assignments = _load_json(assignments_path, [])
-        moved = 0
+        actually_moved = []
         for a in assignments:
             if a["instance"] == args.from_instance and a["command"] in moved_commands:
                 a["instance"] = args.to_instance
-                moved += 1
+                actually_moved.append(a["command"])
+        moved = len(actually_moved)
         _dump_json(assignments_path, assignments)
 
-        moved_lines = [c + "\n" for c in sorted(moved_commands)]
+        # only push lines that actually matched a from_instance assignment --
+        # writing an unmatched line here would push work to to_instance that
+        # assignments.json still attributes to a different (or no) instance,
+        # so it'd get pulled back from the wrong runs/ dir at collection time.
+        moved_lines = [c + "\n" for c in sorted(actually_moved)]
         delta_path = os.path.join(args.out_dir, f"queue_{args.to_instance}.delta.txt")
         with open(delta_path, "w") as f:
             f.writelines(moved_lines)

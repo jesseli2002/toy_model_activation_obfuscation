@@ -47,11 +47,26 @@ total=$(wc -l < "$QUEUE")
 cutoff=$((idx + MAX_MARGIN))
 
 if [ "$total" -gt "$cutoff" ]; then
-  # lines cutoff+1..total are the ones being removed
-  tail -n "+$((cutoff + 1))" "$QUEUE"
+  # Capture removed lines to a temp file and complete the truncate BEFORE
+  # printing anything -- if we printed first and head/mv then failed
+  # (disk full, permissions), the caller would already have the lines and
+  # push them to another instance while this queue still has them too,
+  # duplicating the run. Print only after both writes succeed.
+  removed_tmp="${QUEUE}.removed.$$"
   tmp="${QUEUE}.tmp.$$"
-  head -n "$cutoff" "$QUEUE" > "$tmp"
-  mv "$tmp" "$QUEUE"
+  if tail -n "+$((cutoff + 1))" "$QUEUE" > "$removed_tmp" \
+    && head -n "$cutoff" "$QUEUE" > "$tmp" \
+    && mv "$tmp" "$QUEUE"; then
+    cat "$removed_tmp"
+    rm -f "$removed_tmp"
+  else
+    echo "[error] trim failed partway through -- $QUEUE may be untouched or" \
+      "in an intermediate state; nothing was printed to stdout, so no" \
+      "caller should have re-pushed anything" >&2
+    rm -f "$removed_tmp" "$tmp"
+    flock -u "$LOCKFD"
+    exit 1
+  fi
 fi
 
 flock -u "$LOCKFD"
