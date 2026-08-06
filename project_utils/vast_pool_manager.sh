@@ -36,6 +36,11 @@ idx=0
 total=$(wc -l < "$QUEUE")
 declare -A NAME_OF
 while [ $idx -lt $total ] || [ $(jobs -rp | wc -l) -gt 0 ]; do
+  # re-read each pass (not just once at launch) so lines appended to QUEUE
+  # after this manager started still get picked up. Safe only because QUEUE
+  # is append-only while a manager runs against it -- idx indexes by line
+  # number, so rewriting/truncating earlier lines would desync it.
+  total=$(wc -l < "$QUEUE")
   target=$(cat "$CONC" 2>/dev/null || echo 1)
   running=$(jobs -rp | wc -l)
   while [ "$running" -lt "$target" ] && [ $idx -lt $total ]; do
