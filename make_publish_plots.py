@@ -312,11 +312,11 @@ def _plot_error_histogram(err_samples, plot_dir, tag, show=False):
     return save_plot(fig, plot_dir, f"{tag}_err_hist.png", close=not show)
 
 
-def _plot_auroc_bar(auroc, hidden_layers, plot_dir, tag, show=False):
+def _plot_auroc_line(auroc, hidden_layers, plot_dir, tag, show=False):
     x = np.arange(len(hidden_layers))
     fig, ax = plt.subplots(figsize=(max(5, 1.1 * len(hidden_layers)), 4.2))
-    ax.bar(x - 0.2, [auroc[l]["dom"] for l in hidden_layers], 0.4, label="DoM")
-    ax.bar(x + 0.2, [auroc[l]["logreg"] for l in hidden_layers], 0.4, label="LogReg")
+    ax.plot(x, [auroc[l]["dom"] for l in hidden_layers], marker="o", label="DoM")
+    ax.plot(x, [auroc[l]["logreg"] for l in hidden_layers], marker="o", label="LogReg")
     ax.axhline(0.5, color="k", ls="--", lw=1, label="chance")
     ax.set_ylim(0.4, 1.02)
     ax.set_xticks(x)
@@ -324,7 +324,7 @@ def _plot_auroc_bar(auroc, hidden_layers, plot_dir, tag, show=False):
     ax.set_ylabel("AUROC")
     ax.set_title("Probe AUROC by layer")
     ax.legend(fontsize=8)
-    ax.grid(True, axis="y", alpha=0.3)
+    ax.grid(True, alpha=0.3)
     fig.tight_layout()
     return save_plot(fig, plot_dir, f"{tag}_auroc_bar.png", close=not show)
 
@@ -346,9 +346,7 @@ def _plot_roc_noise_grid(noise_roc, plot_dir, tag, show=False):
     ax.plot([0, 1], [0, 1], "k--", lw=1, label="chance")
     ax.set_xlabel("FPR")
     ax.set_ylabel("TPR")
-    ax.set_title(
-        f"Probe ROC vs. injected noise at layer {NOISE_GRID_LAYER} "
-    )
+    ax.set_title(f"Probe ROC vs. injected noise at layer {NOISE_GRID_LAYER} ")
     ax.legend(fontsize=7, loc="lower right")
     ax.grid(True, alpha=0.3)
     ax.set_aspect("equal", adjustable="box")
@@ -635,7 +633,7 @@ def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
 def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
     _plot_learned_curves(model, data.task_loss, plot_dir, tag, show=show)
     _plot_error_histogram(data.err_samples, plot_dir, tag, show=show)
-    _plot_auroc_bar(data.auroc, data.hidden_layers, plot_dir, tag, show=show)
+    _plot_auroc_line(data.auroc, data.hidden_layers, plot_dir, tag, show=show)
     _plot_roc_noise_grid(data.noise_roc, plot_dir, tag, show=show)
     for lyr in data.hidden_layers:
         _plot_pca_scatter(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
