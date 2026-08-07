@@ -8,12 +8,15 @@ layer-PROBE_LAYER linear probe (AUROC). sweep8 has two distinct rays through
 so each gets its own plot(s) rather than one generic size x lambda grid:
 
 - Main sweep: num_x:d_model:d_mlp held at 2:4:1, lambda in {0.001, 0.01,
-  0.1} plus lam=0 controls -- "does hiding change with model size, at a
-  given lambda?" One plot per lambda, each showing that lambda's bars next
-  to the lam=0 baseline for the same size.
+  0.1} -- "does hiding change with model size, at a given lambda?" One
+  plot per lambda.
 - Side ray: d_mlp fixed at 16, num_x (and d_model = 2*num_x) varying, at
-  lam=0.01 -- "does hiding change with size alone, off the main ratio?" One
-  plot, lam=0 omitted (asserted clean rather than plotted -- see below).
+  lam=0.01 -- "does hiding change with size alone, off the main ratio?"
+  One plot.
+
+Each ray also has lam=0 controls, which aren't plotted (a run that always
+succeeds and never hides is the same bar at every size) but are checked by
+_assert_lam0_clean, which raises if one didn't behave like a control.
 
 The (32, 64, 16) point sits on both rays; runs/sweep7_* already covers it
 (see SWEEP7_*), so sweep8 didn't retrain it and this script pulls that data
@@ -308,8 +311,8 @@ def _band_colors(thresholds: list[float]) -> list[str]:
 def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
     """Synthetic per-run-config stats standing in for a real sweep's
     results, just to preview the plots' layout/styling without an analysis
-    run. Covers both rays, including a clean (all not-hidden) lam=0 side-ray
-    point so the side ray's assertion has something to check."""
+    run. Covers both rays, including clean (all not-hidden) lam=0 controls
+    so _assert_lam0_clean has something to check without tripping."""
     rng = np.random.default_rng(SEED)
 
     def band_fracs(p: float) -> np.ndarray:
@@ -321,21 +324,21 @@ def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
         counts = np.clip(counts + rng.normal(0, 0.02, size=n_bands), 0.001, None)
         return counts / counts.sum()
 
+    clean = np.zeros(n_bands)
+    clean[1] = 1.0  # all succeeded, none hidden
+
     stats: dict[RunKey, RunStats] = {}
 
     main_sizes = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
     for i, size in enumerate(main_sizes):
-        for lam in [0.0] + MAIN_LAMBDAS:
-            p = 0.0 if lam == 0.0 else i / len(main_sizes)
-            stats[(*size, lam)] = RunStats(band_fracs(p), 10)
+        stats[(*size, 0.0)] = RunStats(clean, 10)
+        for lam in MAIN_LAMBDAS:
+            stats[(*size, lam)] = RunStats(band_fracs(i / len(main_sizes)), 10)
 
     side_sizes = [(16, 32, 16), (32, 64, 16), (48, 96, 16), (64, 128, 16)]
     for i, size in enumerate(side_sizes):
-        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(i / len(side_sizes)), 10)
-        # All not-hidden, matching what the side ray's lam=0 assertion expects.
-        clean = np.zeros(n_bands)
-        clean[1] = 1.0
         stats[(*size, 0.0)] = RunStats(clean, 10)
+        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(i / len(side_sizes)), 10)
 
     return stats
 
@@ -392,7 +395,7 @@ def _draw_bars(
     n_bands: int,
     labels: list[str],
     colors: list[str],
-    hatch: str | None = None,
+    width: float = 0.6,
     legend: bool = False,
 ) -> None:
     """Draw one set of stacked outcome bars at the given x positions."""
@@ -405,33 +408,51 @@ def _draw_bars(
                 x,
                 s.frac[band],
                 bottom=bottom,
-                width=0.35,
+                width=width,
                 color=colors[band],
                 edgecolor="black",
                 linewidth=0.4,
-                hatch=hatch,
                 label=labels[band] if legend and i == 0 else None,
             )
             bottom += s.frac[band]
         ax.text(x, 1.01, f"n={s.n_ok}", ha="center", va="bottom", fontsize=7)
 
 
+def _assert_lam0_clean(
+    run_stats: dict[RunKey, RunStats], sizes: list[tuple[int, int, int]], context: str
+) -> None:
+    """lam=0 is a control expected to always succeed the task and never
+    hide from the probe -- it carries no information of its own, so rather
+    than plot it alongside the swept lambdas (which was tried and just
+    showed the same bar every time), this checks it's actually behaving
+    like a control instead of silently trusting that."""
+    for size in sizes:
+        base = run_stats.get((*size, 0.0))
+        if base is None:
+            continue
+        # bucket 0 = failed, bucket 1 = succeeded and not hidden.
+        if base.frac[0] > 0 or base.frac[1] < 1.0:
+            raise AssertionError(
+                f"{context} lam=0 control at size {size} isn't clean "
+                f"(expected all succeeded and not hidden, got frac={base.frac}); "
+                "needs investigating before trusting this plot."
+            )
+
+
 def _plot_main_sweep(
     run_stats: dict[RunKey, RunStats], lam: float, n_bands: int
 ) -> plt.Figure:
-    """One panel: bars per main-sweep size at `lam`, each paired with its
-    lam=0 baseline (hatched) for comparison."""
+    """One panel: bars per main-sweep size at `lam`. lam=0 controls aren't
+    plotted -- they're asserted clean instead (see _assert_lam0_clean)."""
     sizes = sorted({k[:3] for k in run_stats if _is_main_sweep(k)}, key=lambda s: s[0])
+    _assert_lam0_clean(run_stats, sizes, context="main sweep")
+
     labels = _band_labels(sorted(AUROC_THRESHOLDS))
     colors = _band_colors(sorted(AUROC_THRESHOLDS))
 
-    fig, ax = plt.subplots(figsize=(1.4 * len(sizes) + 1.5, 4.2))
-    base_stats = [run_stats[(*s, 0.0)] for s in sizes if (*s, 0.0) in run_stats]
-    base_pos = [i - 0.2 for i, s in enumerate(sizes) if (*s, 0.0) in run_stats]
-    _draw_bars(ax, base_pos, base_stats, n_bands, labels, colors, hatch="//")
-
+    fig, ax = plt.subplots(figsize=(1.2 * len(sizes) + 1.5, 4.2))
     lam_stats = [run_stats[(*s, lam)] for s in sizes if (*s, lam) in run_stats]
-    lam_pos = [i + 0.2 for i, s in enumerate(sizes) if (*s, lam) in run_stats]
+    lam_pos = [i for i, s in enumerate(sizes) if (*s, lam) in run_stats]
     _draw_bars(ax, lam_pos, lam_stats, n_bands, labels, colors, legend=True)
 
     ax.set_xticks(range(len(sizes)))
@@ -441,11 +462,7 @@ def _plot_main_sweep(
     ax.set_xlabel("num_x (d_model=2*num_x, d_mlp=num_x/2)")
     ax.set_ylabel("fraction of runs")
     ax.grid(True, axis="y", alpha=0.3)
-    ax.set_title(
-        f"Main sweep, $\\lambda$ = {lam:g}\n(hatched = $\\lambda$=0 baseline)",
-        fontsize=11,
-        pad=14,
-    )
+    ax.set_title(f"Main sweep, $\\lambda$ = {lam:g}", fontsize=11, pad=14)
 
     handles, leg_labels = ax.get_legend_handles_labels()
     fig.legend(
@@ -460,24 +477,11 @@ def _plot_main_sweep(
 
 
 def _plot_side_ray(run_stats: dict[RunKey, RunStats], n_bands: int) -> plt.Figure:
-    """One panel: bars per side-ray size at SIDE_LAMBDA. The corresponding
-    lam=0 points aren't plotted -- they're asserted clean instead, since
-    they exist only as a sanity check that the ray's baseline behaves (see
-    module docstring)."""
+    """One panel: bars per side-ray size at SIDE_LAMBDA. lam=0 controls
+    aren't plotted -- they're asserted clean instead (see
+    _assert_lam0_clean)."""
     sizes = sorted({k[:3] for k in run_stats if _is_side_ray(k)}, key=lambda s: s[0])
-
-    for size in sizes:
-        base = run_stats.get((*size, 0.0))
-        if base is None:
-            continue
-        # bucket 0 = failed, bucket 1 = succeeded and not hidden.
-        if base.frac[0] > 0 or base.frac[1] < 1.0:
-            raise AssertionError(
-                f"side ray lam=0 baseline at size {size} isn't clean "
-                f"(expected all not-hidden, got frac={base.frac}); "
-                "the side ray plot only shows lam=0.01, so a dirty lam=0 "
-                "control needs investigating before trusting this plot."
-            )
+    _assert_lam0_clean(run_stats, sizes, context="side ray")
 
     labels = _band_labels(sorted(AUROC_THRESHOLDS))
     colors = _band_colors(sorted(AUROC_THRESHOLDS))
