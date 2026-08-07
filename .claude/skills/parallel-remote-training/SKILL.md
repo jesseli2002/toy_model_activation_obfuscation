@@ -3,10 +3,17 @@ name: parallel-remote-training
 description: Run training runs on the vast.ai remote instance. Use when user wants training done on the remote box, especially for a batch of runs or otherwise parallelized training.
 ---
 
-# Setting up
+# Environment
+When a remote is set up for the first time, a `mutagen` session is started to sync local source files to the remote, and a `rsync` daemon is set up to pull `./runs` data back from the remote. Abstracting away the implementation, the end effect is that source files (`*.py`, `configs/**`, `.claude/worktrees/**`, `.claude/skills/**`) should be present on the remote. Changes made locally to those files will be reflected on the remote, but with some delay; use the `sync_flush` MCP endpoint to ensure changes show up. Similarly, `runs/` data gets brought back automatically, with the exception of tags matching `debug_*` (used for smoke tests).
+
+WARNING: there is NO control to prevent two runs with the same tag on different remotes from clobbering each other. It is up to you to ensure each tag is assigned to a unique remote.
+
+For implementation details, see the vast_setup/ directory on the local machine.
+
+## Setting up
 Due to sandbox restrictions, it's non-obvious the best way to get key files onto the remote.
 
-Recall that the local machine uses worktree isolation, so your work (including helper scripts) is typically somewhere in ./.claude/worktrees, and won't show up in the main repo-level. `mutagen` should sync your local work (in .claude/worktrees/*) to remote instances, so you can write files locally and find them on the remote machine.
+Recall that the local machine uses worktree isolation, so your work (including helper scripts) is typically somewhere in ./.claude/worktrees, and won't show up in the main repo-level. However, the syncing daemons should copy those files to the remotes, so you can write files locally and find them on the remote machine.
 If you need a remote file to be somewhere outside of .claude/worktrees/*, you can first write the file locally, then `mv` them using the vastai broker. Alternatively, you can directly create files on the remote using shell commands.
 
 Most of the project directory itself is not writable by the agent user on the remote (only `runs/`), by the way file permissions are set up. Thus, operational files (such as run configs or pool managers) belong outside it, typically in your remote home directory. In particular, config files for runs accept absolute paths, so there isn't an issue with putting config files there.
@@ -14,23 +21,12 @@ Most of the project directory itself is not writable by the agent user on the re
 # Parallel remote training
 
 Throughput on the remote GPU is often CPU-launch-bound, not GPU-bound — running
-several training processes concurrently (2-4x) can raise aggregate it/s well
+several training processes concurrently can raise aggregate it/s well
 above one process alone. This skill drives
-`.claude/skills/parallel-remote-training/scripts/vast_pool_manager.sh`
-(relocated here from `project_utils/` so it ships with the skill; older docs
-elsewhere may still say `project_utils/vast_pool_manager.sh` — that path no
-longer exists),
+`.claude/skills/parallel-remote-training/scripts/vast_pool_manager.sh`,
 a small bash pool manager that launches queued commands up to a live-editable
 concurrency target, polled from a plain text file every 5s. Concurrency can be
 retuned by editing that file without killing or restarting already-running jobs.
-
-**Getting the scripts to the remote:** since they now live under
-`.claude/skills/`, they're picked up by the same worktree→remote mutagen sync
-as `*.py`/`configs/` *only if* that sync is configured to include
-`.claude/skills` — verify in `vast_setup/` (a separate repo, `/cd` into it to
-check) before assuming a source edit here reaches the remote automatically.
-If it isn't included, push the changed script explicitly the same way you'd
-push any other out-of-band file (see "Setting up" above).
 
 ## Setup
 
@@ -42,11 +38,6 @@ push any other out-of-band file (see "Setting up" above).
    actually shut one down.
 3. Put both — plus logs and the manager's own log — **outside the repo directory**
    on the remote (e.g. `~/sweep_scratch/`), not under the synced project dir.
-   Mutagen syncs `*.py` + `configs/` one-way local→remote and overwrites
-   remote-side edits, so anything you write into the repo path is liable to be
-   clobbered or never persist. Config files themselves are fine to reference
-   from the repo (they get copied into `runs/<tag>/` on launch) — it's the
-   scratch/queue/log files that need to live elsewhere.
 4. Launch detached so it survives disconnects — via `remote_exec`, launch a
    `setsid nohup bash vast_pool_manager.sh QUEUE CONC LOGDIR MGRLOG
    PROJECT_DIR VENV_ACTIVATE < /dev/null > pool_stdout.log 2>&1 & disown`,
@@ -109,11 +100,9 @@ utilization%, which should track aggregate it/s.
   - If it already wrote a checkpoint, it just needs `--resume` later.
   - If not, delete its `runs/<tag>` dir first — the script refuses to
     restart an existing tag without `--resume`/`--tag-force`.
-- Use `--rate-meter-window` (default 1000.0) with a short value specificall
+- Use `--rate-meter-window` with a short value specifically
   while probing concurrency levels for a faster read; revert to whatever's
   standard for the actual production runs once you've settled on a level.
-- Tag concurrency-probing runs `debug_*` — excluded from sync/backup, so
-  freely disposable.
 - GPU utilization% is only one clue out of many, and a 100% utilization (or near 100%) does not necessarily mean the limit has been reached. Power draw similarly represents a partial clue, not a smoking gun.
 
 ## Gotchas
@@ -122,8 +111,8 @@ utilization%, which should track aggregate it/s.
   alongside a GPU sweep, even with plenty of apparent CPU headroom by load
   average, silently stole real GPU throughput in practice. A/B any such
   overlap in isolation before trusting it.
-- **Source edits must happen locally**, then `sync_flush` before launching
-  the remote checkout gets overwritten by mutagen, so editing on-box is a dead
+- **Source edits must happen locally**, then `sync_flush` before launching.
+  The remote checkout gets overwritten by mutagen, so editing on-box is a dead
   end (see `vast_setup/CLAUDE.md`).
 - **Any tool that mutates `queue.txt` outside the manager itself**
   (`queue_trim.sh`, `queue_append.sh`, or a future one) must hold
