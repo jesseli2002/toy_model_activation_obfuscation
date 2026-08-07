@@ -21,6 +21,10 @@ import argparse
 
 TAG = "sweep3_lam0.1_tr0"
 STEER_LAYERS = [1, 2, 3, 4, 5]
+# Grid swept by the train/eval-noise-mismatch AUROC plot, independent of
+# --train-noise-mult/--eval-noise-mult (which set the noise regime for every
+# other plot).
+NOISE_MULT_GRID = (0.5, 1.0)
 
 
 def parse_args():
@@ -57,12 +61,11 @@ def parse_args():
     p.add_argument(
         "--train-noise-mult",
         type=float,
-        default=0.0,
+        default=1.0,
         help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
-        "injected into the residual stream when FITTING probes. Default 0 "
-        "(fit clean) matches the historical assumption that a probe fit is "
-        "a large-n limit noise doesn't move; set >0 to test that assumption "
-        "against --eval-noise-mult independently.",
+        "injected into the residual stream when FITTING probes. Default 1 "
+        "(unlike adversarial_report.py's default of 0) so the publish plots "
+        "reflect the model's actual training-time noise regime by default.",
     )
     p.add_argument("--show", action="store_true")
     return p.parse_args()
@@ -75,12 +78,14 @@ if __name__ == "__main__":
     args = parse_args()
 
 import dataclasses
+import itertools
 import os
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from sklearn.metrics import roc_auc_score, roc_curve
+from tqdm import tqdm
 
 import config
 from adversarial_report import _linear_y_reconstruction, _steer_vectors
@@ -115,6 +120,7 @@ class PublishData:
     )
     auroc: dict  # {layer: {"dom": auroc, "logreg": auroc}}
     linear_y_r2: dict  # {layer: R^2}
+    noise_auroc: dict  # {(train_mult, eval_mult): {layer: logreg auroc}}
 
 
 @torch.no_grad()
@@ -129,6 +135,38 @@ def _sample_errors(model, n, g, device) -> np.ndarray:
     x_full, y = sample_batch(n, model.num_x, generator=g, device=device)
     pred = model.task_output(x_full)
     return ((pred - y) ** 2).mean(dim=-1).sqrt().cpu().numpy()
+
+
+def _run_noise_grid_analysis(
+    model, adv_cfg, hidden_layers, args, g, device, probe_backend_name
+) -> dict:
+    """Logreg probe AUROC per layer, refit/reevaluated at every (train_mult,
+    eval_mult) combo in NOISE_MULT_GRID x NOISE_MULT_GRID -- separate from
+    (and in addition to) the single train/eval noise regime the rest of the
+    plots use, to show whether a train/eval noise mismatch costs AUROC."""
+    results = {}
+    combos = list(itertools.product(NOISE_MULT_GRID, NOISE_MULT_GRID))
+    for train_mult, eval_mult in tqdm(combos, desc="noise grid"):
+        _, plot_inputs = binary_probe_metrics_all_layers(
+            model,
+            1.0,
+            2.0,
+            hidden_layers,
+            args.n_train,
+            args.n_test,
+            g,
+            probe_backend_name,
+            desc=f"train={train_mult:g} eval={eval_mult:g}",
+            train_noise_std=adv_cfg.resid_noise_std * train_mult,
+            eval_noise_std=adv_cfg.resid_noise_std * eval_mult,
+        )
+        results[(train_mult, eval_mult)] = {
+            lyr: boundary_auroc(
+                LinearBoundary(pi["w_probe"], pi["b_probe"]), pi["X_te"], pi["y_te"]
+            )
+            for lyr, pi in plot_inputs.items()
+        }
+    return results
 
 
 def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> PublishData:
@@ -177,6 +215,10 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         model, model.num_x, model.num_blocks, args.n_train, args.n_test, g, device
     )
 
+    noise_auroc = _run_noise_grid_analysis(
+        model, adv_cfg, hidden_layers, args, g, device, probe_backend_name
+    )
+
     return PublishData(
         task_loss=task_loss,
         err_samples=err_samples,
@@ -184,6 +226,7 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         gap_plot_inputs=gap_plot_inputs,
         auroc=auroc,
         linear_y_r2=linear_y_r2,
+        noise_auroc=noise_auroc,
     )
 
 
@@ -251,6 +294,32 @@ def _plot_auroc_bar(auroc, hidden_layers, plot_dir, tag, show=False):
     ax.grid(True, axis="y", alpha=0.3)
     fig.tight_layout()
     return save_plot(fig, plot_dir, f"{tag}_auroc_bar.png", close=not show)
+
+
+def _plot_auroc_noise_grid(noise_auroc, hidden_layers, plot_dir, tag, show=False):
+    """Logreg probe AUROC by layer, grouped by (train_mult, eval_mult) --
+    shows whether a probe fit under one noise level generalizes worse when
+    evaluated under a different one."""
+    combos = list(itertools.product(NOISE_MULT_GRID, NOISE_MULT_GRID))
+    x = np.arange(len(hidden_layers))
+    width = 0.8 / len(combos)
+    fig, ax = plt.subplots(figsize=(max(6, 1.3 * len(hidden_layers)), 4.2))
+    for i, (train_mult, eval_mult) in enumerate(combos):
+        offset = (i - (len(combos) - 1) / 2) * width
+        vals = [noise_auroc[(train_mult, eval_mult)][l] for l in hidden_layers]
+        ax.bar(
+            x + offset, vals, width, label=f"train={train_mult:g}, eval={eval_mult:g}"
+        )
+    ax.axhline(0.5, color="k", ls="--", lw=1, label="chance")
+    ax.set_ylim(0.4, 1.02)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"L{l}" for l in hidden_layers])
+    ax.set_ylabel("AUROC")
+    ax.set_title("Probe AUROC across train/eval noise multipliers")
+    ax.legend(fontsize=7)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_auroc_noise_grid.png", close=not show)
 
 
 def _plot_probe_pca(lyr, pi, plot_dir, tag, show=False):
@@ -467,6 +536,9 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
     _plot_learned_curves(model, data.task_loss, plot_dir, tag, show=show)
     _plot_error_histogram(data.err_samples, plot_dir, tag, show=show)
     _plot_auroc_bar(data.auroc, data.hidden_layers, plot_dir, tag, show=show)
+    _plot_auroc_noise_grid(
+        data.noise_auroc, data.hidden_layers, plot_dir, tag, show=show
+    )
     for lyr in data.hidden_layers:
         _plot_pca_scatter(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
         _plot_probe_hist_roc(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
