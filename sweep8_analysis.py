@@ -1,20 +1,30 @@
 """sweep_analysis.py's outcome breakdown, for runs/sweep8_* -- a sweep over
-model size as well as lambda.
+model size at three lambdas, plus a side ray over model size at one lambda.
 
 Same per-run classification as sweep_analysis: a run either failed the task
 (loss) or, having succeeded, is binned by how well it hid from the
-layer-PROBE_LAYER linear probe (AUROC). The difference is the layout: sweep8
-varies (num_x, d_model, d_mlp) alongside lambda, so the breakdown is faceted
--- one panel per value of the FACET axis, stacked bars along the other. Set
-FACET to see the same data as "does hiding change with lambda, per size?" or
-"does hiding change with size, per lambda?".
+layer-PROBE_LAYER linear probe (AUROC). sweep8 has two distinct rays through
+(num_x, d_model, d_mlp, lambda) space, each answering a different question,
+so each gets its own plot(s) rather than one generic size x lambda grid:
+
+- Main sweep: num_x:d_model:d_mlp held at 2:4:1, lambda in {0.001, 0.01,
+  0.1} plus lam=0 controls -- "does hiding change with model size, at a
+  given lambda?" One plot per lambda, each showing that lambda's bars next
+  to the lam=0 baseline for the same size.
+- Side ray: d_mlp fixed at 16, num_x (and d_model = 2*num_x) varying, at
+  lam=0.01 -- "does hiding change with size alone, off the main ratio?" One
+  plot, lam=0 omitted (asserted clean rather than plotted -- see below).
+
+The (32, 64, 16) point sits on both rays; runs/sweep7_* already covers it
+(see SWEEP7_*), so sweep8 didn't retrain it and this script pulls that data
+in instead. It shows up on both the relevant main-sweep plot and the side
+ray.
 
 Bars, not sweep_analysis's stackplot: sweep8 samples only a handful of
 lambdas, too few for a filled area between them to mean anything.
 
 Lambda coverage is deliberately uneven across sizes (only some sizes get the
-full lambda grid), so panels have differing numbers of bars; a missing bar
-means no runs, not zero runs surviving.
+full lambda grid), so a missing bar means no runs, not zero runs surviving.
 
 LOSS_THRESHOLD / AUROC_THRESHOLDS are provisional -- a separate exercise is
 picking the final values -- so they're constants here, not a CLI, alongside
@@ -30,10 +40,11 @@ sweep_threshold_report.py, which recompute the same way for the same reasons
 
 Recomputing both over a whole sweep is slow, so results are cached to
 CACHE_PATH keyed by the settings they depend on; changing any of those
-settings misses the cache rather than reusing a stale value. Delete the file
-to force a full recompute.
+settings misses the cache rather than reusing a stale value. Pass
+--clear-cache to force a full recompute.
 """
 
+import argparse
 import re
 
 SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
@@ -44,10 +55,20 @@ PLOT_DIR = "plot/sweep8"
 CACHE_PATH = "plot/sweep8/metrics_cache.json"
 RUN_GLOB = "sweep8_nx*_tr*"
 TAG_RE = re.compile(r"sweep8_nx(\d+)_dm(\d+)_mlp(\d+)_lam([0-9\.]+)_tr(\d+)$")
-FACET = "size"  # "size" (panel per model size, x = lambda) or "lam" (the transpose)
+
+# sweep7 ran (32, 64, 16) -- the point shared by the main sweep and the side
+# ray -- across more lambdas than sweep8 repeated; pull the matching ones in.
+SWEEP7_GLOB = "sweep7_lam*_tr*"
+SWEEP7_TAG_RE = re.compile(r"sweep7_lam([0-9\.]+)_tr(\d+)$")
+SWEEP7_SIZE = (32, 64, 16)
+SWEEP7_LAMBDAS = {0.0, 0.001, 0.01, 0.1}  # main-sweep lambdas + control
+
+MAIN_LAMBDAS = [0.001, 0.01, 0.1]  # one plot each
+SIDE_LAMBDA = 0.01  # the side ray's one non-control plot
+
 EXCLUDE_LAMBDAS: set[float] = set()
 EXCLUDE_SIZES: set[tuple[int, int, int]] = set()  # (num_x, d_model, d_mlp)
-MIN_RUNS = 1  # drop (size, lambda) cells with fewer usable runs than this
+MIN_RUNS = 1  # drop (size, lambda) points with fewer usable runs than this
 CKPT = "best"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
@@ -65,9 +86,23 @@ AUROC_THRESHOLDS = [
 ]  # ascending; splits "succeeded" runs into len+1 hiding bins
 
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help=f"delete {CACHE_PATH} before running, forcing a full recompute",
+    )
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
 import glob
 import json
 import os
+from typing import NamedTuple
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -86,7 +121,7 @@ from probe_lib import (
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 0
 
-Size = tuple[int, int, int]  # (num_x, d_model, d_mlp)
+RunKey = tuple[int, int, int, float]  # (num_x, d_model, d_mlp, lam)
 
 
 # Sequential blue ramp (references/palette.md), lightest -> darkest, 100..700.
@@ -108,29 +143,51 @@ SEQ_RAMP = [
 FAILED_COLOR = "#eb6834"  # categorical slot 2 (orange) -- distinct "problem" hue
 
 
-def _size_label(size: Size) -> str:
-    num_x, d_model, d_mlp = size
-    return f"nx{num_x} dm{d_model} mlp{d_mlp}"
+class RunStats(NamedTuple):
+    """A run config's outcome-band fractions, aggregated over its trials."""
+
+    frac: np.ndarray  # length n_bands, sums to 1
+    n_ok: int  # usable trials this is averaged over
 
 
-def _lam_label(lam: float) -> str:
-    return f"{lam:g}"
+def _is_main_sweep(key: RunKey) -> bool:
+    num_x, d_model, d_mlp, _ = key
+    return d_model == 2 * num_x and d_mlp == num_x // 2
 
 
-def _discover_tags() -> dict[tuple[Size, float], list[str]]:
-    """Run tags grouped by the (model size, lambda) cell they belong to."""
-    cells: dict[tuple[Size, float], list[str]] = {}
+def _is_side_ray(key: RunKey) -> bool:
+    num_x, d_model, d_mlp, _ = key
+    return d_mlp == 16 and d_model == 2 * num_x
+
+
+def _discover_tags() -> dict[RunKey, list[str]]:
+    """Run tags grouped by the (num_x, d_model, d_mlp, lambda) they belong
+    to, from both runs/sweep8_* and the matching runs/sweep7_* points."""
+    by_key: dict[RunKey, list[str]] = {}
     for path in sorted(glob.glob(os.path.join("runs", RUN_GLOB))):
         tag = os.path.basename(path)
         m = TAG_RE.match(tag)
         if not m:
             continue
-        size: Size = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+        num_x, d_model, d_mlp = int(m.group(1)), int(m.group(2)), int(m.group(3))
         lam = float(m.group(4))
-        if lam in EXCLUDE_LAMBDAS or size in EXCLUDE_SIZES:
+        if lam in EXCLUDE_LAMBDAS or (num_x, d_model, d_mlp) in EXCLUDE_SIZES:
             continue
-        cells.setdefault((size, lam), []).append(tag)
-    return cells
+        by_key.setdefault((num_x, d_model, d_mlp, lam), []).append(tag)
+
+    for path in sorted(glob.glob(os.path.join("runs", SWEEP7_GLOB))):
+        tag = os.path.basename(path)
+        m = SWEEP7_TAG_RE.match(tag)
+        if not m:
+            continue
+        lam = float(m.group(1))
+        if lam not in SWEEP7_LAMBDAS or lam in EXCLUDE_LAMBDAS:
+            continue
+        if SWEEP7_SIZE in EXCLUDE_SIZES:
+            continue
+        by_key.setdefault((*SWEEP7_SIZE, lam), []).append(tag)
+
+    return by_key
 
 
 def _final_loss(tag: str, g: torch.Generator) -> float:
@@ -178,7 +235,7 @@ def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float
         probe_backend_name,
         desc=tag,
         eval_noise=eval_noise_std,
-        train_noise=adv_cfg.resid_noise_std
+        train_noise=adv_cfg.resid_noise_std,
     )
     pi = plot_inputs[PROBE_LAYER]
     probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
@@ -248,48 +305,64 @@ def _band_colors(thresholds: list[float]) -> list[str]:
     return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
 
 
-def _smoke_cells(n_bands: int) -> dict[tuple[Size, float], tuple[np.ndarray, int]]:
-    """Synthetic per-cell (fractions, n_ok) standing in for a real sweep's
-    results, just to preview the plot's layout/styling without an analysis run."""
+def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
+    """Synthetic per-run-config stats standing in for a real sweep's
+    results, just to preview the plots' layout/styling without an analysis
+    run. Covers both rays, including a clean (all not-hidden) lam=0 side-ray
+    point so the side ray's assertion has something to check."""
     rng = np.random.default_rng(SEED)
-    sizes: list[Size] = [(8, 16, 4), (16, 32, 8), (16, 32, 16), (64, 128, 32)]
-    lambdas = [0.0, 0.001, 0.01, 0.1]
-    cells = {}
-    for i, size in enumerate(sizes):
-        for j, lam in enumerate(lambdas):
-            # p: 0..1 knob, bigger model / bigger lambda -> more hiding
-            p = np.clip((i / len(sizes) + j / len(lambdas)) / 2, 0, 1)
-            failed = 0.05 + 0.4 * p
-            weights = np.linspace(1 - p, p, n_bands - 1) + 0.1
-            weights = weights / weights.sum() * (1 - failed)
-            counts = np.clip(np.concatenate([[failed], weights]), 0.001, None)
-            counts = np.clip(counts + rng.normal(0, 0.02, size=n_bands), 0.001, None)
-            cells[(size, lam)] = (counts / counts.sum(), 10)
-    return cells
+
+    def band_fracs(p: float) -> np.ndarray:
+        # p: 0..1 knob, bigger model / bigger lambda -> more hiding.
+        failed = 0.05 + 0.4 * p
+        weights = np.linspace(1 - p, p, n_bands - 1) + 0.1
+        weights = weights / weights.sum() * (1 - failed)
+        counts = np.clip(np.concatenate([[failed], weights]), 0.001, None)
+        counts = np.clip(counts + rng.normal(0, 0.02, size=n_bands), 0.001, None)
+        return counts / counts.sum()
+
+    stats: dict[RunKey, RunStats] = {}
+
+    main_sizes = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
+    for i, size in enumerate(main_sizes):
+        for lam in [0.0] + MAIN_LAMBDAS:
+            p = 0.0 if lam == 0.0 else i / len(main_sizes)
+            stats[(*size, lam)] = RunStats(band_fracs(p), 10)
+
+    side_sizes = [(16, 32, 16), (32, 64, 16), (48, 96, 16), (64, 128, 16)]
+    for i, size in enumerate(side_sizes):
+        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(i / len(side_sizes)), 10)
+        # All not-hidden, matching what the side ray's lam=0 assertion expects.
+        clean = np.zeros(n_bands)
+        clean[1] = 1.0
+        stats[(*size, 0.0)] = RunStats(clean, 10)
+
+    return stats
 
 
-def _collect_cells(n_bands: int) -> dict[tuple[Size, float], tuple[np.ndarray, int]]:
-    """Per-(size, lambda) band fractions and usable-run count, recomputing
-    each run's loss/AUROC where the cache doesn't already have them."""
+def _collect_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
+    """Per-run-config band fractions and usable-run count, recomputing each
+    run's loss/AUROC where the cache doesn't already have them."""
     thresholds = sorted(AUROC_THRESHOLDS)
-    by_cell = _discover_tags()
+    by_key = _discover_tags()
     cache = _load_cache()
-    # One RNG across every cell, so its draws (eval noise, probe train/test
-    # sampling) are reproducible across a full run of the script.
+    # One RNG across every run config, so its draws (eval noise, probe
+    # train/test sampling) are reproducible across a full run of the script.
     g = torch.Generator(device=DEVICE).manual_seed(SEED)
     probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
 
-    cells = {}
+    stats: dict[RunKey, RunStats] = {}
     print(f"{'size':>18s} {'lambda':>8s} {'n_ok':>5s} {'n_total':>7s}")
-    for size, lam in sorted(by_cell):
-        tags = by_cell[(size, lam)]
+    for key in sorted(by_key):
+        num_x, d_model, d_mlp, lam = key
+        tags = by_key[key]
         counts = np.zeros(n_bands)
         n_ok = 0
         for tag in tags:
-            key = _cache_key(tag)
-            if key not in cache:
+            cache_key = _cache_key(tag)
+            if cache_key not in cache:
                 try:
-                    cache[key] = {
+                    cache[cache_key] = {
                         "loss": _final_loss(tag, g),
                         "auroc": _probe_auroc(tag, g, probe_backend_name),
                     }
@@ -297,108 +370,84 @@ def _collect_cells(n_bands: int) -> dict[tuple[Size, float], tuple[np.ndarray, i
                     print(f"  {tag}: no history/checkpoint yet, skipped")
                     continue
                 _save_cache(cache)  # per run, so an interrupted pass keeps progress
-            entry = cache[key]
+            entry = cache[cache_key]
             if entry["auroc"] is None:
                 print(f"  {tag}: no probe in checkpoint, skipped")
                 continue
             counts[_classify(entry["loss"], entry["auroc"], thresholds)] += 1
             n_ok += 1
         if n_ok < MIN_RUNS:
-            print(f"  {size} lam={lam:g}: {n_ok} usable runs, skipped")
+            print(f"  {key}: {n_ok} usable runs, skipped")
             continue
-        cells[(size, lam)] = (counts / n_ok, n_ok)
-        print(f"{str(size):>18s} {lam:8g} {n_ok:5d} {len(tags):7d}")
-    return cells
+        stats[key] = RunStats(counts / n_ok, n_ok)
+        size_str = f"nx{num_x} dm{d_model} mlp{d_mlp}"
+        print(f"{size_str:>18s} {lam:8g} {n_ok:5d} {len(tags):7d}")
+    return stats
 
 
-def _facet_axes(
-    cells: dict[tuple[Size, float], tuple[np.ndarray, int]],
-) -> tuple[list, list, str, str]:
-    """Split the cell keys into (panel values, x values) per FACET, plus the
-    axis titles. Both are the full sorted set across all cells, so panels
-    share an x axis even where a size/lambda combination wasn't run."""
-    sizes = sorted({size for size, _ in cells}, key=lambda s: (s[0], s[2]))
-    lambdas = sorted({lam for _, lam in cells})
-    if FACET == "size":
-        return sizes, lambdas, "size", r"$\lambda$"
-    if FACET == "lam":
-        return lambdas, sizes, "lambda", "model size"
-    raise ValueError(f"FACET must be 'size' or 'lam', got {FACET!r}")
+def _draw_bars(
+    ax,
+    positions: list[float],
+    stats_at: list[RunStats],
+    n_bands: int,
+    labels: list[str],
+    colors: list[str],
+    hatch: str | None = None,
+    legend: bool = False,
+) -> None:
+    """Draw one set of stacked outcome bars at the given x positions."""
+    for i, (x, s) in enumerate(zip(positions, stats_at)):
+        bottom = 0.0
+        # Draw "most hidden" at the bottom up to "failed" on top, matching
+        # sweep_analysis's stack order.
+        for band in range(n_bands - 1, -1, -1):
+            ax.bar(
+                x,
+                s.frac[band],
+                bottom=bottom,
+                width=0.35,
+                color=colors[band],
+                edgecolor="black",
+                linewidth=0.4,
+                hatch=hatch,
+                label=labels[band] if legend and i == 0 else None,
+            )
+            bottom += s.frac[band]
+        ax.text(x, 1.01, f"n={s.n_ok}", ha="center", va="bottom", fontsize=7)
 
 
-def main():
-    thresholds = sorted(AUROC_THRESHOLDS)
-    n_bands = len(thresholds) + 2
+def _plot_main_sweep(
+    run_stats: dict[RunKey, RunStats], lam: float, n_bands: int
+) -> plt.Figure:
+    """One panel: bars per main-sweep size at `lam`, each paired with its
+    lam=0 baseline (hatched) for comparison."""
+    sizes = sorted({k[:3] for k in run_stats if _is_main_sweep(k)}, key=lambda s: s[0])
+    labels = _band_labels(sorted(AUROC_THRESHOLDS))
+    colors = _band_colors(sorted(AUROC_THRESHOLDS))
 
-    cells = _smoke_cells(n_bands) if SMOKE else _collect_cells(n_bands)
-    if not cells:
-        raise SystemExit(f"no usable runs matched runs/{RUN_GLOB}")
+    fig, ax = plt.subplots(figsize=(1.4 * len(sizes) + 1.5, 4.2))
+    base_stats = [run_stats[(*s, 0.0)] for s in sizes if (*s, 0.0) in run_stats]
+    base_pos = [i - 0.2 for i, s in enumerate(sizes) if (*s, 0.0) in run_stats]
+    _draw_bars(ax, base_pos, base_stats, n_bands, labels, colors, hatch="//")
 
-    panels, xs, panel_kind, x_label = _facet_axes(cells)
-    labels = _band_labels(thresholds)
-    colors = _band_colors(thresholds)
+    lam_stats = [run_stats[(*s, lam)] for s in sizes if (*s, lam) in run_stats]
+    lam_pos = [i + 0.2 for i, s in enumerate(sizes) if (*s, lam) in run_stats]
+    _draw_bars(ax, lam_pos, lam_stats, n_bands, labels, colors, legend=True)
 
-    n_col = min(3, len(panels))
-    n_row = -(-len(panels) // n_col)
-    fig, axes = plt.subplots(
-        n_row,
-        n_col,
-        figsize=(4.2 * n_col, 3.4 * n_row),
-        squeeze=False,
-        sharey=True,
+    ax.set_xticks(range(len(sizes)))
+    ax.set_xticklabels([str(s[0]) for s in sizes])
+    ax.set_xlim(-0.6, len(sizes) - 0.4)
+    ax.set_ylim(0, 1.08)
+    ax.set_xlabel("num_x (d_model=2*num_x, d_mlp=num_x/2)")
+    ax.set_ylabel("fraction of runs")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.set_title(
+        f"Main sweep, $\\lambda$ = {lam:g}\n(hatched = $\\lambda$=0 baseline)",
+        fontsize=11,
+        pad=14,
     )
-    flat = axes.ravel()
 
-    for ax, panel in zip(flat, panels):
-        present = [
-            (i, x)
-            for i, x in enumerate(xs)
-            if ((panel, x) if FACET == "size" else (x, panel)) in cells
-        ]
-        for i, x in present:
-            frac, n_ok = cells[(panel, x) if FACET == "size" else (x, panel)]
-            # Label one bar only -- every bar draws the same bands, and a
-            # label per bar would repeat the whole legend once per bar.
-            legend_bar = ax is flat[0] and (i, x) == present[0]
-            bottom = 0.0
-            # Draw "most hidden" at the bottom up to "failed" on top, matching
-            # sweep_analysis's stack order.
-            for band in range(n_bands - 1, -1, -1):
-                ax.bar(
-                    i,
-                    frac[band],
-                    bottom=bottom,
-                    width=0.7,
-                    color=colors[band],
-                    edgecolor="black",
-                    linewidth=0.4,
-                    label=labels[band] if legend_bar else None,
-                )
-                bottom += frac[band]
-            ax.text(i, 1.01, f"n={n_ok}", ha="center", va="bottom", fontsize=7)
-
-        ax.set_xticks(range(len(xs)))
-        ax.set_xticklabels(
-            [_lam_label(x) if FACET == "size" else _size_label(x) for x in xs],
-            fontsize=8,
-            # Size labels are long enough to collide when laid flat.
-            rotation=0 if FACET == "size" else 30,
-            ha="center" if FACET == "size" else "right",
-        )
-        ax.set_xlim(-0.6, len(xs) - 0.4)
-        ax.set_ylim(0, 1)
-        title = _size_label(panel) if FACET == "size" else f"$\\lambda$ = {panel:g}"
-        ax.set_title(title, fontsize=10, pad=14)  # pad clears the n= annotations
-        ax.set_xlabel(x_label)
-        ax.grid(True, axis="y", alpha=0.3)
-
-    for ax in flat[len(panels) :]:
-        ax.axis("off")
-    for ax in axes[:, 0]:
-        ax.set_ylabel("fraction of runs")
-
-    # Bands were drawn top-down; reverse so the legend reads top-down too.
-    handles, leg_labels = flat[0].get_legend_handles_labels()
+    handles, leg_labels = ax.get_legend_handles_labels()
     fig.legend(
         handles[::-1],
         leg_labels[::-1],
@@ -406,15 +455,82 @@ def main():
         bbox_to_anchor=(1.0, 0.5),
         fontsize=8,
     )
-    fig.suptitle(f"Outcome by {panel_kind} and {x_label}\n({RUN_GLOB})")
     fig.tight_layout()
+    return fig
+
+
+def _plot_side_ray(run_stats: dict[RunKey, RunStats], n_bands: int) -> plt.Figure:
+    """One panel: bars per side-ray size at SIDE_LAMBDA. The corresponding
+    lam=0 points aren't plotted -- they're asserted clean instead, since
+    they exist only as a sanity check that the ray's baseline behaves (see
+    module docstring)."""
+    sizes = sorted({k[:3] for k in run_stats if _is_side_ray(k)}, key=lambda s: s[0])
+
+    for size in sizes:
+        base = run_stats.get((*size, 0.0))
+        if base is None:
+            continue
+        # bucket 0 = failed, bucket 1 = succeeded and not hidden.
+        if base.frac[0] > 0 or base.frac[1] < 1.0:
+            raise AssertionError(
+                f"side ray lam=0 baseline at size {size} isn't clean "
+                f"(expected all not-hidden, got frac={base.frac}); "
+                "the side ray plot only shows lam=0.01, so a dirty lam=0 "
+                "control needs investigating before trusting this plot."
+            )
+
+    labels = _band_labels(sorted(AUROC_THRESHOLDS))
+    colors = _band_colors(sorted(AUROC_THRESHOLDS))
+
+    fig, ax = plt.subplots(figsize=(1.2 * len(sizes) + 1.5, 4.2))
+    stats_at = [
+        run_stats[(*s, SIDE_LAMBDA)] for s in sizes if (*s, SIDE_LAMBDA) in run_stats
+    ]
+    pos = [i for i, s in enumerate(sizes) if (*s, SIDE_LAMBDA) in run_stats]
+    _draw_bars(ax, pos, stats_at, n_bands, labels, colors, legend=True)
+
+    ax.set_xticks(range(len(sizes)))
+    ax.set_xticklabels([str(s[0]) for s in sizes])
+    ax.set_xlim(-0.6, len(sizes) - 0.4)
+    ax.set_ylim(0, 1.08)
+    ax.set_xlabel("num_x (d_mlp=16, d_model=2*num_x)")
+    ax.set_ylabel("fraction of runs")
+    ax.grid(True, axis="y", alpha=0.3)
+    ax.set_title(f"Side ray, $\\lambda$ = {SIDE_LAMBDA:g}", fontsize=11, pad=14)
+
+    handles, leg_labels = ax.get_legend_handles_labels()
+    fig.legend(
+        handles[::-1],
+        leg_labels[::-1],
+        loc="center left",
+        bbox_to_anchor=(1.0, 0.5),
+        fontsize=8,
+    )
+    fig.tight_layout()
+    return fig
+
+
+def main(clear_cache: bool = False) -> None:
+    if clear_cache and os.path.exists(CACHE_PATH):
+        os.remove(CACHE_PATH)
+
+    thresholds = sorted(AUROC_THRESHOLDS)
+    n_bands = len(thresholds) + 2
+
+    run_stats = _smoke_run_stats(n_bands) if SMOKE else _collect_run_stats(n_bands)
+    if not run_stats:
+        raise SystemExit(f"no usable runs matched runs/{RUN_GLOB}")
 
     os.makedirs(PLOT_DIR, exist_ok=True)
-    fig.savefig(
-        f"{PLOT_DIR}/size_sweep_task{LOSS_THRESHOLD}_{FACET}.png", bbox_inches="tight"
-    )
+    for lam in MAIN_LAMBDAS:
+        fig = _plot_main_sweep(run_stats, lam, n_bands)
+        fig.savefig(f"{PLOT_DIR}/main_lam{lam:g}.png", bbox_inches="tight")
+
+    fig = _plot_side_ray(run_stats, n_bands)
+    fig.savefig(f"{PLOT_DIR}/side_ray.png", bbox_inches="tight")
+
     plt.show()
 
 
 if __name__ == "__main__":
-    main()
+    main(clear_cache=args.clear_cache)
