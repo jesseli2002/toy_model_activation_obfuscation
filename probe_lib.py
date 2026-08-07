@@ -108,15 +108,17 @@ def capture_layers_dict(
     model: ResidualMLP,
     x_full: torch.Tensor,
     layers: list[int],
-    noise_std: float = 0.0,
+    noise: float | torch.Tensor = 0.0,
     generator: torch.Generator | None = None,
 ) -> dict[int, torch.Tensor]:
     """Returns each requested layer's residual-stream activations, keyed by
-    layer index, from a single shared forward pass. `noise_std`/`generator`
-    are passed straight through to `ResidualMLP.forward` (as its `noise`/
-    `generator` params)."""
+    layer index, from a single shared forward pass. `noise`/`generator` are
+    passed straight through to `ResidualMLP.forward` (as its `noise`/
+    `generator` params) -- a float draws a fresh std everywhere, a tensor
+    (from `ResidualMLP.generate_noise`) injects that exact noise, letting a
+    caller vary the std per injection point."""
     _, caches = model.forward(
-        x_full, return_cache=True, noise=noise_std, generator=generator
+        x_full, return_cache=True, noise=noise, generator=generator
     )
     return {i: caches[i] for i in layers}
 
@@ -126,14 +128,12 @@ def capture_layers(
     model: ResidualMLP,
     x_full: torch.Tensor,
     layers: list[int],
-    noise_std: float = 0.0,
+    noise: float | torch.Tensor = 0.0,
     generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Like capture_layers_dict, but concatenates the requested layers into a
     single flat feature tensor."""
-    d = capture_layers_dict(
-        model, x_full, layers, noise_std=noise_std, generator=generator
-    )
+    d = capture_layers_dict(model, x_full, layers, noise=noise, generator=generator)
     return torch.cat([d[i] for i in layers], dim=-1)
 
 
@@ -190,7 +190,7 @@ def stored_probe_auroc(
         model,
         eval_set.x,
         layers,
-        noise_std=adv_cfg.resid_noise_std * eval_noise_mult,
+        noise=adv_cfg.resid_noise_std * eval_noise_mult,
         generator=generator,
     )
     return boundary_auroc(boundary, feats.cpu().numpy(), eval_set.y)
@@ -259,20 +259,19 @@ def raw_signed_distance(
 
 @torch.no_grad()
 def binary_dataset_all_layers(
-    model, num_x, n, c_lo, c_hi, layers, generator, device, noise_std=0.0
+    model, num_x, n, c_lo, c_hi, layers, generator, device, noise=0.0
 ):
     """One forward pass over c_lo and one over c_hi, shared across all
-    `layers` -- returns {layer: (r_lo, r_hi)}. `noise_std` (if > 0) injects
-    residual-stream noise into that forward pass, same as the model's own
-    training-time environment."""
+    `layers` -- returns {layer: (r_lo, r_hi)}. `noise` (see
+    `capture_layers_dict`) injects residual-stream noise into both forward
+    passes, same as the model's own training-time environment. A tensor is
+    reused verbatim across the c_lo and c_hi passes (rather than redrawn) --
+    harmless since each pass's noise is i.i.d. per example either way, and
+    the two passes aren't paired by index."""
     xf_lo, _ = sample_fixed_c(n, num_x, c_lo, generator=generator, device=device)
     xf_hi, _ = sample_fixed_c(n, num_x, c_hi, generator=generator, device=device)
-    r_lo = capture_layers_dict(
-        model, xf_lo, layers, noise_std=noise_std, generator=generator
-    )
-    r_hi = capture_layers_dict(
-        model, xf_hi, layers, noise_std=noise_std, generator=generator
-    )
+    r_lo = capture_layers_dict(model, xf_lo, layers, noise=noise, generator=generator)
+    r_hi = capture_layers_dict(model, xf_hi, layers, noise=noise, generator=generator)
     return {layer: (r_lo[layer], r_hi[layer]) for layer in layers}
 
 
@@ -286,8 +285,8 @@ def binary_probe_metrics_all_layers(
     g,
     probe_backend_name,
     desc="layers",
-    train_noise_std=0.0,
-    eval_noise_std=0.0,
+    train_noise=0.0,
+    eval_noise=0.0,
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
     c_hi) pair, from a single shared forward pass per train/test set.
@@ -303,10 +302,11 @@ def binary_probe_metrics_all_layers(
     pair -- returned unconditionally since the forward pass and the fit
     already happened regardless of whether the caller wants a plot.
 
-    `train_noise_std` and `eval_noise_std` are independent: the former
-    affects the fit forward pass, the latter the test forward pass -- lets a
-    caller ask whether a probe fit under noise generalizes differently than
-    one fit clean.
+    `train_noise` and `eval_noise` are independent (each either a std or a
+    noise tensor, see `capture_layers_dict`): the former affects the fit
+    forward pass, the latter the test forward pass -- lets a caller ask
+    whether a probe fit under noise generalizes differently than one fit
+    clean.
     """
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from tqdm import tqdm
@@ -316,10 +316,10 @@ def binary_probe_metrics_all_layers(
     num_x = model.num_x
     device = next(model.parameters()).device
     train_ds = binary_dataset_all_layers(
-        model, num_x, n_train, c_lo, c_hi, layers, g, device, noise_std=train_noise_std
+        model, num_x, n_train, c_lo, c_hi, layers, g, device, noise=train_noise
     )
     test_ds = binary_dataset_all_layers(
-        model, num_x, n_test, c_lo, c_hi, layers, g, device, noise_std=eval_noise_std
+        model, num_x, n_test, c_lo, c_hi, layers, g, device, noise=eval_noise
     )
 
     metrics = {}

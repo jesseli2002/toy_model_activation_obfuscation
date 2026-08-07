@@ -733,8 +733,8 @@ def _run_analysis(
         g,
         probe_backend_name,
         desc="probe gap @ {1,2}",
-        train_noise_std=train_noise_std,
-        eval_noise_std=eval_noise_std,
+        train_noise=train_noise_std,
+        eval_noise=eval_noise_std,
     )
 
     heldout = {}
@@ -750,8 +750,8 @@ def _run_analysis(
                 g,
                 probe_backend_name,
                 desc=f"held-out {c_lo:g}-{c_hi:g}",
-                train_noise_std=train_noise_std,
-                eval_noise_std=eval_noise_std,
+                train_noise=train_noise_std,
+                eval_noise=eval_noise_std,
             )
             for lyr in hidden_layers:
                 heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]

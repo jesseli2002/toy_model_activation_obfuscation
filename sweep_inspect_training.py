@@ -112,7 +112,7 @@ def _refit_probe_auroc(
         n_test,
         g,
         probe_backend_name,
-        eval_noise_std=eval_noise_std,
+        eval_noise=eval_noise_std,
     )
     pi = plot_inputs[layers[0]]
     boundary = LinearBoundary(pi["w_probe"], pi["b_probe"])
