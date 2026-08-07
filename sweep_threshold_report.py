@@ -152,7 +152,7 @@ def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | 
         g,
         probe_backend_name,
         desc=tag,
-        eval_noise_std=eval_noise_std,
+        eval_noise=eval_noise_std,
     )
     return plot_inputs[PROBE_LAYER]
 

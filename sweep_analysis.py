@@ -149,7 +149,7 @@ def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float
         g,
         probe_backend_name,
         desc=tag,
-        eval_noise_std=eval_noise_std,
+        eval_noise=eval_noise_std,
     )
     pi = plot_inputs[PROBE_LAYER]
     probe = LinearBoundary(pi["w_probe"], pi["b_probe"])

@@ -19,12 +19,17 @@ Currently hard-codes a single tag; broaden once more tags need plots.
 
 import argparse
 
-TAG = "sweep3_lam0.1_tr0"
+TAG = "sweep7_lam0.1_tr0"
 STEER_LAYERS = [1, 2, 3, 4, 5]
-# Grid swept by the train/eval-noise-mismatch ROC plot, independent of
+# Eval-noise multipliers swept by the noise-isolation ROC plot, independent of
 # --train-noise-mult/--eval-noise-mult (which set the noise regime for every
-# other plot).
-NOISE_MULT_GRID = (0.5, 1.0)
+# other plot). The fit (train) pass always uses the model's own noise
+# regime, uniform across layers, at multiplier 1. The eval pass also holds
+# every layer at multiplier 1 EXCEPT NOISE_GRID_LAYER, where the multiplier
+# is swept over this grid -- isolates the effect of the nonlinear encoding at
+# NOISE_GRID_LAYER from our own injected noise there, without knocking
+# earlier layers off-distribution.
+NOISE_GRID_EVAL_MULTS = (0.0, 0.5, 1.0)
 NOISE_GRID_LAYER = 2
 
 
@@ -79,7 +84,6 @@ if __name__ == "__main__":
     args = parse_args()
 
 import dataclasses
-import itertools
 import os
 
 import matplotlib.pyplot as plt
@@ -121,7 +125,7 @@ class PublishData:
     )
     auroc: dict  # {layer: {"dom": auroc, "logreg": auroc}}
     linear_y_r2: dict  # {layer: R^2}
-    noise_roc: dict  # {(train_mult, eval_mult): {"fpr", "tpr", "auroc"}}, NOISE_GRID_LAYER only
+    noise_roc: dict  # {eval_mult: {"fpr", "tpr", "auroc"}}, NOISE_GRID_LAYER only
 
 
 @torch.no_grad()
@@ -138,17 +142,37 @@ def _sample_errors(model, n, g, device) -> np.ndarray:
     return ((pred - y) ** 2).mean(dim=-1).sqrt().cpu().numpy()
 
 
+def _isolated_layer_noise(model, base_std, isolate_layer, isolate_mult, batch_size, g):
+    """Residual-stream noise tensor (see `ResidualMLP.generate_noise`) at
+    `base_std` for every injection point, except the one landing on
+    `isolate_layer`'s cache, which is scaled by `isolate_mult` instead."""
+    noise = model.generate_noise(batch_size, base_std, g)
+    noise[isolate_layer - 1] *= isolate_mult
+    return noise
+
+
 def _run_noise_grid_analysis(
     model, adv_cfg, args, g, device, probe_backend_name
 ) -> dict:
     """Logreg probe ROC curve at layer NOISE_GRID_LAYER, refit/reevaluated at
-    every (train_mult, eval_mult) combo in NOISE_MULT_GRID x NOISE_MULT_GRID
-    -- separate from (and in addition to) the single train/eval noise regime
-    the rest of the plots use, to show whether a train/eval noise mismatch
-    costs the probe ROC."""
+    every eval multiplier in NOISE_GRID_EVAL_MULTS -- separate from (and in
+    addition to) the single train/eval noise regime the rest of the plots
+    use. The fit pass always sees the model's own noise, uniform across
+    layers, at multiplier 1. The eval pass also holds every layer at
+    multiplier 1 except NOISE_GRID_LAYER, whose multiplier sweeps the grid --
+    isolates the cost of the nonlinear encoding at that layer from our own
+    injected noise there, rather than conflating it with an off-distribution
+    model (which uniformly scaling eval noise everywhere would do)."""
     results = {}
-    combos = list(itertools.product(NOISE_MULT_GRID, NOISE_MULT_GRID))
-    for train_mult, eval_mult in tqdm(combos, desc="noise grid"):
+    for eval_mult in tqdm(NOISE_GRID_EVAL_MULTS, desc="noise grid"):
+        eval_noise = _isolated_layer_noise(
+            model,
+            adv_cfg.resid_noise_std,
+            NOISE_GRID_LAYER,
+            eval_mult,
+            args.n_test,
+            g,
+        )
         _, plot_inputs = binary_probe_metrics_all_layers(
             model,
             1.0,
@@ -158,14 +182,14 @@ def _run_noise_grid_analysis(
             args.n_test,
             g,
             probe_backend_name,
-            desc=f"train={train_mult:g} eval={eval_mult:g}",
-            train_noise_std=adv_cfg.resid_noise_std * train_mult,
-            eval_noise_std=adv_cfg.resid_noise_std * eval_mult,
+            desc=f"eval={eval_mult:g}",
+            train_noise=adv_cfg.resid_noise_std,
+            eval_noise=eval_noise,
         )
         pi = plot_inputs[NOISE_GRID_LAYER]
         proj = LinearBoundary(pi["w_probe"], pi["b_probe"]).score(pi["X_te"])
         fpr, tpr, _ = roc_curve(pi["y_te"], proj)
-        results[(train_mult, eval_mult)] = {
+        results[eval_mult] = {
             "fpr": fpr,
             "tpr": tpr,
             "auroc": roc_auc_score(pi["y_te"], proj),
@@ -200,8 +224,8 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         g,
         probe_backend_name,
         desc="probe gap @ {1,2}",
-        train_noise_std=train_noise_std,
-        eval_noise_std=eval_noise_std,
+        train_noise=train_noise_std,
+        eval_noise=eval_noise_std,
     )
     del gap  # accuracy metrics; unused here (AUROC is recomputed below instead)
 
@@ -301,23 +325,25 @@ def _plot_auroc_bar(auroc, hidden_layers, plot_dir, tag, show=False):
 
 
 def _plot_roc_noise_grid(noise_roc, plot_dir, tag, show=False):
-    """Logreg probe ROC curve at layer NOISE_GRID_LAYER, one curve per
-    (train_mult, eval_mult) combo overlaid on a single axes -- shows whether
-    a probe fit under one noise level generalizes worse when evaluated under
-    a different one."""
+    """Logreg probe ROC curve at layer NOISE_GRID_LAYER, one curve per eval
+    multiplier in NOISE_GRID_EVAL_MULTS overlaid on a single axes -- shows how
+    much of the probe's ROC comes from noise we inject at that layer, versus
+    the nonlinear encoding alone (multiplier 0), holding the rest of the
+    model at its normal training-time noise regime."""
     fig, ax = plt.subplots(figsize=(5.5, 5))
-    for train_mult, eval_mult in itertools.product(NOISE_MULT_GRID, NOISE_MULT_GRID):
-        r = noise_roc[(train_mult, eval_mult)]
+    for eval_mult in NOISE_GRID_EVAL_MULTS:
+        r = noise_roc[eval_mult]
         ax.plot(
             r["fpr"],
             r["tpr"],
-            label=f"train={train_mult:g}, eval={eval_mult:g} (AUROC {r['auroc']:.3f})",
+            label=f"eval mult={eval_mult:g} (AUROC {r['auroc']:.3f})",
         )
     ax.plot([0, 1], [0, 1], "k--", lw=1, label="chance")
     ax.set_xlabel("FPR")
     ax.set_ylabel("TPR")
     ax.set_title(
-        f"Probe ROC across train/eval noise multipliers (layer {NOISE_GRID_LAYER})"
+        f"Probe ROC vs. injected noise at layer {NOISE_GRID_LAYER} "
+        "(other layers at train-time noise)"
     )
     ax.legend(fontsize=7, loc="lower right")
     ax.grid(True, alpha=0.3)
