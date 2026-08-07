@@ -108,7 +108,7 @@ def eval_task_loss(
     batch: int = 20_000,
     x_p_outer: float | None = None,
     x_threshold: float = 1.0,
-    noise_std: float = 0.0,
+    noise: float = 0.0,
 ) -> float:
     """Mean-squared task error over `n` fresh examples, matching the training
     loop's own `l_task` formula (see train_adversarial_logreg.py's
@@ -129,7 +129,7 @@ def eval_task_loss(
             x_threshold=x_threshold,
         )
         pred: Float[Tensor, "b num_x"] = model.task_output(
-            x_full, noise=noise_std, generator=generator
+            x_full, noise=noise, generator=generator
         )
         total += ((pred - y) ** 2).sum()
         done += b
