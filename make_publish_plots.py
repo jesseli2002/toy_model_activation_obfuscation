@@ -348,7 +348,6 @@ def _plot_roc_noise_grid(noise_roc, plot_dir, tag, show=False):
     ax.set_ylabel("TPR")
     ax.set_title(
         f"Probe ROC vs. injected noise at layer {NOISE_GRID_LAYER} "
-        "(other layers at train-time noise)"
     )
     ax.legend(fontsize=7, loc="lower right")
     ax.grid(True, alpha=0.3)
@@ -561,13 +560,17 @@ def _plot_steer_direction_magnitude(
     w_dom_t = torch.tensor(w_dom, dtype=dtype, device=device)
     xs = torch.linspace(-3, 3, 400, device=device)
     panels = [
-        ("forward", 1.0, +1.0),  # start c=1, steer toward c=2
-        ("reverse", 2.0, -1.0),  # start c=2, steer toward c=1
+        ("forward", 1, 2),  # start c=1, steer toward c=2
+        ("reverse", 2, 1),  # start c=2, steer toward c=1
     ]
-    mags = [(1.0, "-", 1.0), (2.0, "--", 0.6)]
+    mags = [
+        (1.0, "blue", 1.0),
+        (2.0, "green", 1),
+    ]
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True)
-    for ax, (label, c_start, sign) in zip(axes, panels):
-        for mag, ls, alpha in mags:
+    for ax, (label, c_start, c_end) in zip(axes, panels):
+        sign = c_end - c_start
+        for mag, color, alpha in mags:
             vec = sign * mag * w_dom_t
             for j in range(num_x):
                 x = torch.zeros(len(xs), num_x, device=device)
@@ -579,15 +582,15 @@ def _plot_steer_direction_magnitude(
                 ax.plot(
                     xs.cpu().numpy(),
                     y.cpu().numpy(),
-                    ls,
-                    color="blue",
+                    color=color,
                     alpha=alpha * 0.3,
                     zorder=5,
                     label=f"{mag:g}x" if j == 0 else None,
                 )
+
         for t, (tls, lbl) in {
-            1.0: ("k--", "target sat(x,1)"),
-            2.0: ("r--", "target sat(x,2)"),
+            c_start: ("k--", f"start sat(x,{c_start})"),
+            c_end: ("r--", f"target sat(x,{c_end})"),
         }.items():
             ax.plot(
                 xs.cpu().numpy(),
@@ -597,13 +600,13 @@ def _plot_steer_direction_magnitude(
                 label=lbl,
                 zorder=2,
             )
-        ax.set_title(f"{label} (start c={c_start:g})")
+        ax.set_title(f"steer c={c_start:g} to c={c_end:g}")
         ax.set_xlabel("x")
         ax.grid(True, alpha=0.3)
         ax.legend(loc="upper left", fontsize=8)
     axes[0].set_ylabel("y")
     axes[0].set_ylim([-2.8, 2.8])
-    fig.suptitle(f"DoM steering, forward vs reverse, 1x vs 2x (layer {steer_layer})")
+    fig.suptitle(f"DoM steering, forward and reverse (layer {steer_layer})")
     fig.tight_layout()
     return save_plot(
         fig, plot_dir, f"{tag}_L{steer_layer}_steer_dir_mag.png", close=not show
