@@ -110,7 +110,7 @@ PUBLISH_DIR = "publish"
 
 # Single knob for output resolution of every plot in this file. probe_lib.save_plot
 # defers to rcParams["savefig.dpi"], so bumping this (e.g. to 300 for print-quality
-# figures) is all that's needed; other scripts keep probe_lib's baseline of 120.
+# figures) is all that's needed.
 plt.rcParams["savefig.dpi"] = 200
 
 
