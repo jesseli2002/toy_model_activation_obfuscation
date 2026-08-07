@@ -45,6 +45,25 @@ def parse_args():
         choices=config.PROBE_BACKEND_CHOICES,
         default="newton",
     )
+    p.add_argument(
+        "--eval-noise-mult",
+        type=float,
+        default=1.0,
+        help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
+        "injected into the residual stream when EVALUATING probes -- "
+        "replicates the noisy environment the model itself saw at train "
+        "time. 0 disables.",
+    )
+    p.add_argument(
+        "--train-noise-mult",
+        type=float,
+        default=0.0,
+        help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
+        "injected into the residual stream when FITTING probes. Default 0 "
+        "(fit clean) matches the historical assumption that a probe fit is "
+        "a large-n limit noise doesn't move; set >0 to test that assumption "
+        "against --eval-noise-mult independently.",
+    )
     p.add_argument("--show", action="store_true")
     return p.parse_args()
 
@@ -124,6 +143,11 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
     err_samples = _sample_errors(model, args.n_err_samples, g, device)
 
     hidden_layers = list(range(1, model.num_blocks))
+    # Multiplier on the model's OWN training-time noise, injected into probe
+    # fit and/or eval forward passes independently (see --train-noise-mult
+    # and --eval-noise-mult help).
+    train_noise_std = adv_cfg.resid_noise_std * args.train_noise_mult
+    eval_noise_std = adv_cfg.resid_noise_std * args.eval_noise_mult
     gap, gap_plot_inputs = binary_probe_metrics_all_layers(
         model,
         1.0,
@@ -134,7 +158,8 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         g,
         probe_backend_name,
         desc="probe gap @ {1,2}",
-        eval_noise_std=adv_cfg.resid_noise_std,
+        train_noise_std=train_noise_std,
+        eval_noise_std=eval_noise_std,
     )
     del gap  # accuracy metrics; unused here (AUROC is recomputed below instead)
 
