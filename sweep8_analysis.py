@@ -110,7 +110,7 @@ FAILED_COLOR = "#eb6834"  # categorical slot 2 (orange) -- distinct "problem" hu
 
 def _size_label(size: Size) -> str:
     num_x, d_model, d_mlp = size
-    return f"nx{num_x} dm{d_model}\nmlp{d_mlp}"
+    return f"nx{num_x} dm{d_model} mlp{d_mlp}"
 
 
 def _lam_label(lam: float) -> str:
@@ -380,14 +380,13 @@ def main():
         ax.set_xticklabels(
             [_lam_label(x) if FACET == "size" else _size_label(x) for x in xs],
             fontsize=8,
+            # Size labels are long enough to collide when laid flat.
+            rotation=0 if FACET == "size" else 30,
+            ha="center" if FACET == "size" else "right",
         )
         ax.set_xlim(-0.6, len(xs) - 0.4)
         ax.set_ylim(0, 1)
-        title = (
-            _size_label(panel).replace("\n", " ")
-            if FACET == "size"
-            else f"$\\lambda$ = {panel:g}"
-        )
+        title = _size_label(panel) if FACET == "size" else f"$\\lambda$ = {panel:g}"
         ax.set_title(title, fontsize=10, pad=14)  # pad clears the n= annotations
         ax.set_xlabel(x_label)
         ax.grid(True, axis="y", alpha=0.3)
