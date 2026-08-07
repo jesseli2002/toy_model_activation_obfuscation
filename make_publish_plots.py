@@ -548,6 +548,68 @@ def _plot_steer_comparison(
     )
 
 
+@torch.no_grad()
+def _plot_steer_direction_magnitude(
+    steer_layer, num_x, model, w_dom, plot_dir, tag, device, show=False
+):
+    """DoM-direction steering, forward (c=1 -> c=2) vs reverse (c=2 -> c=1),
+    each at 1x and 2x the DoM shift magnitude. Complements
+    _plot_steer_comparison (which fixes magnitude at 1x and instead compares
+    DoM vs logreg direction): here direction is the fixed axis (one panel
+    per start point) and magnitude is the swept variable."""
+    dtype = next(model.parameters()).dtype
+    w_dom_t = torch.tensor(w_dom, dtype=dtype, device=device)
+    xs = torch.linspace(-3, 3, 400, device=device)
+    panels = [
+        ("forward", 1.0, +1.0),  # start c=1, steer toward c=2
+        ("reverse", 2.0, -1.0),  # start c=2, steer toward c=1
+    ]
+    mags = [(1.0, "-", 1.0), (2.0, "--", 0.6)]
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True)
+    for ax, (label, c_start, sign) in zip(axes, panels):
+        for mag, ls, alpha in mags:
+            vec = sign * mag * w_dom_t
+            for j in range(num_x):
+                x = torch.zeros(len(xs), num_x, device=device)
+                x[:, j] = xs
+                x_full = torch.cat(
+                    [x, torch.full((len(xs), 1), c_start, device=device)], dim=1
+                )
+                y = forward_steered(model, x_full, steer_layer, vec)[:, j]
+                ax.plot(
+                    xs.cpu().numpy(),
+                    y.cpu().numpy(),
+                    ls,
+                    color="blue",
+                    alpha=alpha * 0.3,
+                    zorder=5,
+                    label=f"{mag:g}x" if j == 0 else None,
+                )
+        for t, (tls, lbl) in {
+            1.0: ("k--", "target sat(x,1)"),
+            2.0: ("r--", "target sat(x,2)"),
+        }.items():
+            ax.plot(
+                xs.cpu().numpy(),
+                torch.clamp(xs, -t, t).cpu().numpy(),
+                tls,
+                lw=1.5,
+                label=lbl,
+                zorder=2,
+            )
+        ax.set_title(f"{label} (start c={c_start:g})")
+        ax.set_xlabel("x")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+    axes[0].set_ylabel("y")
+    axes[0].set_ylim([-2.8, 2.8])
+    fig.suptitle(f"DoM steering, forward vs reverse, 1x vs 2x (layer {steer_layer})")
+    fig.tight_layout()
+    return save_plot(
+        fig, plot_dir, f"{tag}_L{steer_layer}_steer_dir_mag.png", close=not show
+    )
+
+
 def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
     layers = sorted(r2)
     baseline = r2[0]
@@ -588,6 +650,16 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
             model,
             pi["w_dom"],
             pi["w_probe"],
+            plot_dir,
+            tag,
+            device,
+            show=show,
+        )
+        _plot_steer_direction_magnitude(
+            lyr,
+            model.num_x,
+            model,
+            pi["w_dom"],
             plot_dir,
             tag,
             device,
