@@ -18,6 +18,11 @@ import torch
 from jaxtyping import Bool, Float
 
 import config
+
+# Baseline output resolution for save_plot below. Callers can override globally
+# by setting plt.rcParams["savefig.dpi"] themselves (e.g. make_publish_plots.py
+# bumps this for print-quality figures) since save_plot defers to it.
+plt.rcParams["savefig.dpi"] = 120
 from config import C_HIGH, C_LOW
 from data import sample_fixed_c
 from model import ResidualMLP
@@ -398,14 +403,13 @@ def forward_steered(
     return y[:, : model.num_x]
 
 
-def save_plot(
-    fig, plot_dir: str, filename: str, close: bool = True, dpi: int = 120
-) -> str:
+def save_plot(fig, plot_dir: str, filename: str, close: bool = True) -> str:
     """Save a finished figure and log its path. Closes it by default; pass
     close=False to leave it open for a later plt.show() (only the plots
-    adversarial_report.main wants --show to actually pop should do this)."""
+    adversarial_report.main wants --show to actually pop should do this).
+    Resolution comes from rcParams["savefig.dpi"] (set above)."""
     path = os.path.join(plot_dir, filename)
-    fig.savefig(path, dpi=dpi)
+    fig.savefig(path)
     if close:
         plt.close(fig)
     print(f"[plot] wrote {path}")

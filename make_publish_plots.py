@@ -84,7 +84,6 @@ if __name__ == "__main__":
     args = parse_args()
 
 import dataclasses
-import functools
 import os
 
 import matplotlib.pyplot as plt
@@ -104,15 +103,15 @@ from probe_lib import (
     forward_steered,
     load_model,
     resolve_adv_config,
-    save_plot as _save_plot,
+    save_plot,
 )
 
 PUBLISH_DIR = "publish"
 
-# Single knob for output resolution of every plot in this file (probe_lib.save_plot
-# defaults to 120 for other callers). Bump this to e.g. 300 for print-quality figures.
-PLOT_DPI = 120
-save_plot = functools.partial(_save_plot, dpi=PLOT_DPI)
+# Single knob for output resolution of every plot in this file. probe_lib.save_plot
+# defers to rcParams["savefig.dpi"], so bumping this (e.g. to 300 for print-quality
+# figures) is all that's needed; other scripts keep probe_lib's baseline of 120.
+plt.rcParams["savefig.dpi"] = 200
 
 
 # ----------------------------------------------------------------------------
