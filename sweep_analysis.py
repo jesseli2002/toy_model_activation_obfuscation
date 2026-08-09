@@ -303,6 +303,9 @@ def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     ax.set_title(r"Task loss vs. probe AUROC, colored by $\lambda$")
     ax.set_xscale("log")
     ax.grid(True, alpha=0.3)
+    # Log-scale minor tick labels (2x, 3x, ...) crowd together when the data
+    # spans less than a decade; rotating keeps them legible at any range.
+    plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
 
 
