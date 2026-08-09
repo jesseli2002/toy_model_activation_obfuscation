@@ -76,12 +76,17 @@ CKPT = "best"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std
+ONE_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for the one-hot OOD loss
 PROBE_N_TRAIN = 5000  # per class; refit per run, across many runs in a sweep
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
 EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
 
-LOSS_THRESHOLD = 0.01  # task "succeeded" iff final loss below this
+# task "succeeded" iff both are below their threshold -- see
+# sweep_threshold_report.py for what distinguishes the two losses (in-
+# distribution vs. one-hot-OOD input construction).
+LOSS_THRESHOLD = 0.01
+ONE_HOT_LOSS_THRESHOLD = 0.01
 AUROC_THRESHOLDS = [
     0.6,
     0.75,
@@ -111,7 +116,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from data import eval_task_loss
+from data import eval_n_hot_loss, eval_task_loss
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -216,6 +221,27 @@ def _final_loss(tag: str, g: torch.Generator) -> float:
     )
 
 
+def _one_hot_loss(tag: str, g: torch.Generator) -> float:
+    """One-hot OOD loss (data.eval_n_hot_loss, n_hot=1), freshly recomputed
+    at CKPT -- only one input coordinate nonzero per example, unlike
+    _final_loss's plain training-distribution eval. Uses the checkpoint's own
+    resid_noise_std (TASK_LOSS_NOISE_MULT) so the two loss columns differ
+    only in the input distribution, not the noise."""
+    model, ck = load_model(tag, CKPT, DEVICE)
+    adv_cfg = resolve_adv_config(ck)
+    noise_std = (
+        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
+    )
+    return eval_n_hot_loss(
+        model,
+        g,
+        DEVICE,
+        n=ONE_HOT_LOSS_N_EVAL,
+        n_hot=1,
+        noise_std=noise_std,
+    )
+
+
 def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float | None:
     """AUROC of a freshly refit probe at PROBE_LAYER for `tag`'s CKPT
     checkpoint -- not the checkpoint's own stored training-time probe, so
@@ -253,6 +279,7 @@ def _cache_key(tag: str) -> str:
         PROBE_LAYER,
         TASK_LOSS_N_EVAL,
         TASK_LOSS_NOISE_MULT,
+        ONE_HOT_LOSS_N_EVAL,
         PROBE_N_TRAIN,
         PROBE_N_TEST,
         PROBE_BACKEND,
@@ -276,11 +303,14 @@ def _save_cache(cache: dict[str, dict]) -> None:
     os.replace(tmp, CACHE_PATH)
 
 
-def _classify(loss: float, auroc: float, thresholds: list[float]) -> int:
+def _classify(
+    loss: float, one_hot_loss: float, auroc: float, thresholds: list[float]
+) -> int:
     """Bucket index, 0 = failed task, 1 = succeeded but not hidden (auroc
     above the highest threshold), ..., len(thresholds) + 1 = succeeded and
-    most hidden (auroc below the lowest threshold)."""
-    if loss >= LOSS_THRESHOLD:
+    most hidden (auroc below the lowest threshold). "Succeeded" requires
+    both loss and one_hot_loss below their (separate) thresholds."""
+    if loss >= LOSS_THRESHOLD or one_hot_loss >= ONE_HOT_LOSS_THRESHOLD:
         return 0
     for i, t in enumerate(reversed(thresholds)):
         if auroc >= t:
@@ -289,7 +319,10 @@ def _classify(loss: float, auroc: float, thresholds: list[float]) -> int:
 
 
 def _band_labels(thresholds: list[float]) -> list[str]:
-    labels = [f"failed task (loss >= {LOSS_THRESHOLD:g})"]
+    labels = [
+        f"failed task (loss >= {LOSS_THRESHOLD:g} or "
+        f"one-hot loss >= {ONE_HOT_LOSS_THRESHOLD:g})"
+    ]
     desc = reversed(thresholds)
     prev = None
     for t in desc:
@@ -367,6 +400,7 @@ def _collect_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
                 try:
                     cache[cache_key] = {
                         "loss": _final_loss(tag, g),
+                        "one_hot_loss": _one_hot_loss(tag, g),
                         "auroc": _probe_auroc(tag, g, probe_backend_name),
                     }
                 except FileNotFoundError:
@@ -377,7 +411,11 @@ def _collect_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
             if entry["auroc"] is None:
                 print(f"  {tag}: no probe in checkpoint, skipped")
                 continue
-            counts[_classify(entry["loss"], entry["auroc"], thresholds)] += 1
+            counts[
+                _classify(
+                    entry["loss"], entry["one_hot_loss"], entry["auroc"], thresholds
+                )
+            ] += 1
             n_ok += 1
         if n_ok < MIN_RUNS:
             print(f"  {key}: {n_ok} usable runs, skipped")
