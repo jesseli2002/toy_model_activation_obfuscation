@@ -221,16 +221,16 @@ def _classify(loss: float, auroc: float, thresholds: list[float]) -> int:
 
 
 def _band_labels(thresholds: list[float]) -> list[str]:
-    labels = [f"failed task (loss >= {LOSS_THRESHOLD:g})"]
+    labels = [f"failed task\n(task loss >= {LOSS_THRESHOLD:g})"]
     desc = reversed(thresholds)
     prev = None
     for t in desc:
         if prev is None:
-            labels.append(f"not hidden (auroc >= {t:g})")
+            labels.append(f"not hidden\n(auroc >= {t:g})")
         else:
-            labels.append(f"partially hidden ({t:g} <= auroc < {prev:g})")
+            labels.append(f"partially hidden\n({t:g} <= auroc < {prev:g})")
         prev = t
-    labels.append(f"hidden (auroc < {prev:g})")
+    labels.append(f"hidden\n(auroc < {prev:g})")
     return labels
 
 
@@ -350,7 +350,8 @@ def main(clear_cache: bool = False):
     ax.set_ylabel("fraction of runs")
     ax.set_ylim(0, 1)
     ax.set_xlim(0, x[-1])
-    ax.set_title(f"Outcome vs. $\\lambda$ \n({RUN_GLOB})")
+    ax.set_title(f"Outcome vs. $\\lambda$")
+    # ax.set_title(f"Outcome vs. $\\lambda$ \n({RUN_GLOB})")
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     ax.grid(True, alpha=0.3)
 

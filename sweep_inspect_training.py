@@ -7,8 +7,8 @@ console / plt.show() only; nothing is written to disk.
 """
 
 # RUN_TAGS = [f"sweep3_lam0_tr{i}" for i in range(10)]
-RUN_TAGS = [f"noisyprobe_lam0.1_tr{i}" for i in range(2)]
-# RUN_TAGS = [f"sweep5_ramp20k_tr{i}" for i in range(5)]
+# RUN_TAGS = [f"noisyprobe_lam0.1_tr{i}" for i in range(2)]
+RUN_TAGS = [f"sweep8_nx64_dm128_mlp32_lam0.01_tr{i}" for i in range(10)]
 # RUN_TAGS = [f"sweep5_step3k_tr{i}" for i in range(12)]
 # RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt

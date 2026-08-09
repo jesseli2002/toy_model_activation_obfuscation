@@ -16,7 +16,7 @@ As of writing, there is active development on sweep_*.py (various reporting scri
 	- Local MCP servers & utility scripts
 Other directories are generally not relevant unless the user specifically mentions them.
 
-## Style
+## Style and code standards
 - Most scripts have some heavy imports e.g. (torch), which can take some time. This is annoying if you only call --help on a command-line script. Preferably structure CLI scripts like this:
 ```python
 import argparse # and other light imports
@@ -37,6 +37,11 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
     - Don't list specific callers/users; instead explain use cases, to be robust to changes in where a method gets used.
     - Don't give unimportant history (contrast important history: examples of past pitfalls/bugs of a more obvious-seeming solution; even in these cases, keep it concise and link to external issue reasoning)
     - If a subtle flaw was identified, don't pollute the code with a long comment about it - often it's both too short to explain all the nuance and so long that it interrupts the flow. Instead, use one or two line comments, and refer to a PR# where more details can be found.
+- Demand elegance (Balanced)
+    - For non-trivial changes, ask: “Is there a more elegant solution?”
+    - If a fix feels hacky, ask: “Knowing everything I know now, implement the elegant solution.”
+    - Skip this for simple fixes — don’t over-engineer
+- Keep commits small and self-contained
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
