@@ -39,7 +39,8 @@ everything else that may still change.
 "Loss" and "AUROC" are both freshly recomputed at CKPT -- loss via
 data.eval_task_loss (deliberately excluding the adversarial/probe penalty,
 since this only cares about task performance), and AUROC via a freshly refit
-probe at PROBE_LAYER -- rather than read from history.jsonl or the
+probe at PROBE_LAYER (fit and scored under the same residual-stream noise,
+see PROBE_*_NOISE_MULT) -- rather than read from history.jsonl or the
 checkpoint's own stored training-time probe. See sweep_analysis.py and
 sweep_threshold_report.py, which recompute the same way for the same reasons
 (some runs' final checkpoint predates their last history record).
@@ -83,7 +84,12 @@ ONE_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for the one-hot OOD loss
 PROBE_N_TRAIN = 5000  # per class; refit per run, across many runs in a sweep
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
-EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
+# Multipliers on the checkpoint's own resid_noise_std for the refit probe's fit
+# and scoring passes. Both 1.0: these runs trained with probe_noise, so the
+# adversary they actually hid from was itself fit under noise -- fitting clean
+# measures a different, weaker probe (worth ~0.1 AUROC here).
+PROBE_TRAIN_NOISE_MULT = 1.0
+PROBE_EVAL_NOISE_MULT = 1.0
 
 # task "succeeded" iff both are below their threshold -- see
 # sweep_threshold_report.py for what distinguishes the two losses (in-
@@ -215,7 +221,8 @@ def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float
     adv_cfg = resolve_adv_config(ck)
     if adv_cfg is None:
         return None
-    eval_noise_std = adv_cfg.resid_noise_std * EVAL_NOISE_MULT
+    eval_noise_std = adv_cfg.resid_noise_std * PROBE_EVAL_NOISE_MULT
+    train_noise_std = adv_cfg.resid_noise_std * PROBE_TRAIN_NOISE_MULT
     _metrics, plot_inputs = binary_probe_metrics_all_layers(
         model,
         1.0,
@@ -227,7 +234,7 @@ def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float
         probe_backend_name,
         desc=tag,
         eval_noise=eval_noise_std,
-        train_noise=adv_cfg.resid_noise_std,
+        train_noise=train_noise_std,
     )
     pi = plot_inputs[PROBE_LAYER]
     probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
@@ -246,7 +253,8 @@ def _cache_key(tag: str) -> str:
         PROBE_N_TRAIN,
         PROBE_N_TEST,
         PROBE_BACKEND,
-        EVAL_NOISE_MULT,
+        PROBE_TRAIN_NOISE_MULT,
+        PROBE_EVAL_NOISE_MULT,
     )
     return "|".join([tag] + [f"{s}" for s in settings])
 
