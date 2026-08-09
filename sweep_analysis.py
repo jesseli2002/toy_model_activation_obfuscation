@@ -124,7 +124,7 @@ def _final_loss(tag: str, g: torch.Generator) -> float:
         n=TASK_LOSS_N_EVAL,
         x_p_outer=x_p_outer,
         x_threshold=x_threshold,
-        noise_std=noise_std,
+        noise=noise_std,
     )
 
 
