@@ -143,8 +143,7 @@ def _discover_tags_by_lambda() -> dict[float, list[str]]:
         if not m:
             continue
         lam = float(m.group(1))
-        if lam == 0.0:
-            continue  # see LAM0_GLOB above
+        assert lam != 0.0, f"{tag}: sweep7 has no lambda=0 arm -- see LAM0_GLOB above"
         if lam in EXCLUDE_LAMBDAS:
             continue
         by_lambda.setdefault(lam, []).append(tag)
