@@ -305,83 +305,107 @@ def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
 
 
-def main(clear_cache: bool = False):
-    if clear_cache and os.path.exists(CACHE_PATH):
-        os.remove(CACHE_PATH)
+def _run_metrics(
+    tag: str, cache: dict[str, dict], g: torch.Generator, probe_backend_name: str
+) -> dict | None:
+    """Cached (loss, n_hot_losses, auroc) for one run, recomputing and
+    persisting on a cache miss. None if the run isn't usable yet (no
+    checkpoint) -- see also the None auroc for a checkpoint with no probe."""
+    cache_key = _cache_key(tag)
+    if cache_key in cache:
+        return cache[cache_key]
+    try:
+        cache[cache_key] = {
+            "loss": recompute_task_loss(
+                tag, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
+            ),
+            "n_hot_losses": {
+                str(n_hot): recompute_n_hot_loss(
+                    tag,
+                    CKPT,
+                    g,
+                    DEVICE,
+                    N_HOT_LOSS_N_EVAL,
+                    n_hot,
+                    TASK_LOSS_NOISE_MULT,
+                )
+                for n_hot in N_HOT_VALUES
+            },
+            "auroc": _probe_auroc(tag, g, probe_backend_name),
+        }
+    except FileNotFoundError:
+        print(f"  {tag}: no history/checkpoint yet, skipped")
+        return None
+    _save_cache(cache)  # per run, so an interrupted pass keeps progress
+    return cache[cache_key]
 
-    thresholds = sorted(AUROC_THRESHOLDS)
-    n_bands = len(thresholds) + 2
 
-    if SMOKE:
-        ratios, fractions = _smoke_data(n_bands)
-        scatter_points = _smoke_scatter_points()
-    else:
-        by_lambda = _discover_tags_by_lambda()
-        cache = _load_cache()
-        ratios = []
-        fractions = []  # one length-n_bands array per lambda
-        scatter_points = []  # (loss, auroc, lam) per run, across all lambdas
-        # One RNG across every lambda, so its draws (eval noise, probe
-        # train/test sampling) are reproducible across a full run of the script.
-        g = torch.Generator(device=DEVICE).manual_seed(SEED)
-        probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
+def _lambda_counts(
+    tags: list[str],
+    n_bands: int,
+    thresholds: list[float],
+    cache: dict[str, dict],
+    g: torch.Generator,
+    probe_backend_name: str,
+) -> tuple[np.ndarray, list[tuple[float, float]]]:
+    """Per-band run counts for one lambda's `tags`, plus each usable run's
+    (loss, auroc) for the scatter. Unusable runs are skipped, so the counts
+    sum to len(usable) <= len(tags)."""
+    counts = np.zeros(n_bands)
+    points = []
+    for tag in tags:
+        entry = _run_metrics(tag, cache, g, probe_backend_name)
+        if entry is None:
+            continue
+        if entry["auroc"] is None:
+            print(f"  {tag}: no probe in checkpoint, skipped")
+            continue
+        worst_n_hot_loss = max(entry["n_hot_losses"].values())
+        counts[
+            _classify(entry["loss"], worst_n_hot_loss, entry["auroc"], thresholds)
+        ] += 1
+        points.append((entry["loss"], entry["auroc"]))
+    return counts, points
 
-        print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
-        for lam in sorted(by_lambda):
-            tags = by_lambda[lam]
-            counts = np.zeros(n_bands)
-            n_ok = 0
-            for tag in tags:
-                cache_key = _cache_key(tag)
-                if cache_key not in cache:
-                    try:
-                        cache[cache_key] = {
-                            "loss": recompute_task_loss(
-                                tag,
-                                CKPT,
-                                g,
-                                DEVICE,
-                                TASK_LOSS_N_EVAL,
-                                TASK_LOSS_NOISE_MULT,
-                            ),
-                            "n_hot_losses": {
-                                str(n_hot): recompute_n_hot_loss(
-                                    tag,
-                                    CKPT,
-                                    g,
-                                    DEVICE,
-                                    N_HOT_LOSS_N_EVAL,
-                                    n_hot,
-                                    TASK_LOSS_NOISE_MULT,
-                                )
-                                for n_hot in N_HOT_VALUES
-                            },
-                            "auroc": _probe_auroc(tag, g, probe_backend_name),
-                        }
-                    except FileNotFoundError:
-                        print(f"  {tag}: no history/checkpoint yet, skipped")
-                        continue
-                    _save_cache(cache)  # per run, so an interrupted pass keeps progress
-                entry = cache[cache_key]
-                if entry["auroc"] is None:
-                    print(f"  {tag}: no probe in checkpoint, skipped")
-                    continue
-                worst_n_hot_loss = max(entry["n_hot_losses"].values())
-                counts[
-                    _classify(
-                        entry["loss"], worst_n_hot_loss, entry["auroc"], thresholds
-                    )
-                ] += 1
-                n_ok += 1
-                scatter_points.append((entry["loss"], entry["auroc"], lam))
-            if n_ok == 0:
-                print(f"  {lam}: no usable runs, skipped")
-                continue
-            ratio = lam / (1 - lam)
-            ratios.append(ratio)
-            fractions.append(counts / n_ok)
-            print(f"{lam:10g} {ratio:10.4g} {n_ok:5d} {len(tags):7d}")
 
+def _gather_sweep(
+    n_bands: int, thresholds: list[float]
+) -> tuple[list[float], list[np.ndarray], list[tuple[float, float, float]]]:
+    """Walk the sweep's runs, returning per-lambda loss-weight ratios, the
+    fraction of runs in each outcome band, and (loss, auroc, lam) per run.
+    Prints a per-lambda summary table as it goes."""
+    by_lambda = _discover_tags_by_lambda()
+    cache = _load_cache()
+    ratios = []
+    fractions = []  # one length-n_bands array per lambda
+    scatter_points = []  # (loss, auroc, lam) per run, across all lambdas
+    # One RNG across every lambda, so its draws (eval noise, probe
+    # train/test sampling) are reproducible across a full run of the script.
+    g = torch.Generator(device=DEVICE).manual_seed(SEED)
+    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
+
+    print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
+    for lam in sorted(by_lambda):
+        tags = by_lambda[lam]
+        counts, points = _lambda_counts(
+            tags, n_bands, thresholds, cache, g, probe_backend_name
+        )
+        if not points:
+            print(f"  {lam}: no usable runs, skipped")
+            continue
+        ratio = lam / (1 - lam)
+        ratios.append(ratio)
+        fractions.append(counts / len(points))
+        scatter_points.extend((loss, auroc, lam) for loss, auroc in points)
+        print(f"{lam:10g} {ratio:10.4g} {len(points):5d} {len(tags):7d}")
+    return ratios, fractions, scatter_points
+
+
+def _plot_stacked_fractions(
+    ratios: list[float], fractions: list[np.ndarray], thresholds: list[float]
+) -> None:
+    """Stacked fraction-of-runs-per-outcome-band vs. the probe-to-task loss
+    weight ratio, one stack column's worth of data per lambda."""
     order = np.argsort(ratios)
     x = np.array(ratios)[order]
     frac_matrix = np.array(fractions)[order]  # (n_lambda, n_bands)
@@ -430,6 +454,21 @@ def main(clear_cache: bool = False):
     fig.savefig(f"{PLOT_DIR}/lam_sweep_task{LOSS_THRESHOLD}.png", bbox_inches="tight")
     plt.tight_layout()
 
+
+def main(clear_cache: bool = False):
+    if clear_cache and os.path.exists(CACHE_PATH):
+        os.remove(CACHE_PATH)
+
+    thresholds = sorted(AUROC_THRESHOLDS)
+    n_bands = len(thresholds) + 2
+
+    if SMOKE:
+        ratios, fractions = _smoke_data(n_bands)
+        scatter_points = _smoke_scatter_points()
+    else:
+        ratios, fractions, scatter_points = _gather_sweep(n_bands, thresholds)
+
+    _plot_stacked_fractions(ratios, fractions, thresholds)
     _plot_loss_vs_auroc(scatter_points)
 
     plt.show()
