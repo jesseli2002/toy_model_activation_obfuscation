@@ -85,9 +85,22 @@ online incrementally):
    `sweep_pool.py eta` has real data.
 
 For periodic unattended health-checking of a sweep already underway
-(stall/failure detection, topping off, and *recommending* — not
-autonomously performing — rebalancing), see
+(stall/failure detection, auto-retry of known-flaky failures, and
+*recommending* — not autonomously performing — rebalancing), see
 `.claude/skills/parallel-remote-training/monitor_brief.md`.
+
+## Scheduling the check-in agent
+
+Once the pool is fully assigned (every instance's queue holds the whole
+remaining sweep, not just an initial chunk — see above), set up a
+recurring **~2h** check via the `schedule` skill, running as a fresh
+agent each time (no standing context growth, no stale/uncached-token
+cost). The routine's stored prompt is `monitor_brief.md`'s only input —
+it must carry the sweep's `instances.json` path explicitly, and may
+carry extra sweep-specific detail if you judge it relevant (see
+`monitor_brief.md`'s "Input" section). As of this writing, run it as a
+**local** scheduled agent, not a cloud routine (cloud support here is
+unevaluated).
 
 ## Ramping concurrency
 
