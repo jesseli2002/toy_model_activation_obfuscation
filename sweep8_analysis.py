@@ -304,6 +304,10 @@ def _band_colors(thresholds: list[float]) -> list[str]:
     return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
 
 
+SMOKE_MAIN_SIZES = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
+SMOKE_SIDE_SIZES = [(16, 32, 16), (32, 64, 16), (48, 96, 16), (64, 128, 16)]
+
+
 def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
     """Synthetic per-run-config stats standing in for a real sweep's
     results, just to preview the plots' layout/styling without an analysis
@@ -325,16 +329,16 @@ def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
 
     stats: dict[RunKey, RunStats] = {}
 
-    main_sizes = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
-    for i, size in enumerate(main_sizes):
+    for i, size in enumerate(SMOKE_MAIN_SIZES):
+        p = i / len(SMOKE_MAIN_SIZES)
         stats[(*size, 0.0)] = RunStats(clean, 10)
         for lam in MAIN_LAMBDAS:
-            stats[(*size, lam)] = RunStats(band_fracs(i / len(main_sizes)), 10)
+            stats[(*size, lam)] = RunStats(band_fracs(p), 10)
 
-    side_sizes = [(16, 32, 16), (32, 64, 16), (48, 96, 16), (64, 128, 16)]
-    for i, size in enumerate(side_sizes):
+    for i, size in enumerate(SMOKE_SIDE_SIZES):
+        p = i / len(SMOKE_SIDE_SIZES)
         stats[(*size, 0.0)] = RunStats(clean, 10)
-        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(i / len(side_sizes)), 10)
+        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(p), 10)
 
     return stats
 
@@ -345,15 +349,17 @@ def _smoke_scatter_points() -> list[tuple[float, float, int, float]]:
     results -- bigger models trading off task loss for lower (more hidden)
     AUROC at a given lambda, both with noise."""
     rng = np.random.default_rng(SEED)
-    main_sizes = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
+    n = 8  # synthetic runs per (size, lambda)
     points = []
-    for i, (num_x, _, _) in enumerate(main_sizes):
-        p = i / (len(main_sizes) - 1)
+    for i, (num_x, _, _) in enumerate(SMOKE_MAIN_SIZES):
+        p = i / (len(SMOKE_MAIN_SIZES) - 1)
         for lam in MAIN_LAMBDAS:
-            for _ in range(8):
-                loss = np.clip(rng.normal(0.002 + 0.03 * p, 0.005), 1e-4, None)
-                auroc = np.clip(rng.normal(0.95 - 0.4 * p, 0.05), 0.5, 1.0)
-                points.append((float(loss), float(auroc), num_x, lam))
+            losses = np.clip(rng.normal(0.002 + 0.03 * p, 0.005, n), 1e-4, None)
+            aurocs = np.clip(rng.normal(0.95 - 0.4 * p, 0.05, n), 0.5, 1.0)
+            points += [
+                (float(loss), float(auroc), num_x, lam)
+                for loss, auroc in zip(losses, aurocs)
+            ]
     return points
 
 
@@ -413,6 +419,33 @@ def _plot_loss_vs_auroc_by_size(points: list[tuple[float, float, int, float]]) -
         )
 
 
+def _run_metrics(
+    tag: str, cache: dict[str, dict], g: torch.Generator, probe_backend_name: str
+) -> dict | None:
+    """A run's recomputed {loss, one_hot_loss, auroc}, from the cache when
+    it's there and recomputed (then cached) when it isn't. None for a run
+    whose checkpoint doesn't exist yet."""
+    cache_key = _cache_key(tag)
+    if cache_key in cache:
+        return cache[cache_key]
+    try:
+        entry = {
+            "loss": recompute_task_loss(
+                tag, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
+            ),
+            "one_hot_loss": recompute_n_hot_loss(
+                tag, CKPT, g, DEVICE, ONE_HOT_LOSS_N_EVAL, 1, TASK_LOSS_NOISE_MULT
+            ),
+            "auroc": _probe_auroc(tag, g, probe_backend_name),
+        }
+    except FileNotFoundError:
+        print(f"  {tag}: no history/checkpoint yet, skipped")
+        return None
+    cache[cache_key] = entry
+    _save_cache(cache)  # per run, so an interrupted pass keeps progress
+    return entry
+
+
 def _collect_run_stats(
     n_bands: int,
 ) -> tuple[dict[RunKey, RunStats], list[tuple[float, float, int, float]]]:
@@ -436,37 +469,16 @@ def _collect_run_stats(
         counts = np.zeros(n_bands)
         n_ok = 0
         for tag in tags:
-            cache_key = _cache_key(tag)
-            if cache_key not in cache:
-                try:
-                    cache[cache_key] = {
-                        "loss": recompute_task_loss(
-                            tag, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
-                        ),
-                        "one_hot_loss": recompute_n_hot_loss(
-                            tag,
-                            CKPT,
-                            g,
-                            DEVICE,
-                            ONE_HOT_LOSS_N_EVAL,
-                            1,
-                            TASK_LOSS_NOISE_MULT,
-                        ),
-                        "auroc": _probe_auroc(tag, g, probe_backend_name),
-                    }
-                except FileNotFoundError:
-                    print(f"  {tag}: no history/checkpoint yet, skipped")
-                    continue
-                _save_cache(cache)  # per run, so an interrupted pass keeps progress
-            entry = cache[cache_key]
+            entry = _run_metrics(tag, cache, g, probe_backend_name)
+            if entry is None:
+                continue
             if entry["auroc"] is None:
                 print(f"  {tag}: no probe in checkpoint, skipped")
                 continue
-            counts[
-                _classify(
-                    entry["loss"], entry["one_hot_loss"], entry["auroc"], thresholds
-                )
-            ] += 1
+            band = _classify(
+                entry["loss"], entry["one_hot_loss"], entry["auroc"], thresholds
+            )
+            counts[band] += 1
             n_ok += 1
             if _is_main_sweep(key) and lam in MAIN_LAMBDAS:
                 scatter_points.append((entry["loss"], entry["auroc"], num_x, lam))
