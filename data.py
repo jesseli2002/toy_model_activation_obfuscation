@@ -115,7 +115,7 @@ def eval_task_loss(
     forward_loss) -- deliberately excludes any probe/adversarial penalty, so
     this is purely "how well does the model solve the task", independent of
     lam. Pass a checkpoint's own `x_p_outer`/`x_threshold`/`resid_noise_std`
-    (see `probe_lib.resolve_adv_config`) to match its training distribution."""
+    (see `checkpoint_lib.resolve_adv_config`) to match its training distribution."""
     total = torch.zeros((), device=device)
     done = 0
     while done < n:
@@ -152,10 +152,10 @@ def eval_n_hot_loss(
     instead of plotted. Every training example has all `num_x` coordinates
     simultaneously nonzero, so this checks generalization to an OOD corner of
     input space, with larger `n_hot` interpolating toward the training
-    distribution's density of nonzero coordinates. Scored only on the active
-    coordinates' outputs (the passive coordinates' target is trivially 0,
-    which would just dilute the number), so this is directly comparable to
-    eval_task_loss's per-coordinate MSE."""
+    distribution's density of nonzero coordinates. Scored on all `num_x`
+    outputs, including passive coordinates (trivial target 0), so a model
+    that leaks nonzero predictions onto passive coordinates is penalized;
+    normalized like eval_task_loss for direct comparability."""
     total = torch.zeros((), device=device)
     done = 0
     while done < n:
@@ -170,11 +170,11 @@ def eval_n_hot_loss(
         x.scatter_(1, active_idx, active)
         c = _uniform((b, 1), C_LOW, C_HIGH, generator, device)
         x_full = torch.cat([x, c], dim=1)
-        y = torch.minimum(torch.maximum(active, -c), c)
+        y = torch.zeros((b, model.num_x), device=device)
+        y.scatter_(1, active_idx, torch.minimum(torch.maximum(active, -c), c))
         pred: Float[Tensor, "b num_x"] = model.task_output(
             x_full, noise=noise, generator=generator
         )
-        pred_active = torch.gather(pred, 1, active_idx)
-        total += ((pred_active - y) ** 2).sum()
+        total += ((pred - y) ** 2).sum()
         done += b
-    return (total / (n * n_hot)).item()
+    return (total / (n * model.num_x)).item()

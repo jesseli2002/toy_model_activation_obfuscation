@@ -59,14 +59,17 @@ import matplotlib.pyplot as plt
 import torch
 
 from adversarial_report import plot_learned_curves
-from data import eval_n_hot_loss, eval_task_loss
+from checkpoint_lib import (
+    load_model,
+    recompute_n_hot_loss,
+    recompute_task_loss,
+    resolve_adv_config,
+)
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
     binary_probe_metrics_all_layers,
     boundary_auroc,
-    load_model,
-    resolve_adv_config,
     save_plot,
 )
 
@@ -86,50 +89,6 @@ def _discover_tags() -> list[str]:
             continue
         tags.append(tag)
     return tags
-
-
-def _final_loss(tag: str, g: torch.Generator) -> float:
-    """Task loss (data.eval_task_loss), freshly recomputed at CKPT -- not
-    read from history.jsonl (some runs' final checkpoint predates their last
-    history record) and deliberately excludes the adversarial/probe penalty,
-    since this script only cares about task performance here."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = resolve_adv_config(ck)
-    x_p_outer = adv_cfg.x_p_outer if adv_cfg is not None else None
-    x_threshold = adv_cfg.x_threshold if adv_cfg is not None else 1.0
-    noise_std = (
-        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
-    )
-    return eval_task_loss(
-        model,
-        g,
-        DEVICE,
-        n=TASK_LOSS_N_EVAL,
-        x_p_outer=x_p_outer,
-        x_threshold=x_threshold,
-        noise=noise_std,
-    )
-
-
-def _n_hot_loss(tag: str, g: torch.Generator, n_hot: int) -> float:
-    """N-hot OOD loss (data.eval_n_hot_loss), freshly recomputed at CKPT --
-    only `n_hot` input coordinates nonzero per example, unlike _final_loss's
-    plain training-distribution eval. Uses the checkpoint's own
-    resid_noise_std (TASK_LOSS_NOISE_MULT) so the loss columns differ only in
-    the input distribution, not the noise."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = resolve_adv_config(ck)
-    noise_std = (
-        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
-    )
-    return eval_n_hot_loss(
-        model,
-        g,
-        DEVICE,
-        n=N_HOT_LOSS_N_EVAL,
-        n_hot=n_hot,
-        noise=noise_std,
-    )
 
 
 def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | None:
@@ -319,7 +278,12 @@ def main():
     )
 
     g = torch.Generator(device=DEVICE).manual_seed(SEED)
-    losses = {t: _final_loss(t, g) for t in tags}
+    losses = {
+        t: recompute_task_loss(
+            t, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
+        )
+        for t in tags
+    }
 
     probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
     probe_fits = {t: _fit_probe(t, g, probe_backend_name) for t in tags}
@@ -333,7 +297,13 @@ def main():
         print(f"no adversarial config, excluded from AUROC ranking: {missing}")
 
     n_hot_losses = {
-        n_hot: {t: _n_hot_loss(t, g, n_hot) for t in tags} for n_hot in N_HOT_VALUES
+        n_hot: {
+            t: recompute_n_hot_loss(
+                t, CKPT, g, DEVICE, N_HOT_LOSS_N_EVAL, n_hot, TASK_LOSS_NOISE_MULT
+            )
+            for t in tags
+        }
+        for n_hot in N_HOT_VALUES
     }
 
     tags_by_loss = sorted(tags, key=lambda t: losses[t])

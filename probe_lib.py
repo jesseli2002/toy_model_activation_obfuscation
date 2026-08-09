@@ -1,6 +1,7 @@
 """Utilities for probe analysis: capture residual-stream activations from a
 checkpoint, build eval sets over them, fit/compare/score linear decision
-boundaries, and plot the result.
+boundaries, and plot the result. (See checkpoint_lib.py for loading a
+checkpoint in the first place -- this module builds on top of that.)
 
 Used as a library by the reporting scripts (adversarial_report.py and the
 sweep_*.py family) and by analytic.py (activation capture for hand-built
@@ -17,11 +18,12 @@ import numpy as np
 import torch
 from jaxtyping import Bool, Float
 
-import config
+# load_model/load_model_path/resolve_adv_config re-exported from
+# checkpoint_lib for existing callers; see that module for their definitions.
+from checkpoint_lib import load_model, load_model_path, resolve_adv_config
 from config import C_HIGH, C_LOW
 from data import sample_fixed_c
 from model import ResidualMLP
-from paths import ckpt_dir
 
 
 class LinearBoundary(NamedTuple):
@@ -84,25 +86,6 @@ def boundary_auroc(
     return float(roc_auc_score(y, b.score(X)))
 
 
-def load_model_path(path: str, device: str) -> tuple[ResidualMLP, dict]:
-    """Returns (model, full checkpoint dict) for a checkpoint path -- the dict
-    carries any non-architecture fields (opt state, iter, adversarial-run
-    metadata, ...) that rode along in the checkpoint; architecture lives on
-    model.config. Use when walking checkpoint files directly, e.g. the
-    numbered iter_*.pt snapshots; see `load_model` to load a run's named
-    checkpoint by tag."""
-    model, ck = ResidualMLP.load(path, map_location=device)
-    model = model.to(device)
-    model.eval()
-    return model, ck
-
-
-def load_model(tag: str, ckpt: str, device: str) -> tuple[ResidualMLP, dict]:
-    """`load_model_path` for a run's named checkpoint (runs/<tag>/checkpoints/
-    <ckpt>.pt)."""
-    return load_model_path(os.path.join(ckpt_dir(tag), f"{ckpt}.pt"), device)
-
-
 @torch.no_grad()
 def capture_layers_dict(
     model: ResidualMLP,
@@ -135,17 +118,6 @@ def capture_layers(
     single flat feature tensor."""
     d = capture_layers_dict(model, x_full, layers, noise=noise, generator=generator)
     return torch.cat([d[i] for i in layers], dim=-1)
-
-
-def resolve_adv_config(ck) -> "config.LogregAdversarialConfig | None":
-    """The checkpoint's adversarial-training config, or None for a checkpoint
-    with no adversarial config at all -- e.g. a train_no_c.py c-blind
-    demonstration run, which has no probe or penalty to speak of since c was
-    withheld from the model entirely (its embedding coordinate is zeroed)."""
-    adv_ck = ck.get("adv_config")
-    return (
-        config.LogregAdversarialConfig.from_dict(adv_ck) if adv_ck is not None else None
-    )
 
 
 def stored_probe(ck, device: str) -> tuple[LinearBoundary, list[int]] | None:
