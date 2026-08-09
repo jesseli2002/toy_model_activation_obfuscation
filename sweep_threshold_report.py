@@ -16,10 +16,12 @@ logged to history.jsonl, and not read from history.jsonl at all (some runs'
 final checkpoint predates their last history record, a past checkpoint-saving
 bug).
 
-"One-hot loss" (data.eval_one_hot_loss) is the same task loss but evaluated
-OOD: only one input coordinate is nonzero per example (the rest held at 0),
-as in plot_learned_curves's curve construction, instead of all coordinates
-simultaneously nonzero as in training.
+"N-hot loss" (data.eval_n_hot_loss) is the same task loss but evaluated OOD:
+only N input coordinates are nonzero per example (the rest held at 0),
+instead of all coordinates simultaneously nonzero as in training. N=1 is the
+one-hot case, matching plot_learned_curves's curve construction; N_HOT_VALUES
+also sweeps N=2,4,8 to see how loss degrades as the eval distribution
+approaches the training distribution's density of nonzero coordinates.
 
 Settings live in the constants below rather than a CLI -- this script's
 shape is still changing, so argparse would just be churn for now. Plots are
@@ -37,7 +39,8 @@ CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see EVAL_NOISE_MULT for the probe-eval analog, tuned separately)
-ONE_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for the one-hot OOD loss
+N_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for each n-hot OOD loss
+N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training density
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 
@@ -56,7 +59,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from adversarial_report import plot_learned_curves
-from data import eval_one_hot_loss, eval_task_loss
+from data import eval_n_hot_loss, eval_task_loss
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -108,22 +111,23 @@ def _final_loss(tag: str, g: torch.Generator) -> float:
     )
 
 
-def _one_hot_loss(tag: str, g: torch.Generator) -> float:
-    """One-hot OOD loss (data.eval_one_hot_loss), freshly recomputed at CKPT
-    -- only one input coordinate nonzero per example, unlike _final_loss's
+def _n_hot_loss(tag: str, g: torch.Generator, n_hot: int) -> float:
+    """N-hot OOD loss (data.eval_n_hot_loss), freshly recomputed at CKPT --
+    only `n_hot` input coordinates nonzero per example, unlike _final_loss's
     plain training-distribution eval. Uses the checkpoint's own
-    resid_noise_std (TASK_LOSS_NOISE_MULT) so the two loss columns differ
-    only in the input distribution, not the noise."""
+    resid_noise_std (TASK_LOSS_NOISE_MULT) so the loss columns differ only in
+    the input distribution, not the noise."""
     model, ck = load_model(tag, CKPT, DEVICE)
     adv_cfg = resolve_adv_config(ck)
     noise_std = (
         adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
     )
-    return eval_one_hot_loss(
+    return eval_n_hot_loss(
         model,
         g,
         DEVICE,
-        n=ONE_HOT_LOSS_N_EVAL,
+        n=N_HOT_LOSS_N_EVAL,
+        n_hot=n_hot,
         noise_std=noise_std,
     )
 
@@ -328,27 +332,37 @@ def main():
     if missing:
         print(f"no adversarial config, excluded from AUROC ranking: {missing}")
 
-    one_hot_losses = {t: _one_hot_loss(t, g) for t in tags}
+    n_hot_losses = {
+        n_hot: {t: _n_hot_loss(t, g, n_hot) for t in tags} for n_hot in N_HOT_VALUES
+    }
 
     tags_by_loss = sorted(tags, key=lambda t: losses[t])
-    tags_by_one_hot_loss = sorted(tags, key=lambda t: one_hot_losses[t])
+    tags_by_n_hot_loss = {
+        n_hot: sorted(tags, key=lambda t: n_hot_losses[n_hot][t])
+        for n_hot in N_HOT_VALUES
+    }
     tags_by_auroc = sorted(
         (t for t in tags if aurocs[t] is not None), key=lambda t: aurocs[t]
     )
 
-    print(f"\n{'tag':30s} {'loss':>12s} {'one_hot_loss':>14s} {'auroc':>8s}")
+    n_hot_headers = "".join(f"{f'{n}hot_loss':>14s}" for n in N_HOT_VALUES)
+    print(f"\n{'tag':30s} {'loss':>12s}{n_hot_headers} {'auroc':>8s}")
     for t in tags_by_loss:
         a = aurocs[t]
         a_str = f"{a:.4f}" if a is not None else "n/a"
-        print(f"{t:30s} {losses[t]:12.6g} {one_hot_losses[t]:14.6g} {a_str:>8s}")
+        n_hot_cols = "".join(
+            f"{n_hot_losses[n_hot][t]:14.6g}" for n_hot in N_HOT_VALUES
+        )
+        print(f"{t:30s} {losses[t]:12.6g}{n_hot_cols} {a_str:>8s}")
 
     _make_curve_plots(tags_by_loss, [losses[t] for t in tags_by_loss])
-    _make_curve_plots(
-        tags_by_one_hot_loss,
-        [one_hot_losses[t] for t in tags_by_one_hot_loss],
-        out_subdir="by_one_hot_loss",
-        metric_tag="ohloss",
-    )
+    for n_hot in N_HOT_VALUES:
+        _make_curve_plots(
+            tags_by_n_hot_loss[n_hot],
+            [n_hot_losses[n_hot][t] for t in tags_by_n_hot_loss[n_hot]],
+            out_subdir=f"by_{n_hot}hot_loss",
+            metric_tag=f"{n_hot}hloss",
+        )
     _make_probe_plots(tags_by_auroc, [aurocs[t] for t in tags_by_auroc], probe_fits)
 
 
