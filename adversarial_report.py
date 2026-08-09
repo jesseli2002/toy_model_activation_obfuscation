@@ -105,12 +105,14 @@ def parse_args():
     p.add_argument(
         "--train-noise-mult",
         type=float,
-        default=0.0,
+        default=1.0,
         help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
-        "injected into the residual stream when FITTING probes. Default 0 "
-        "(fit clean) matches the historical assumption that a probe fit is "
-        "a large-n limit noise doesn't move; set >0 to test that assumption "
-        "against --eval-noise-mult independently.",
+        "injected into the residual stream when FITTING probes. Default 1 "
+        "matches --eval-noise-mult, so the probe is fit in the same noise "
+        "regime it's scored in -- and the same one a run's training-time "
+        "adversary was fit in under adv_config.probe_noise. Set independently "
+        "to measure a fit/score mismatch, which is not free: fitting clean "
+        "moved sweep7's AUROCs by ~0.1.",
     )
     return p.parse_args()
 

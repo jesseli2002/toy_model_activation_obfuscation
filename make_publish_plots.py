@@ -69,9 +69,9 @@ def parse_args():
         type=float,
         default=1.0,
         help="multiplier on the checkpoint's own adv_config.resid_noise_std, "
-        "injected into the residual stream when FITTING probes. Default 1 "
-        "(unlike adversarial_report.py's default of 0) so the publish plots "
-        "reflect the model's actual training-time noise regime by default.",
+        "injected into the residual stream when FITTING probes. Default 1, "
+        "matching --eval-noise-mult, so plots reflect the model's actual "
+        "training-time noise regime by default.",
     )
     p.add_argument("--show", action="store_true")
     return p.parse_args()
