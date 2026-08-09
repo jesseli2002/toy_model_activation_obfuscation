@@ -320,6 +320,11 @@ def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     # Log-scale minor tick labels (2x, 3x, ...) crowd together when the data
     # spans less than a decade; rotating keeps them legible at any range.
     plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
+
+    ax.axvline(
+        LOSS_THRESHOLD, linestyle="--", color="black", label="loss threshold", alpha=0.5
+    )
+    ax.legend()
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
 
 
@@ -460,7 +465,9 @@ def _plot_stacked_fractions(
     ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH, linscale=0.5)
     # ax.axvline(x[1] / 2, ls="--", lw=1, color="#52514e")
     # ax.axvline(x[1] / 2, ls="--", lw=1, color="black")
-    ax.set_xlabel(r"$\lambda / (1 - \lambda)$  (probe-loss weight / task-loss weight)")
+    ax.set_xlabel(
+        r"$\lambda / (1 - \lambda)$ (ratio of probe-loss to task-loss weights)"
+    )
     ax.set_ylabel("fraction of runs")
     ax.set_ylim(0, 1)
     ax.set_xlim(0, x[-1])
