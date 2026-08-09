@@ -128,7 +128,7 @@ def _n_hot_loss(tag: str, g: torch.Generator, n_hot: int) -> float:
         DEVICE,
         n=N_HOT_LOSS_N_EVAL,
         n_hot=n_hot,
-        noise_std=noise_std,
+        noise=noise_std,
     )
 
 

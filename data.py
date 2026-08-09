@@ -144,7 +144,7 @@ def eval_n_hot_loss(
     n: int = 100_000,
     batch: int = 20_000,
     n_hot: int = 1,
-    noise_std: float = 0.0,
+    noise: float = 0.0,
 ) -> float:
     """Mean-squared task error with only `n_hot` input coordinates nonzero per
     example (the rest held at 0) -- the same input construction used by
@@ -172,7 +172,7 @@ def eval_n_hot_loss(
         x_full = torch.cat([x, c], dim=1)
         y = torch.minimum(torch.maximum(active, -c), c)
         pred: Float[Tensor, "b num_x"] = model.task_output(
-            x_full, noise=noise_std, generator=generator
+            x_full, noise=noise, generator=generator
         )
         pred_active = torch.gather(pred, 1, active_idx)
         total += ((pred_active - y) ** 2).sum()
