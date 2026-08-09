@@ -51,8 +51,11 @@ back on and typically nobody is watching live.
    issue anymore.
 3. **Stalled?** (`stalled: true`, or a rising failure count that doesn't
    match the auto-retry path) — don't self-diagnose deeply; surface to
-   `handoff.md` and the user with the relevant `manager.log` tail. A dead
-   GPU or a systematic failure (bad config, OOM, etc.) needs a human.
+   `handoff.md` and the user with the relevant `manager.log` tail. A
+   systematic failure (bad config, OOM, etc.) needs a human. If the
+   instance is actually unreachable rather than just stalled, see
+   "Instance unreachable" below instead — that one you can act on
+   yourself.
 4. **Manager process actually alive?** A `STOPPED`/`ALL DONE` line in
    `manager.log` (or, for an older unfixed deployment, silence past when
    the queue should have drained) means the dispatcher itself has
@@ -73,12 +76,13 @@ back on and typically nobody is watching live.
      a signal something's off (an instance burning through work far
      faster than expected) rather than routine.
 6. **Over-provisioned relative to another instance's rate, or one
-   instance is clearly faster/slower than assumed?** **Recommend**
-   a `queue_trim.sh` + reassign to the user rather than doing it
-   yourself — this path has only been tested against a paused manager
-   locally, never against one actively launching jobs under real
-   concurrent load. State the specific trim/reassign command you'd run
-   and why, and let a human execute it the first few times.
+   instance is clearly faster/slower than assumed?** Rebalance it
+   yourself: `queue_trim.sh` the over-provisioned instance, `sweep_pool.py
+   reassign` + `queue_append.sh` onto the under-provisioned one.
+   `queue_trim.sh`'s mechanics are validated safe under real concurrent
+   load (lock contention against an actively-launching manager) — no
+   need to route this through a human anymore. Log what you moved and
+   why to `handoff.md`.
 7. **Any live concurrency experiment you choose to run** (bump
    `conc.txt`, observe, keep/revert) must poll in chunks of **≤3
    minutes** per wait step — never one long sleep — both to keep your
@@ -88,8 +92,8 @@ back on and typically nobody is watching live.
 
 ## Auto-retry on failure
 
-Unattended auto-retry is permitted here (unlike trim/rebalance) — this
-is specifically what lets a sweep run through the night unattended.
+Unattended auto-retry is permitted here — this is specifically what lets
+a sweep run through the night unattended.
 
 1. For each `rc=[1-9]` line in `MANAGER_LOG` since the last known-good
    wake, tail the corresponding `job<N>.log`.
@@ -112,6 +116,31 @@ is specifically what lets a sweep run through the night unattended.
      not the front, so it doesn't delay other pending work.
 4. Log every retry decision (tag, reason, resume vs. from-scratch) to
    `handoff.md`.
+
+## Instance unreachable
+
+Distinct from "stalled but alive" above — this is `remote_exec` failing
+outright, or `list_instances` showing it non-`running`. Unattended action
+is permitted (reuses only already-validated primitives, no new
+mechanism):
+
+1. Don't try to salvage anything from the dead instance — you can't
+   trim/checkpoint-validate what you can't reach.
+2. Everything past its last-known `launched_idx` (from your most recent
+   successful poll of it) was never dispatched — move it straight to
+   another live instance's queue via `queue_append.sh`. Nothing to trim
+   remotely; the source is gone, not just over-provisioned.
+3. Everything at-or-before that `launched_idx` without a "finished" line
+   in your last-known `MANAGER_LOG` has unknown fate. Don't attempt
+   `--resume` elsewhere — cross-instance checkpoint transfer isn't
+   supported by the current one-way sync (local↔each-remote, not
+   remote↔remote). Treat it like an inconclusive checkpoint check: fresh
+   run under `<tag>_retry1` on a different live instance, appended at
+   that queue's end.
+4. Mark the instance distinctly dead in `handoff.md` (not just
+   "stalled") so future wakes stop spending a `remote_exec` attempt on
+   it. Re-enabling it is a human call — don't un-quarantine it yourself
+   even if it later appears reachable again.
 
 ## Handoff notes
 
