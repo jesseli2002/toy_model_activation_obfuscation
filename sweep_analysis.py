@@ -84,14 +84,17 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from data import eval_n_hot_loss, eval_task_loss
+from checkpoint_lib import (
+    load_model,
+    recompute_n_hot_loss,
+    recompute_task_loss,
+    resolve_adv_config,
+)
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
     binary_probe_metrics_all_layers,
     boundary_auroc,
-    load_model,
-    resolve_adv_config,
 )
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -129,50 +132,6 @@ def _discover_tags_by_lambda() -> dict[float, list[str]]:
             continue
         by_lambda.setdefault(lam, []).append(tag)
     return by_lambda
-
-
-def _final_loss(tag: str, g: torch.Generator) -> float:
-    """Task loss (data.eval_task_loss), freshly recomputed at CKPT -- not
-    read from history.jsonl (some runs' final checkpoint predates their last
-    history record) and deliberately excludes the adversarial/probe penalty,
-    since this script only cares about task performance here."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = resolve_adv_config(ck)
-    x_p_outer = adv_cfg.x_p_outer if adv_cfg is not None else None
-    x_threshold = adv_cfg.x_threshold if adv_cfg is not None else 1.0
-    noise_std = (
-        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
-    )
-    return eval_task_loss(
-        model,
-        g,
-        DEVICE,
-        n=TASK_LOSS_N_EVAL,
-        x_p_outer=x_p_outer,
-        x_threshold=x_threshold,
-        noise=noise_std,
-    )
-
-
-def _one_hot_loss(tag: str, g: torch.Generator) -> float:
-    """One-hot OOD loss (data.eval_n_hot_loss, n_hot=1), freshly recomputed
-    at CKPT -- only one input coordinate nonzero per example, unlike
-    _final_loss's plain training-distribution eval. Uses the checkpoint's own
-    resid_noise_std (TASK_LOSS_NOISE_MULT) so the two loss columns differ
-    only in the input distribution, not the noise."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = resolve_adv_config(ck)
-    noise_std = (
-        adv_cfg.resid_noise_std * TASK_LOSS_NOISE_MULT if adv_cfg is not None else 0.0
-    )
-    return eval_n_hot_loss(
-        model,
-        g,
-        DEVICE,
-        n=ONE_HOT_LOSS_N_EVAL,
-        n_hot=1,
-        noise=noise_std,
-    )
 
 
 def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float | None:
@@ -322,8 +281,23 @@ def main(clear_cache: bool = False):
                 if cache_key not in cache:
                     try:
                         cache[cache_key] = {
-                            "loss": _final_loss(tag, g),
-                            "one_hot_loss": _one_hot_loss(tag, g),
+                            "loss": recompute_task_loss(
+                                tag,
+                                CKPT,
+                                g,
+                                DEVICE,
+                                TASK_LOSS_N_EVAL,
+                                TASK_LOSS_NOISE_MULT,
+                            ),
+                            "one_hot_loss": recompute_n_hot_loss(
+                                tag,
+                                CKPT,
+                                g,
+                                DEVICE,
+                                ONE_HOT_LOSS_N_EVAL,
+                                1,
+                                TASK_LOSS_NOISE_MULT,
+                            ),
                             "auroc": _probe_auroc(tag, g, probe_backend_name),
                         }
                     except FileNotFoundError:

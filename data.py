@@ -115,7 +115,7 @@ def eval_task_loss(
     forward_loss) -- deliberately excludes any probe/adversarial penalty, so
     this is purely "how well does the model solve the task", independent of
     lam. Pass a checkpoint's own `x_p_outer`/`x_threshold`/`resid_noise_std`
-    (see `probe_lib.resolve_adv_config`) to match its training distribution."""
+    (see `checkpoint_lib.resolve_adv_config`) to match its training distribution."""
     total = torch.zeros((), device=device)
     done = 0
     while done < n:
