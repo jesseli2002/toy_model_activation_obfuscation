@@ -468,7 +468,7 @@ def _collect_run_stats(
                 )
             ] += 1
             n_ok += 1
-            if _is_main_sweep(key) and lam in MAIN_LAMBDA_MARKERS:
+            if _is_main_sweep(key) and lam in MAIN_LAMBDAS:
                 scatter_points.append((entry["loss"], entry["auroc"], num_x, lam))
         if n_ok < MIN_RUNS:
             print(f"  {key}: {n_ok} usable runs, skipped")
