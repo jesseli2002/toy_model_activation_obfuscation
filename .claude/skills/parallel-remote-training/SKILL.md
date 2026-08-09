@@ -105,8 +105,11 @@ unevaluated).
 ## Ramping concurrency
 
 Bump the concurrency file by **one** at a time. Wait for the rate to
-re-stabilize before judging it. Cross-check against `nvidia-smi` GPU
-utilization%, which should track aggregate it/s.
+re-stabilize before judging it, in poll chunks of **≤3 min** each (never
+one long sleep) — this both keeps checks responsive and stays under the
+~5min prompt-cache TTL, so your own context doesn't go cold mid-probe.
+Cross-check against `nvidia-smi` GPU utilization%, which should track
+aggregate it/s.
 
 - A drop in **both** rate and GPU util after adding a worker is a real
   regression, not noise. Back off by killing just the newest worker:

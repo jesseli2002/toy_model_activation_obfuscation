@@ -81,10 +81,10 @@ back on and typically nobody is watching live.
    and why, and let a human execute it the first few times.
 7. **Any live concurrency experiment you choose to run** (bump
    `conc.txt`, observe, keep/revert) must poll in chunks of **≤3
-   minutes** per wait step — never one long sleep — so your own context
-   doesn't go stale mid-wake. Log any change you make to `handoff.md`
-   as passive context for the next wake, since you won't remember doing
-   it.
+   minutes** per wait step — never one long sleep — both to keep your
+   own context from going stale mid-wake and to stay under the ~5min
+   prompt-cache TTL. Log any change you make to `handoff.md` as passive
+   context for the next wake, since you won't remember doing it.
 
 ## Auto-retry on failure
 
