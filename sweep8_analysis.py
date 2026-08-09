@@ -14,8 +14,8 @@ so each gets its own plot(s) rather than one generic size x lambda grid:
   lam=0.01 -- "does hiding change with size alone, off the main ratio?"
   One plot.
 - Main sweep, per-run: the same main-sweep runs as unbinned (task loss,
-  AUROC) points, colored by num_x and marker-shaped by lambda -- see
-  sweep_analysis's analogous loss-vs-AUROC scatter. One plot.
+  AUROC) points, colored by num_x -- see sweep_analysis's analogous
+  loss-vs-AUROC scatter. One plot per lambda.
 
 Each ray also has lam=0 controls, which aren't plotted (a run that always
 succeeds and never hides is the same bar at every size) but are checked by
@@ -70,11 +70,6 @@ SWEEP7_SIZE = (32, 64, 16)
 SWEEP7_LAMBDAS = {0.0, 0.001, 0.01, 0.1}  # main-sweep lambdas + control
 
 MAIN_LAMBDAS = [0.001, 0.01, 0.1]  # one plot each
-MAIN_LAMBDA_MARKERS = {
-    0.001: "o",
-    0.01: "s",
-    0.1: "^",
-}  # shape per lambda, scatter plot
 SIDE_LAMBDA = 0.01  # the side ray's one non-control plot
 
 EXCLUDE_LAMBDAS: set[float] = set()
@@ -309,6 +304,10 @@ def _band_colors(thresholds: list[float]) -> list[str]:
     return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
 
 
+SMOKE_MAIN_SIZES = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
+SMOKE_SIDE_SIZES = [(16, 32, 16), (32, 64, 16), (48, 96, 16), (64, 128, 16)]
+
+
 def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
     """Synthetic per-run-config stats standing in for a real sweep's
     results, just to preview the plots' layout/styling without an analysis
@@ -330,16 +329,16 @@ def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
 
     stats: dict[RunKey, RunStats] = {}
 
-    main_sizes = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
-    for i, size in enumerate(main_sizes):
+    for i, size in enumerate(SMOKE_MAIN_SIZES):
+        p = i / len(SMOKE_MAIN_SIZES)
         stats[(*size, 0.0)] = RunStats(clean, 10)
         for lam in MAIN_LAMBDAS:
-            stats[(*size, lam)] = RunStats(band_fracs(i / len(main_sizes)), 10)
+            stats[(*size, lam)] = RunStats(band_fracs(p), 10)
 
-    side_sizes = [(16, 32, 16), (32, 64, 16), (48, 96, 16), (64, 128, 16)]
-    for i, size in enumerate(side_sizes):
+    for i, size in enumerate(SMOKE_SIDE_SIZES):
+        p = i / len(SMOKE_SIDE_SIZES)
         stats[(*size, 0.0)] = RunStats(clean, 10)
-        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(i / len(side_sizes)), 10)
+        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(p), 10)
 
     return stats
 
@@ -350,58 +349,101 @@ def _smoke_scatter_points() -> list[tuple[float, float, int, float]]:
     results -- bigger models trading off task loss for lower (more hidden)
     AUROC at a given lambda, both with noise."""
     rng = np.random.default_rng(SEED)
-    main_sizes = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
+    n = 8  # synthetic runs per (size, lambda)
     points = []
-    for i, (num_x, _, _) in enumerate(main_sizes):
-        p = i / (len(main_sizes) - 1)
+    for i, (num_x, _, _) in enumerate(SMOKE_MAIN_SIZES):
+        p = i / (len(SMOKE_MAIN_SIZES) - 1)
         for lam in MAIN_LAMBDAS:
-            for _ in range(8):
-                loss = np.clip(rng.normal(0.002 + 0.03 * p, 0.005), 1e-4, None)
-                auroc = np.clip(rng.normal(0.95 - 0.4 * p, 0.05), 0.5, 1.0)
-                points.append((float(loss), float(auroc), num_x, lam))
+            losses = np.clip(rng.normal(0.002 + 0.03 * p, 0.005, n), 1e-4, None)
+            aurocs = np.clip(rng.normal(0.95 - 0.4 * p, 0.05, n), 0.5, 1.0)
+            points += [
+                (float(loss), float(auroc), num_x, lam)
+                for loss, auroc in zip(losses, aurocs)
+            ]
     return points
 
 
 def _plot_loss_vs_auroc_by_size(points: list[tuple[float, float, int, float]]) -> None:
-    """Scatter of every main-sweep run's (task loss, probe AUROC), colored by
-    num_x (model size) and marker-shaped by lambda -- the same recomputed
+    """One scatter per lambda of that lambda's main-sweep runs' (task loss,
+    probe AUROC), colored by num_x (model size) -- the same recomputed
     metrics behind the outcome bars above, viewed per-run instead of
-    binned/averaged. lam=0 controls are excluded, matching _plot_main_sweep."""
-    losses, aurocs, sizes, lams = (np.array(v) for v in zip(*points))
-    norm = mcolors.LogNorm(vmin=sizes.min(), vmax=sizes.max())
+    binned/averaged. lam=0 controls are excluded, matching _plot_main_sweep.
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    sc = None
+    A shared discrete color scale (over every lambda's sizes, not just the
+    one being plotted) keeps a given num_x the same color across the three
+    plots, so they stay comparable side by side. Discrete rather than
+    continuous since num_x only takes a handful of swept values -- a
+    continuous colorbar would interpolate between them misleadingly."""
+    losses, aurocs, sizes, lams = (np.array(v) for v in zip(*points))
+    uniq_sizes = sorted(set(sizes.tolist()))
+    cmap = plt.get_cmap("viridis", len(uniq_sizes))
+    norm = mcolors.BoundaryNorm(np.arange(len(uniq_sizes) + 1) - 0.5, len(uniq_sizes))
+    size_idx = np.searchsorted(uniq_sizes, sizes)
+
     for lam in MAIN_LAMBDAS:
         mask = lams == lam
         if not mask.any():
             continue
+        fig, ax = plt.subplots(figsize=(6, 5))
         sc = ax.scatter(
             losses[mask],
             aurocs[mask],
-            c=sizes[mask],
-            cmap="viridis",
+            c=size_idx[mask],
+            cmap=cmap,
             norm=norm,
-            marker=MAIN_LAMBDA_MARKERS[lam],
             edgecolor="black",
             linewidth=0.5,
-            label=f"$\\lambda$={lam:g}",
         )
-    fig.colorbar(sc, ax=ax, label="num_x")
-    ax.set_xlabel("task loss")
-    ax.set_ylabel("probe AUROC")
-    ax.set_title("Main sweep: task loss vs. probe AUROC")
-    ax.set_xscale("log")
-    ax.grid(True, alpha=0.3)
-    # Log-scale minor tick labels (2x, 3x, ...) crowd together when the data
-    # spans less than a decade; rotating keeps them legible at any range.
-    plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
+        cbar = fig.colorbar(sc, ax=ax, ticks=range(len(uniq_sizes)), label="num_x")
+        cbar.set_ticklabels([str(s) for s in uniq_sizes])
+        ax.set_xlabel("task loss")
+        ax.set_ylabel("probe AUROC")
+        ax.set_title(f"Main sweep, $\\lambda$ = {lam:g}: task loss vs. probe AUROC")
+        ax.set_xscale("log")
+        ax.grid(True, alpha=0.3)
+        # Log-scale minor tick labels (2x, 3x, ...) crowd together when the
+        # data spans less than a decade; rotating keeps them legible at any
+        # range.
+        plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
 
-    ax.axvline(
-        LOSS_THRESHOLD, linestyle="--", color="black", label="loss threshold", alpha=0.5
-    )
-    ax.legend()
-    fig.savefig(f"{PLOT_DIR}/main_loss_vs_auroc_scatter.png", bbox_inches="tight")
+        ax.axvline(
+            LOSS_THRESHOLD,
+            linestyle="--",
+            color="black",
+            label="loss threshold",
+            alpha=0.5,
+        )
+        ax.legend()
+        fig.savefig(
+            f"{PLOT_DIR}/main_loss_vs_auroc_scatter_lam{lam:g}.png", bbox_inches="tight"
+        )
+
+
+def _run_metrics(
+    tag: str, cache: dict[str, dict], g: torch.Generator, probe_backend_name: str
+) -> dict | None:
+    """A run's recomputed {loss, one_hot_loss, auroc}, from the cache when
+    it's there and recomputed (then cached) when it isn't. None for a run
+    whose checkpoint doesn't exist yet."""
+    cache_key = _cache_key(tag)
+    if cache_key in cache:
+        return cache[cache_key]
+    try:
+        entry = {
+            "loss": recompute_task_loss(
+                tag, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
+            ),
+            "one_hot_loss": recompute_n_hot_loss(
+                tag, CKPT, g, DEVICE, ONE_HOT_LOSS_N_EVAL, 1, TASK_LOSS_NOISE_MULT
+            ),
+            "auroc": _probe_auroc(tag, g, probe_backend_name),
+        }
+    except FileNotFoundError:
+        print(f"  {tag}: no history/checkpoint yet, skipped")
+        return None
+    cache[cache_key] = entry
+    _save_cache(cache)  # per run, so an interrupted pass keeps progress
+    return entry
 
 
 def _collect_run_stats(
@@ -427,39 +469,18 @@ def _collect_run_stats(
         counts = np.zeros(n_bands)
         n_ok = 0
         for tag in tags:
-            cache_key = _cache_key(tag)
-            if cache_key not in cache:
-                try:
-                    cache[cache_key] = {
-                        "loss": recompute_task_loss(
-                            tag, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
-                        ),
-                        "one_hot_loss": recompute_n_hot_loss(
-                            tag,
-                            CKPT,
-                            g,
-                            DEVICE,
-                            ONE_HOT_LOSS_N_EVAL,
-                            1,
-                            TASK_LOSS_NOISE_MULT,
-                        ),
-                        "auroc": _probe_auroc(tag, g, probe_backend_name),
-                    }
-                except FileNotFoundError:
-                    print(f"  {tag}: no history/checkpoint yet, skipped")
-                    continue
-                _save_cache(cache)  # per run, so an interrupted pass keeps progress
-            entry = cache[cache_key]
+            entry = _run_metrics(tag, cache, g, probe_backend_name)
+            if entry is None:
+                continue
             if entry["auroc"] is None:
                 print(f"  {tag}: no probe in checkpoint, skipped")
                 continue
-            counts[
-                _classify(
-                    entry["loss"], entry["one_hot_loss"], entry["auroc"], thresholds
-                )
-            ] += 1
+            band = _classify(
+                entry["loss"], entry["one_hot_loss"], entry["auroc"], thresholds
+            )
+            counts[band] += 1
             n_ok += 1
-            if _is_main_sweep(key) and lam in MAIN_LAMBDA_MARKERS:
+            if _is_main_sweep(key) and lam in MAIN_LAMBDAS:
                 scatter_points.append((entry["loss"], entry["auroc"], num_x, lam))
         if n_ok < MIN_RUNS:
             print(f"  {key}: {n_ok} usable runs, skipped")
