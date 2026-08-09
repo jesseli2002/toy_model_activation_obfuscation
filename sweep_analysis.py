@@ -301,6 +301,7 @@ def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     ax.set_xlabel("task loss")
     ax.set_ylabel("probe AUROC")
     ax.set_title(r"Task loss vs. probe AUROC, colored by $\lambda$")
+    ax.set_xscale("log")
     ax.grid(True, alpha=0.3)
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
 
