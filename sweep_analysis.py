@@ -64,6 +64,7 @@ EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
 # construction).
 LOSS_THRESHOLD = 0.01
 N_HOT_LOSS_THRESHOLD = 0.01
+
 AUROC_THRESHOLDS = [
     0.6,
     0.75,
@@ -220,19 +221,16 @@ def _classify(
 
 
 def _band_labels(thresholds: list[float]) -> list[str]:
-    labels = [
-        f"failed task (loss >= {LOSS_THRESHOLD:g} or "
-        f"worst N-hot loss >= {N_HOT_LOSS_THRESHOLD:g})"
-    ]
+    labels = ["failed task"]
     desc = reversed(thresholds)
     prev = None
     for t in desc:
         if prev is None:
-            labels.append(f"not hidden\n(auroc >= {t:g})")
+            labels.append(f"not hidden\n(AUROC $\\geq$ {t:g})")
         else:
-            labels.append(f"partially hidden\n({t:g} <= auroc < {prev:g})")
+            labels.append(f"partially hidden\n({t:g} $\\leq$ AUROC < {prev:g})")
         prev = t
-    labels.append(f"hidden\n(auroc < {prev:g})")
+    labels.append(f"hidden\n(AUROC < {prev:g})")
     return labels
 
 
@@ -371,7 +369,7 @@ def main(clear_cache: bool = False):
     SYMLOG_LINTHRESH = x[1]  # linear-region half-width (in ratio units) around lam=0
     ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH, linscale=0.5)
     # ax.axvline(x[1] / 2, ls="--", lw=1, color="#52514e")
-    ax.axvline(x[1] / 2, ls="--", lw=1, color="black")
+    # ax.axvline(x[1] / 2, ls="--", lw=1, color="black")
     ax.set_xlabel(r"$\lambda / (1 - \lambda)$  (probe-loss weight / task-loss weight)")
     ax.set_ylabel("fraction of runs")
     ax.set_ylim(0, 1)

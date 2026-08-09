@@ -35,8 +35,9 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
 - Write concise docs; avoid brittle docs.
     - Cover high level concepts, not implementation (which would be redundant and brittle to implementation changes).
     - Don't list specific callers/users; instead explain use cases, to be robust to changes in where a method gets used.
-    - Don't give unimportant history (contrast important history: examples of past pitfalls/bugs of a more obvious-seeming solution; even in these cases, keep it concise and link to external issue reasoning)
+    - Don't give unimportant history like a change in design preference (contrast important history: examples of past pitfalls/bugs of a more obvious-seeming solution; even in these cases, keep it concise and link to external issue reasoning)
     - If a subtle flaw was identified, don't pollute the code with a long comment about it - often it's both too short to explain all the nuance and so long that it interrupts the flow. Instead, use one or two line comments, and refer to a PR# where more details can be found.
+    - Rule of thumb: If you're removing features but somehow the codebase got longer, something has probably gone wrong.
 - Demand elegance (Balanced)
     - For non-trivial changes, ask: “Is there a more elegant solution?”
     - If a fix feels hacky, ask: “Knowing everything I know now, implement the elegant solution.”
