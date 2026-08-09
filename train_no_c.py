@@ -91,7 +91,6 @@ from stableadamw import StableAdamW
 def blind_c(
     x_full: Float[Tensor, "batch num_x_plus_1"],
 ) -> Float[Tensor, "batch num_x_plus_1"]:
-    """Zero out c's input coordinate, leaving x untouched."""
     x_blind = x_full.clone()
     x_blind[:, -1] = 0.0
     return x_blind

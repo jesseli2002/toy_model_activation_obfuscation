@@ -64,10 +64,10 @@ def _load_history(tag: str) -> tuple[np.ndarray, np.ndarray]:
 
 
 def _running_min(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarray:
-    """Causal low-pass: minimum value among logged points within the trailing
-    `window` iterations (not `window` logged points -- --log-interval
-    defaults to 100 and can vary run to run, so this has to key off `iters`,
-    not array index)."""
+    """Causal low-pass over logged points within the trailing `window`
+    iterations (not `window` logged points -- --log-interval defaults to 100
+    and can vary run to run, so this has to key off `iters`, not array
+    index)."""
     out = np.empty_like(values)
     lo = 0
     for i in range(len(iters)):

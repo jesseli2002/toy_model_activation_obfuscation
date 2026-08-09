@@ -75,7 +75,7 @@ def parse_args():
     p.add_argument(
         "--detailed",
         action="store_true",
-        help="more detailed analysis.",
+        help="add held-out c-pairs table, PCA plots, and linear-y reconstruction.",
     )
     p.add_argument(
         "--steer",
@@ -334,9 +334,8 @@ def _plot_heldout_gap(
     tag, hidden_layers, held_out_pairs, gap, heldout, plot_dir, metric="logreg"
 ):
     """Bar chart analogous to _plot_probe_gap, but grouped by c-pair instead of
-    by probe type -- one metric (logreg, the pass/fail gate used everywhere
-    else in this codebase) compared across the baseline {1,2} pair and every
-    --held-out-pairs entry, per layer."""
+    by probe type -- one metric (logreg accuracy) compared across the
+    baseline {1,2} pair and every --held-out-pairs entry, per layer."""
     groups = [(1.0, 2.0, gap)] + [
         (lo, hi, {lyr: heldout[(lo, hi, lyr)] for lyr in hidden_layers})
         for lo, hi in held_out_pairs
@@ -709,19 +708,16 @@ def _run_analysis(
 ) -> AnalysisResult:
     """Phase 1: all data generation, no plotting or printing.
 
-    A c-blind checkpoint (adv_cfg is None) has no c signal anywhere in its
-    activations to probe for (train_no_c.py zeroes c's input coordinate
-    entirely) -- only task fidelity is meaningful there, so the probe-derived
-    fields come back None."""
+    For a c-blind checkpoint (adv_cfg is None), only task fidelity is
+    meaningful (see the c-blind branch in write_summary), so the
+    probe-derived fields come back None."""
     me = eval_max_err(model, g, device=device)
 
     if adv_cfg is None:
         return AnalysisResult(me, None, None, None, None)
 
     hidden_layers = list(range(1, model.num_blocks))
-    # Multiplier on the model's OWN training-time noise, injected into probe
-    # fit and/or eval forward passes independently (see --train-noise-mult
-    # and --eval-noise-mult help).
+    # See --train-noise-mult/--eval-noise-mult help.
     train_noise_std = adv_cfg.resid_noise_std * args.train_noise_mult
     eval_noise_std = adv_cfg.resid_noise_std * args.eval_noise_mult
 

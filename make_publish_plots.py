@@ -23,12 +23,7 @@ TAG = "sweep7_lam0.1_tr0"
 STEER_LAYERS = [1, 2, 3, 4, 5]
 # Eval-noise multipliers swept by the noise-isolation ROC plot, independent of
 # --train-noise-mult/--eval-noise-mult (which set the noise regime for every
-# other plot). The fit (train) pass always uses the model's own noise
-# regime, uniform across layers, at multiplier 1. The eval pass also holds
-# every layer at multiplier 1 EXCEPT NOISE_GRID_LAYER, where the multiplier
-# is swept over this grid -- isolates the effect of the nonlinear encoding at
-# NOISE_GRID_LAYER from our own injected noise there, without knocking
-# earlier layers off-distribution.
+# other plot) -- see _run_noise_grid_analysis for the rationale.
 NOISE_GRID_EVAL_MULTS = (0.0, 0.5, 1.0)
 NOISE_GRID_LAYER = 2
 
@@ -214,9 +209,7 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
     err_samples = _sample_errors(model, args.n_err_samples, g, device)
 
     hidden_layers = list(range(1, model.num_blocks))
-    # Multiplier on the model's OWN training-time noise, injected into probe
-    # fit and/or eval forward passes independently (see --train-noise-mult
-    # and --eval-noise-mult help).
+    # See --train-noise-mult/--eval-noise-mult help.
     train_noise_std = adv_cfg.resid_noise_std * args.train_noise_mult
     eval_noise_std = adv_cfg.resid_noise_std * args.eval_noise_mult
     gap, gap_plot_inputs = binary_probe_metrics_all_layers(

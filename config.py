@@ -1,7 +1,7 @@
 """Shared hyperparameters for the probe-obfuscation toy model.
 
-These are defaults. `train.py` accepts CLI overrides (notably --num-x) so we can
-run the num_x=1 base case and scale up incrementally without editing this file.
+These are defaults; entry-point scripts accept CLI overrides so a run can
+diverge from them without editing this file.
 """
 
 import dataclasses
@@ -147,11 +147,8 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # per-block gradient contributions (every block shares the same backprop
     # signal) under one sqrt, so its natural scale grows with num_blocks even
     # though nothing about per-block gradients themselves changed with depth.
-    # A 16-arch sweep found per-block grad_norm's p99 stays ~0.2-0.4 regardless
-    # of depth/width (vs. whole-model medians spanning ~9x with a clear depth
-    # trend) -- so a single fixed threshold generalizes without
-    # recalibration; 0.5 is a reasonable value (comfortably above that p99
-    # ceiling, well below collapse-triggering spikes). 0 = no clipping.
+    # Per-block norms stay roughly architecture-independent, so a single
+    # fixed threshold generalizes without recalibration. 0 = no clipping.
     grad_clip: float
     x_p_outer: float | None
     x_threshold: float
@@ -163,10 +160,9 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # gradient becomes non-trivial again, since exp_avg_sq hasn't caught up
     # yet -- a source of loss spikes grad_clip above can't touch, since
     # clipping acts on the raw gradient, not AdamW's per-parameter adaptive
-    # step (see xbias_experiment.tmp.py's investigation). Raising eps and/or
-    # lowering beta2 both mitigate this; empirically, lowering beta2 (e.g.
-    # 0.99) converged faster with fewer residual spikes than raising eps
-    # (e.g. 1e-5) alone.
+    # step. Raising eps and/or lowering beta2 both mitigate this; empirically,
+    # lowering beta2 (e.g. 0.99) converged faster with fewer residual spikes
+    # than raising eps (e.g. 1e-5) alone.
     adam_eps: float
     adam_beta1: float
     adam_beta2: float

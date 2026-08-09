@@ -1,7 +1,7 @@
 """Help pick training-loss / probe-AUROC thresholds ("did the model solve the
 task", "is the model hidden from a linear probe") by rendering diagnostic
-plots for every RANK_STEP-th run in each metric's sorted order, across
-runs/sweep3_lam*_tr* (lam0 excluded -- that sweep is still running).
+plots for every RANK_STEP-th run in each metric's sorted order, across a
+lambda-sweep (see RUN_GLOB below, and EXCLUDE_LAMBDAS for any arm excluded).
 
 Loss and one-hot-loss ranks each get a learned-function-curves plot (from
 adversarial_report.plot_learned_curves); AUROC ranks get a probe
@@ -25,7 +25,7 @@ approaches the training distribution's density of nonzero coordinates.
 
 Settings live in the constants below rather than a CLI -- this script's
 shape is still changing, so argparse would just be churn for now. Plots are
-written under plot/sweep3/; a summary table prints to console."""
+written under OUT_DIR; a summary table prints to console."""
 
 import numpy as np
 import re
@@ -41,7 +41,6 @@ TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see PROBE_*_NOISE_MULT for the probe analogs)
 N_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for each n-hot OOD loss
 N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training density
-PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 
 # plot every Nth rank (0-indexed, ascending) in each metric's sorted order

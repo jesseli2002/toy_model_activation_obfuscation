@@ -1,5 +1,5 @@
-"""Aggregate runs/sweep3_lam*_tr* into a stacked-fraction-vs-lambda chart:
-for each lambda, what fraction of its trials failed the task (loss), and
+"""Aggregate a lambda-sweep (see RUN_GLOB below) into a stacked-fraction-vs-lambda
+chart: for each lambda, what fraction of its trials failed the task (loss), and
 among those that succeeded, how well they hid from the layer-PROBE_LAYER
 linear probe (AUROC), at one or more AUROC thresholds.
 
