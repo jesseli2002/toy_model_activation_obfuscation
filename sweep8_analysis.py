@@ -13,6 +13,9 @@ so each gets its own plot(s) rather than one generic size x lambda grid:
 - Side ray: d_mlp fixed at 16, num_x (and d_model = 2*num_x) varying, at
   lam=0.01 -- "does hiding change with size alone, off the main ratio?"
   One plot.
+- Main sweep, per-run: the same main-sweep runs as unbinned (task loss,
+  AUROC) points, colored by num_x and marker-shaped by lambda -- see
+  sweep_analysis's analogous loss-vs-AUROC scatter. One plot.
 
 Each ray also has lam=0 controls, which aren't plotted (a run that always
 succeeds and never hides is the same bar at every size) but are checked by
@@ -67,6 +70,11 @@ SWEEP7_SIZE = (32, 64, 16)
 SWEEP7_LAMBDAS = {0.0, 0.001, 0.01, 0.1}  # main-sweep lambdas + control
 
 MAIN_LAMBDAS = [0.001, 0.01, 0.1]  # one plot each
+MAIN_LAMBDA_MARKERS = {
+    0.001: "o",
+    0.01: "s",
+    0.1: "^",
+}  # shape per lambda, scatter plot
 SIDE_LAMBDA = 0.01  # the side ray's one non-control plot
 
 EXCLUDE_LAMBDAS: set[float] = set()
@@ -112,6 +120,7 @@ import json
 import os
 from typing import NamedTuple
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -335,9 +344,72 @@ def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
     return stats
 
 
-def _collect_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
+def _smoke_scatter_points() -> list[tuple[float, float, int, float]]:
+    """Synthetic (loss, auroc, num_x, lam) quadruples for the main sweep,
+    several per (size, lambda), standing in for a real sweep's per-run
+    results -- bigger models trading off task loss for lower (more hidden)
+    AUROC at a given lambda, both with noise."""
+    rng = np.random.default_rng(SEED)
+    main_sizes = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
+    points = []
+    for i, (num_x, _, _) in enumerate(main_sizes):
+        p = i / (len(main_sizes) - 1)
+        for lam in MAIN_LAMBDAS:
+            for _ in range(8):
+                loss = np.clip(rng.normal(0.002 + 0.03 * p, 0.005), 1e-4, None)
+                auroc = np.clip(rng.normal(0.95 - 0.4 * p, 0.05), 0.5, 1.0)
+                points.append((float(loss), float(auroc), num_x, lam))
+    return points
+
+
+def _plot_loss_vs_auroc_by_size(points: list[tuple[float, float, int, float]]) -> None:
+    """Scatter of every main-sweep run's (task loss, probe AUROC), colored by
+    num_x (model size) and marker-shaped by lambda -- the same recomputed
+    metrics behind the outcome bars above, viewed per-run instead of
+    binned/averaged. lam=0 controls are excluded, matching _plot_main_sweep."""
+    losses, aurocs, sizes, lams = (np.array(v) for v in zip(*points))
+    norm = mcolors.LogNorm(vmin=sizes.min(), vmax=sizes.max())
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    sc = None
+    for lam in MAIN_LAMBDAS:
+        mask = lams == lam
+        if not mask.any():
+            continue
+        sc = ax.scatter(
+            losses[mask],
+            aurocs[mask],
+            c=sizes[mask],
+            cmap="viridis",
+            norm=norm,
+            marker=MAIN_LAMBDA_MARKERS[lam],
+            edgecolor="black",
+            linewidth=0.5,
+            label=f"$\\lambda$={lam:g}",
+        )
+    fig.colorbar(sc, ax=ax, label="num_x")
+    ax.set_xlabel("task loss")
+    ax.set_ylabel("probe AUROC")
+    ax.set_title("Main sweep: task loss vs. probe AUROC")
+    ax.set_xscale("log")
+    ax.grid(True, alpha=0.3)
+    # Log-scale minor tick labels (2x, 3x, ...) crowd together when the data
+    # spans less than a decade; rotating keeps them legible at any range.
+    plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
+
+    ax.axvline(
+        LOSS_THRESHOLD, linestyle="--", color="black", label="loss threshold", alpha=0.5
+    )
+    ax.legend()
+    fig.savefig(f"{PLOT_DIR}/main_loss_vs_auroc_scatter.png", bbox_inches="tight")
+
+
+def _collect_run_stats(
+    n_bands: int,
+) -> tuple[dict[RunKey, RunStats], list[tuple[float, float, int, float]]]:
     """Per-run-config band fractions and usable-run count, recomputing each
-    run's loss/AUROC where the cache doesn't already have them."""
+    run's loss/AUROC where the cache doesn't already have them, plus each
+    usable main-sweep run's (loss, auroc, num_x, lam) for the scatter."""
     thresholds = sorted(AUROC_THRESHOLDS)
     by_key = _discover_tags()
     cache = _load_cache()
@@ -347,6 +419,7 @@ def _collect_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
     probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
 
     stats: dict[RunKey, RunStats] = {}
+    scatter_points: list[tuple[float, float, int, float]] = []
     print(f"{'size':>18s} {'lambda':>8s} {'n_ok':>5s} {'n_total':>7s}")
     for key in sorted(by_key):
         num_x, d_model, d_mlp, lam = key
@@ -386,13 +459,15 @@ def _collect_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
                 )
             ] += 1
             n_ok += 1
+            if _is_main_sweep(key) and lam in MAIN_LAMBDA_MARKERS:
+                scatter_points.append((entry["loss"], entry["auroc"], num_x, lam))
         if n_ok < MIN_RUNS:
             print(f"  {key}: {n_ok} usable runs, skipped")
             continue
         stats[key] = RunStats(counts / n_ok, n_ok)
         size_str = f"nx{num_x} dm{d_model} mlp{d_mlp}"
         print(f"{size_str:>18s} {lam:8g} {n_ok:5d} {len(tags):7d}")
-    return stats
+    return stats, scatter_points
 
 
 def _draw_bars(
@@ -528,7 +603,10 @@ def main(clear_cache: bool = False) -> None:
     thresholds = sorted(AUROC_THRESHOLDS)
     n_bands = len(thresholds) + 2
 
-    run_stats = _smoke_run_stats(n_bands) if SMOKE else _collect_run_stats(n_bands)
+    if SMOKE:
+        run_stats, scatter_points = _smoke_run_stats(n_bands), _smoke_scatter_points()
+    else:
+        run_stats, scatter_points = _collect_run_stats(n_bands)
     if not run_stats:
         raise SystemExit(f"no usable runs matched runs/{RUN_GLOB}")
 
@@ -539,6 +617,8 @@ def main(clear_cache: bool = False) -> None:
 
     fig = _plot_side_ray(run_stats, n_bands)
     fig.savefig(f"{PLOT_DIR}/side_ray.png", bbox_inches="tight")
+
+    _plot_loss_vs_auroc_by_size(scatter_points)
 
     plt.show()
 
