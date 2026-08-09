@@ -85,9 +85,9 @@ online incrementally):
    `sweep_pool.py eta` has real data.
 
 For periodic unattended health-checking of a sweep already underway
-(stall/failure detection, auto-retry of known-flaky failures, and
-*recommending* — not autonomously performing — rebalancing), see
-`.claude/skills/parallel-remote-training/monitor_brief.md`.
+(stall/failure detection, auto-retry of known-flaky failures, rebalancing,
+and instance-down handling — all monitor-executed, not just recommended),
+see `.claude/skills/parallel-remote-training/monitor_brief.md`.
 
 ## Scheduling the check-in agent
 
@@ -136,8 +136,8 @@ aggregate it/s.
   does — see `vast_pool_manager.sh`'s header comment. Skipping this can
   desync `launched_idx.txt` from `queue.txt`'s actual contents, which
   corrupts every downstream decision (trim, ETA, top-off sizing).
-- **Trim/reassign is not yet proven safe to run unattended** against an
-  actively-launching manager (only tested against a paused one locally,
-  never with real concurrent load) — a monitor agent should *recommend*
-  a trim/rebalance to the user rather than execute it autonomously, until
-  someone's watched it happen live at least once.
+- **Trim/reassign is proven safe against an actively-launching manager**
+  (validated live: lock contention against a real 5s poll loop, correct
+  undispatched-tail isolation, `launched_idx` untouched) — a monitor
+  agent may execute rebalancing autonomously, not just recommend it (see
+  `monitor_brief.md`).
