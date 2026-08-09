@@ -12,9 +12,10 @@ torch reimplementations solving the same objective, selected via
 
 The training objective combines a probe-adversarial penalty with the task
 loss (see LogregAdversarialConfig for the weighting and probe hyperparameters).
-The probe (both its own fit and the differentiable penalty) is always
-evaluated against one fixed input batch sampled before the training loop
-starts -- the task loss, by contrast, resamples a fresh batch every step.
+The probe (both its own fit and the differentiable penalty) is evaluated
+against a fixed input batch, resampled only every `probe_resample_interval`
+steps (0 = sampled once before the training loop and never again) -- the
+task loss, by contrast, resamples a fresh batch every step.
 
 Each run is a standalone experiment with no automated pass/fail check. The
 deliverable is the trained checkpoint + diagnostics; run once, then stop and
@@ -309,7 +310,8 @@ def resolve_device(device_arg: str | None) -> str:
 
 
 def _resolve_hidden_layers(penalty_layers, num_blocks: int) -> list[int]:
-    """Hidden residual layers = 1 .. num_blocks-1 (see module docstring)."""
+    """Resolve `penalty_layers` ("all" or an explicit list) against the
+    model's hidden residual layers (excludes the input layer 0)."""
     all_hidden = list(range(1, num_blocks))
     if penalty_layers == "all":
         return all_hidden
@@ -787,9 +789,7 @@ def train_steps(
             clip_grad_norm_per_block_(model.blocks, grad_clip)
         # grad_clip/adam_eps/adam_beta2 are band-aids for instability;
         # optimizer_kind="stableadamw" (update clipping) is a cleaner fix --
-        # see PR #77 for the original discussion. Whether grad_clip/adam_eps
-        # /adam_beta2 can now be relaxed under stableadamw is still an open,
-        # empirical question (not addressed by adding the option itself).
+        # see PR #77.
         opt.step()
 
     for it in range(start_iter, max_iters):
@@ -850,8 +850,7 @@ def train_steps(
         # Snapshot BEFORE the step, so a detected explosion (below) can
         # revert to it. TODO(perf): every-iteration deepcopy + re-forward
         # just to catch a rare event -- a cheaper retroactive alternative
-        # exists, see PR #77's revert-and-retry discussion (not the
-        # StableAdamW note in optimizer_step).
+        # exists, see PR #77.
         #
         # loss.item() is read here rather than unconditionally: it syncs the
         # host against the GPU, and nothing outside the explode path wants

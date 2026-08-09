@@ -154,7 +154,7 @@ class TorchLogisticRegression:
                 # No previous fit to fall back on (e.g. a one-shot eval fit)
                 # -- there's nothing safe to return, so let it propagate.
                 raise
-            # Probably bad line-search trial overflowed (see PR $84)
+            # Probably bad line-search trial overflowed (see PR #84)
             # - give up and keep the last-good coefficients instead.
             warnings.warn(
                 "TorchLogisticRegression.fit() overflowed and is falling back "

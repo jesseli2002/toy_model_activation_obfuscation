@@ -1,6 +1,6 @@
 """Newton/IRLS probe pipeline -- drop-in replacement for TorchProbePipeline.
 
-Perf-debug scaffolding (see PERF_HANDOFF.md). Same duck-typed interface as
+Perf-debug scaffolding. Same duck-typed interface as
 probe_backend.TorchProbePipeline (set_max_iter / fit / get_affine), so
 probe_backend.fit_probe works on it unchanged.
 

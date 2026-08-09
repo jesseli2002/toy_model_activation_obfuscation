@@ -213,8 +213,7 @@ class StoredProbeScorer:
 # Refit-probe path: fit a fresh probe against a checkpoint
 # ----------------------------------------------------------------------------
 # Regularization constant for LogisticRegression (see scikit-learn
-# LogisticRegression interface). Larger = less regularization but higher
-# accuracy.
+# LogisticRegression interface). Larger = less regularization.
 PROBE_C = 1000
 
 
