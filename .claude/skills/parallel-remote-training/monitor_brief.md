@@ -56,6 +56,15 @@ back on and typically nobody is watching live.
    instance is actually unreachable rather than just stalled, see
    "Instance unreachable" below instead — that one you can act on
    yourself.
+   - **Known false positive**: `pool_health.py`'s `stalled` is derived
+     purely from time-since-last-`manager.log`-line, but long single-shot
+     runs (hours, no `--resume` restarts) never write intermediate lines
+     between their own launch and finish. A multi-hour gap with no
+     launch/finish events is expected here, not evidence of a dead
+     manager. Before escalating, cheaply verify instead: `ps aux` on the
+     instance (the job PIDs still alive, high CPU) and tail one running
+     `job<N>.log` (iter count still advancing). Only escalate if those
+     *also* look wrong.
 4. **Manager process actually alive?** A `STOPPED`/`ALL DONE` line in
    `manager.log` (or, for an older unfixed deployment, silence past when
    the queue should have drained) means the dispatcher itself has
