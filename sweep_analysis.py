@@ -46,6 +46,11 @@ PLOT_DIR = "plot/sweep7"
 CACHE_PATH = "plot/sweep7/metrics_cache.json"
 RUN_GLOB = "sweep7_lam*_tr*"
 TAG_RE = re.compile(r"sweep7_lam([0-9\.]+)_tr(\d+)$")
+# sweep7 has no lambda=0 arm of its own; sweep3's is reused instead (lambda=0
+# disables the adversarial penalty entirely, so nothing about the
+# sweep7-specific config bears on it).
+LAM0_GLOB = "sweep3_lam0_tr*"
+LAM0_TAG_RE = re.compile(r"sweep3_lam0_tr(\d+)$")
 EXCLUDE_LAMBDAS: set[float] = set()
 CKPT = "best"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
@@ -138,9 +143,19 @@ def _discover_tags_by_lambda() -> dict[float, list[str]]:
         if not m:
             continue
         lam = float(m.group(1))
+        if lam == 0.0:
+            continue  # see LAM0_GLOB above
         if lam in EXCLUDE_LAMBDAS:
             continue
         by_lambda.setdefault(lam, []).append(tag)
+    if 0.0 not in EXCLUDE_LAMBDAS:
+        lam0_tags = [
+            os.path.basename(path)
+            for path in sorted(glob.glob(os.path.join("runs", LAM0_GLOB)))
+            if LAM0_TAG_RE.match(os.path.basename(path))
+        ]
+        if lam0_tags:
+            by_lambda[0.0] = lam0_tags
     return by_lambda
 
 
