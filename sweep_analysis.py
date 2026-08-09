@@ -21,13 +21,15 @@ adversarial/probe penalty, since this only cares about task performance),
 N-hot loss via data.eval_n_hot_loss for each N in N_HOT_VALUES (only N
 input coordinates nonzero per example, an OOD corner of input space a run
 could fail to generalize into even after solving the training
-distribution), and AUROC via a freshly refit probe at PROBE_LAYER -- rather
-than read from history.jsonl or the checkpoint's own stored training-time
-probe. A run only counts as having "succeeded" the task if its N-hot loss
-is below threshold for every N in N_HOT_VALUES, not just the easiest one --
-see N_HOT_LOSS_THRESHOLD below. See sweep_threshold_report.py, which uses
-the same recomputation (and the same N_HOT_VALUES) for the same reasons
-(some runs' final checkpoint predates their last history record).
+distribution), and AUROC via a freshly refit probe at PROBE_LAYER (fit and
+scored under the same residual-stream noise, see PROBE_*_NOISE_MULT) --
+rather than read from history.jsonl or the checkpoint's own stored
+training-time probe. A run only counts as having "succeeded" the task if
+its N-hot loss is below threshold for every N in N_HOT_VALUES, not just the
+easiest one -- see N_HOT_LOSS_THRESHOLD below. See
+sweep_threshold_report.py, which uses the same recomputation (and the same
+N_HOT_VALUES) for the same reasons (some runs' final checkpoint predates
+their last history record).
 
 Recomputing both over a whole sweep is slow, so results are cached to
 CACHE_PATH keyed by the settings they depend on; changing any of those
@@ -61,7 +63,12 @@ N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training den
 PROBE_N_TRAIN = 5000  # per class; refit per run, across many runs in a sweep
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
-EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
+# Multipliers on the checkpoint's own resid_noise_std for the refit probe's fit
+# and scoring passes. Both 1.0: these runs trained with probe_noise, so the
+# adversary they actually hid from was itself fit under noise -- fitting clean
+# measures a different, weaker probe (worth ~0.1 AUROC here).
+PROBE_TRAIN_NOISE_MULT = 1.0
+PROBE_EVAL_NOISE_MULT = 1.0
 
 # task "succeeded" iff loss is below threshold AND the worst (max) of its
 # N_HOT_VALUES losses is below threshold too -- see sweep_threshold_report.py
@@ -168,7 +175,8 @@ def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float
     adv_cfg = resolve_adv_config(ck)
     if adv_cfg is None:
         return None
-    eval_noise_std = adv_cfg.resid_noise_std * EVAL_NOISE_MULT
+    eval_noise_std = adv_cfg.resid_noise_std * PROBE_EVAL_NOISE_MULT
+    train_noise_std = adv_cfg.resid_noise_std * PROBE_TRAIN_NOISE_MULT
     _metrics, plot_inputs = binary_probe_metrics_all_layers(
         model,
         1.0,
@@ -180,6 +188,7 @@ def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float
         probe_backend_name,
         desc=tag,
         eval_noise=eval_noise_std,
+        train_noise=train_noise_std,
     )
     pi = plot_inputs[PROBE_LAYER]
     probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
@@ -199,7 +208,8 @@ def _cache_key(tag: str) -> str:
         PROBE_N_TRAIN,
         PROBE_N_TEST,
         PROBE_BACKEND,
-        EVAL_NOISE_MULT,
+        PROBE_TRAIN_NOISE_MULT,
+        PROBE_EVAL_NOISE_MULT,
     )
     return "|".join([tag] + [f"{s}" for s in settings])
 

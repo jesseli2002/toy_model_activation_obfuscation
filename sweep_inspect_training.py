@@ -13,6 +13,7 @@ RUN_TAGS = [f"sweep8_nx64_dm128_mlp32_lam0.01_tr{i}" for i in range(10)]
 # RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running min of loss over the past this-many iters
+TRAIN_NOISE_MULT = 1.0  # see adversarial_report.py's --train-noise-mult
 EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
 N_TRAIN = 20_000  # per class, fit size for the refit probe
 N_TEST = 50_000  # per class, eval size for the refit probe
@@ -85,6 +86,7 @@ def _refit_probe_auroc(
     n_train: int,
     n_test: int,
     probe_backend_name: str,
+    train_noise_mult: float,
     eval_noise_mult: float,
     g: torch.Generator,
 ) -> float | None:
@@ -103,6 +105,7 @@ def _refit_probe_auroc(
     assert len(layers) == 1, "refit AUROC doesn't handle multi-layer stored probes yet"
     adv_cfg = resolve_adv_config(ck)
     eval_noise_std = adv_cfg.resid_noise_std * eval_noise_mult
+    train_noise_std = adv_cfg.resid_noise_std * train_noise_mult
     _, plot_inputs = binary_probe_metrics_all_layers(
         model,
         C_LOW,
@@ -113,6 +116,7 @@ def _refit_probe_auroc(
         g,
         probe_backend_name,
         eval_noise=eval_noise_std,
+        train_noise=train_noise_std,
     )
     pi = plot_inputs[layers[0]]
     boundary = LinearBoundary(pi["w_probe"], pi["b_probe"])
@@ -140,7 +144,15 @@ def main():
     g = torch.Generator(device=DEVICE).manual_seed(SEED)
     aurocs = {
         tag: _refit_probe_auroc(
-            tag, CKPT, DEVICE, N_TRAIN, N_TEST, probe_backend_name, EVAL_NOISE_MULT, g
+            tag,
+            CKPT,
+            DEVICE,
+            N_TRAIN,
+            N_TEST,
+            probe_backend_name,
+            TRAIN_NOISE_MULT,
+            EVAL_NOISE_MULT,
+            g,
         )
         for tag in RUN_TAGS
     }

@@ -38,7 +38,7 @@ EXCLUDE_TRIAL_ABOVE = 10  # for partial trials greater than this index
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
-TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see EVAL_NOISE_MULT for the probe-eval analog, tuned separately)
+TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see PROBE_*_NOISE_MULT for the probe analogs)
 N_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for each n-hot OOD loss
 N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training density
 PROBE_N_TRAIN = 5000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
@@ -49,7 +49,12 @@ RANK_STEP = 1
 PROBE_N_TRAIN = 10000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
-PROBE_EVAL_NOISE_MULT = 0.5  # multiplier on resid_noise_std when retraining probe
+# Multipliers on the checkpoint's own resid_noise_std for the refit probe's fit
+# and scoring passes. Both 1.0: these runs trained with probe_noise, so the
+# adversary they actually hid from was itself fit under noise, and a fit/score
+# noise mismatch measures a different probe than the model hid from.
+PROBE_TRAIN_NOISE_MULT = 1.0
+PROBE_EVAL_NOISE_MULT = 1.0
 SEED = 20260718
 
 import glob
@@ -105,6 +110,7 @@ def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | 
     if adv_cfg is None:
         return None
     eval_noise_std = adv_cfg.resid_noise_std * PROBE_EVAL_NOISE_MULT
+    train_noise_std = adv_cfg.resid_noise_std * PROBE_TRAIN_NOISE_MULT
     _metrics, plot_inputs = binary_probe_metrics_all_layers(
         model,
         1.0,
@@ -116,6 +122,7 @@ def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | 
         probe_backend_name,
         desc=tag,
         eval_noise=eval_noise_std,
+        train_noise=train_noise_std,
     )
     return plot_inputs[PROBE_LAYER]
 
