@@ -22,8 +22,14 @@ refit probe at PROBE_LAYER -- rather than read from history.jsonl or the
 checkpoint's own stored training-time probe. See sweep_threshold_report.py,
 which uses the same recomputation for the same reasons (some runs' final
 checkpoint predates their last history record).
+
+Recomputing both over a whole sweep is slow, so results are cached to
+CACHE_PATH keyed by the settings they depend on; changing any of those
+settings misses the cache rather than reusing a stale value. Pass
+--clear-cache to force a full recompute.
 """
 
+import argparse
 import re
 
 SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
@@ -31,6 +37,7 @@ SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
 # worth of checkpoint loading / task-loss / probe recomputation.
 
 PLOT_DIR = "plot/sweep7"
+CACHE_PATH = "plot/sweep7/metrics_cache.json"
 RUN_GLOB = "sweep7_lam*_tr*"
 TAG_RE = re.compile(r"sweep7_lam([0-9\.]+)_tr(\d+)$")
 EXCLUDE_LAMBDAS: set[float] = set()
@@ -51,7 +58,21 @@ AUROC_THRESHOLDS = [
 ]  # ascending; splits "succeeded" runs into len+1 hiding bins
 
 
+def parse_args() -> argparse.Namespace:
+    p = argparse.ArgumentParser(description=__doc__)
+    p.add_argument(
+        "--clear-cache",
+        action="store_true",
+        help=f"delete {CACHE_PATH} before running, forcing a full recompute",
+    )
+    return p.parse_args()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+
 import glob
+import json
 import os
 
 import matplotlib.pyplot as plt
@@ -156,6 +177,37 @@ def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float
     return boundary_auroc(probe, pi["X_te"], pi["y_te"])
 
 
+def _cache_key(tag: str) -> str:
+    """Cache identity for a run's (loss, auroc): the tag plus every setting
+    the recomputation depends on, so edits to those miss rather than reuse."""
+    settings = (
+        CKPT,
+        PROBE_LAYER,
+        TASK_LOSS_N_EVAL,
+        TASK_LOSS_NOISE_MULT,
+        PROBE_N_TRAIN,
+        PROBE_N_TEST,
+        PROBE_BACKEND,
+        EVAL_NOISE_MULT,
+    )
+    return "|".join([tag] + [f"{s}" for s in settings])
+
+
+def _load_cache() -> dict[str, dict]:
+    if not os.path.exists(CACHE_PATH):
+        return {}
+    with open(CACHE_PATH) as f:
+        return json.load(f)
+
+
+def _save_cache(cache: dict[str, dict]) -> None:
+    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
+    tmp = CACHE_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(cache, f, indent=1, sort_keys=True)
+    os.replace(tmp, CACHE_PATH)
+
+
 def _classify(loss: float, auroc: float, thresholds: list[float]) -> int:
     """Bucket index, 0 = failed task, 1 = succeeded but not hidden (auroc
     above the highest threshold), ..., len(thresholds) + 1 = succeeded and
@@ -208,7 +260,10 @@ def _smoke_data(n_bands: int) -> tuple[list[float], list[np.ndarray]]:
     return ratios, fractions
 
 
-def main():
+def main(clear_cache: bool = False):
+    if clear_cache and os.path.exists(CACHE_PATH):
+        os.remove(CACHE_PATH)
+
     thresholds = sorted(AUROC_THRESHOLDS)
     n_bands = len(thresholds) + 2
 
@@ -216,6 +271,7 @@ def main():
         ratios, fractions = _smoke_data(n_bands)
     else:
         by_lambda = _discover_tags_by_lambda()
+        cache = _load_cache()
         ratios = []
         fractions = []  # one length-n_bands array per lambda
         # One RNG across every lambda, so its draws (eval noise, probe
@@ -229,16 +285,22 @@ def main():
             counts = np.zeros(n_bands)
             n_ok = 0
             for tag in tags:
-                try:
-                    loss = _final_loss(tag, g)
-                    auroc = _probe_auroc(tag, g, probe_backend_name)
-                except FileNotFoundError:
-                    print(f"  {tag}: no history/checkpoint yet, skipped")
-                    continue
-                if auroc is None:
+                cache_key = _cache_key(tag)
+                if cache_key not in cache:
+                    try:
+                        cache[cache_key] = {
+                            "loss": _final_loss(tag, g),
+                            "auroc": _probe_auroc(tag, g, probe_backend_name),
+                        }
+                    except FileNotFoundError:
+                        print(f"  {tag}: no history/checkpoint yet, skipped")
+                        continue
+                    _save_cache(cache)  # per run, so an interrupted pass keeps progress
+                entry = cache[cache_key]
+                if entry["auroc"] is None:
                     print(f"  {tag}: no probe in checkpoint, skipped")
                     continue
-                counts[_classify(loss, auroc, thresholds)] += 1
+                counts[_classify(entry["loss"], entry["auroc"], thresholds)] += 1
                 n_ok += 1
             if n_ok == 0:
                 print(f"  {lam}: no usable runs, skipped")
@@ -298,4 +360,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    main(clear_cache=args.clear_cache)
