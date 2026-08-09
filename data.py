@@ -137,37 +137,44 @@ def eval_task_loss(
 
 
 @torch.no_grad()
-def eval_one_hot_loss(
+def eval_n_hot_loss(
     model: ResidualMLP,
     generator: torch.Generator,
     device: str = "cpu",
     n: int = 100_000,
     batch: int = 20_000,
+    n_hot: int = 1,
     noise_std: float = 0.0,
 ) -> float:
-    """Mean-squared task error with only one input coordinate nonzero per
+    """Mean-squared task error with only `n_hot` input coordinates nonzero per
     example (the rest held at 0) -- the same input construction used by
-    adversarial_report.plot_learned_curves, but scored as a loss instead of
-    plotted. Every training example has all `num_x` coordinates simultaneously
-    nonzero, so this checks generalization to an OOD corner of input space.
-    Scored only on the active coordinate's output (the passive coordinates'
-    target is trivially 0, which would just dilute the number), so this is
-    directly comparable to eval_task_loss's per-coordinate MSE."""
+    adversarial_report.plot_learned_curves for n_hot=1, but scored as a loss
+    instead of plotted. Every training example has all `num_x` coordinates
+    simultaneously nonzero, so this checks generalization to an OOD corner of
+    input space, with larger `n_hot` interpolating toward the training
+    distribution's density of nonzero coordinates. Scored only on the active
+    coordinates' outputs (the passive coordinates' target is trivially 0,
+    which would just dilute the number), so this is directly comparable to
+    eval_task_loss's per-coordinate MSE."""
     total = torch.zeros((), device=device)
     done = 0
     while done < n:
         b = min(batch, n - done)
-        j = torch.randint(0, model.num_x, (b,), generator=generator, device=device)
+        # n_hot distinct coordinates per example: argsort random keys, same
+        # trick as sampling without replacement per-row.
+        active_idx = torch.argsort(
+            torch.rand((b, model.num_x), generator=generator, device=device), dim=1
+        )[:, :n_hot]
         x = torch.zeros((b, model.num_x), device=device)
-        active = _uniform((b,), X_LOW, X_HIGH, generator, device)
-        x[torch.arange(b, device=device), j] = active
+        active = _uniform((b, n_hot), X_LOW, X_HIGH, generator, device)
+        x.scatter_(1, active_idx, active)
         c = _uniform((b, 1), C_LOW, C_HIGH, generator, device)
         x_full = torch.cat([x, c], dim=1)
-        y = torch.minimum(torch.maximum(active, -c.squeeze(1)), c.squeeze(1))
+        y = torch.minimum(torch.maximum(active, -c), c)
         pred: Float[Tensor, "b num_x"] = model.task_output(
             x_full, noise=noise_std, generator=generator
         )
-        pred_active = pred[torch.arange(b, device=device), j]
+        pred_active = torch.gather(pred, 1, active_idx)
         total += ((pred_active - y) ** 2).sum()
         done += b
-    return (total / n).item()
+    return (total / (n * n_hot)).item()
