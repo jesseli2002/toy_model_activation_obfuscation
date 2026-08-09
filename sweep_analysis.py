@@ -89,6 +89,7 @@ import glob
 import json
 import os
 
+import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -260,6 +261,50 @@ def _smoke_data(n_bands: int) -> tuple[list[float], list[np.ndarray]]:
     return ratios, fractions
 
 
+def _smoke_scatter_points() -> list[tuple[float, float, float]]:
+    """Synthetic (loss, auroc, lam) triples, several per lambda, standing
+    in for a real sweep's per-run results -- higher lambda trading off
+    task loss for lower (more hidden) AUROC, both with noise."""
+    rng = np.random.default_rng(SEED)
+    lambdas = np.concatenate([[0.0], np.geomspace(1e-4, 0.9, 12)])
+    points = []
+    for lam in lambdas:
+        ratio = lam / (1 - lam)
+        p = np.clip((np.log10(ratio + 1e-4) + 4) / 4, 0, 1)  # 0..1 knob
+        for _ in range(8):
+            loss = np.clip(rng.normal(0.002 + 0.03 * p, 0.005), 1e-4, None)
+            auroc = np.clip(rng.normal(0.95 - 0.4 * p, 0.05), 0.5, 1.0)
+            points.append((float(loss), float(auroc), float(lam)))
+    return points
+
+
+def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
+    """Scatter of every run's (task loss, probe AUROC), colored by lambda
+    on a log scale. SymLogNorm rather than LogNorm so lam=0 -- which a log
+    scale can't represent -- still gets a (bottom-of-range) color, the same
+    trick the ratio x-axis above uses for the stackplot."""
+    losses, aurocs, lams = (np.array(v) for v in zip(*points))
+    linthresh = lams[lams > 0].min() if np.any(lams > 0) else 1.0
+    norm = mcolors.SymLogNorm(linthresh=linthresh, vmin=lams.min(), vmax=lams.max())
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    sc = ax.scatter(
+        losses,
+        aurocs,
+        c=lams,
+        cmap="viridis",
+        norm=norm,
+        edgecolor="black",
+        linewidth=0.5,
+    )
+    fig.colorbar(sc, ax=ax, label=r"$\lambda$")
+    ax.set_xlabel("task loss")
+    ax.set_ylabel("probe AUROC")
+    ax.set_title(r"Task loss vs. probe AUROC, colored by $\lambda$")
+    ax.grid(True, alpha=0.3)
+    fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
+
+
 def main(clear_cache: bool = False):
     if clear_cache and os.path.exists(CACHE_PATH):
         os.remove(CACHE_PATH)
@@ -269,11 +314,13 @@ def main(clear_cache: bool = False):
 
     if SMOKE:
         ratios, fractions = _smoke_data(n_bands)
+        scatter_points = _smoke_scatter_points()
     else:
         by_lambda = _discover_tags_by_lambda()
         cache = _load_cache()
         ratios = []
         fractions = []  # one length-n_bands array per lambda
+        scatter_points = []  # (loss, auroc, lam) per run, across all lambdas
         # One RNG across every lambda, so its draws (eval noise, probe
         # train/test sampling) are reproducible across a full run of the script.
         g = torch.Generator(device=DEVICE).manual_seed(SEED)
@@ -326,6 +373,7 @@ def main(clear_cache: bool = False):
                     )
                 ] += 1
                 n_ok += 1
+                scatter_points.append((entry["loss"], entry["auroc"], lam))
             if n_ok == 0:
                 print(f"  {lam}: no usable runs, skipped")
                 continue
@@ -381,6 +429,9 @@ def main(clear_cache: bool = False):
 
     fig.savefig(f"{PLOT_DIR}/lam_sweep_task{LOSS_THRESHOLD}.png", bbox_inches="tight")
     plt.tight_layout()
+
+    _plot_loss_vs_auroc(scatter_points)
+
     plt.show()
 
 
