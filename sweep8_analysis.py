@@ -14,8 +14,8 @@ so each gets its own plot(s) rather than one generic size x lambda grid:
   lam=0.01 -- "does hiding change with size alone, off the main ratio?"
   One plot.
 - Main sweep, per-run: the same main-sweep runs as unbinned (task loss,
-  AUROC) points, colored by num_x and marker-shaped by lambda -- see
-  sweep_analysis's analogous loss-vs-AUROC scatter. One plot.
+  AUROC) points, colored by num_x -- see sweep_analysis's analogous
+  loss-vs-AUROC scatter. One plot per lambda.
 
 Each ray also has lam=0 controls, which aren't plotted (a run that always
 succeeds and never hides is the same bar at every size) but are checked by
@@ -70,11 +70,6 @@ SWEEP7_SIZE = (32, 64, 16)
 SWEEP7_LAMBDAS = {0.0, 0.001, 0.01, 0.1}  # main-sweep lambdas + control
 
 MAIN_LAMBDAS = [0.001, 0.01, 0.1]  # one plot each
-MAIN_LAMBDA_MARKERS = {
-    0.001: "o",
-    0.01: "s",
-    0.1: "^",
-}  # shape per lambda, scatter plot
 SIDE_LAMBDA = 0.01  # the side ray's one non-control plot
 
 EXCLUDE_LAMBDAS: set[float] = set()
@@ -363,45 +358,59 @@ def _smoke_scatter_points() -> list[tuple[float, float, int, float]]:
 
 
 def _plot_loss_vs_auroc_by_size(points: list[tuple[float, float, int, float]]) -> None:
-    """Scatter of every main-sweep run's (task loss, probe AUROC), colored by
-    num_x (model size) and marker-shaped by lambda -- the same recomputed
+    """One scatter per lambda of that lambda's main-sweep runs' (task loss,
+    probe AUROC), colored by num_x (model size) -- the same recomputed
     metrics behind the outcome bars above, viewed per-run instead of
-    binned/averaged. lam=0 controls are excluded, matching _plot_main_sweep."""
-    losses, aurocs, sizes, lams = (np.array(v) for v in zip(*points))
-    norm = mcolors.LogNorm(vmin=sizes.min(), vmax=sizes.max())
+    binned/averaged. lam=0 controls are excluded, matching _plot_main_sweep.
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    sc = None
+    A shared discrete color scale (over every lambda's sizes, not just the
+    one being plotted) keeps a given num_x the same color across the three
+    plots, so they stay comparable side by side. Discrete rather than
+    continuous since num_x only takes a handful of swept values -- a
+    continuous colorbar would interpolate between them misleadingly."""
+    losses, aurocs, sizes, lams = (np.array(v) for v in zip(*points))
+    uniq_sizes = sorted(set(sizes.tolist()))
+    cmap = plt.get_cmap("viridis", len(uniq_sizes))
+    norm = mcolors.BoundaryNorm(np.arange(len(uniq_sizes) + 1) - 0.5, len(uniq_sizes))
+    size_idx = np.searchsorted(uniq_sizes, sizes)
+
     for lam in MAIN_LAMBDAS:
         mask = lams == lam
         if not mask.any():
             continue
+        fig, ax = plt.subplots(figsize=(6, 5))
         sc = ax.scatter(
             losses[mask],
             aurocs[mask],
-            c=sizes[mask],
-            cmap="viridis",
+            c=size_idx[mask],
+            cmap=cmap,
             norm=norm,
-            marker=MAIN_LAMBDA_MARKERS[lam],
             edgecolor="black",
             linewidth=0.5,
-            label=f"$\\lambda$={lam:g}",
         )
-    fig.colorbar(sc, ax=ax, label="num_x")
-    ax.set_xlabel("task loss")
-    ax.set_ylabel("probe AUROC")
-    ax.set_title("Main sweep: task loss vs. probe AUROC")
-    ax.set_xscale("log")
-    ax.grid(True, alpha=0.3)
-    # Log-scale minor tick labels (2x, 3x, ...) crowd together when the data
-    # spans less than a decade; rotating keeps them legible at any range.
-    plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
+        cbar = fig.colorbar(sc, ax=ax, ticks=range(len(uniq_sizes)), label="num_x")
+        cbar.set_ticklabels([str(s) for s in uniq_sizes])
+        ax.set_xlabel("task loss")
+        ax.set_ylabel("probe AUROC")
+        ax.set_title(f"Main sweep, $\\lambda$ = {lam:g}: task loss vs. probe AUROC")
+        ax.set_xscale("log")
+        ax.grid(True, alpha=0.3)
+        # Log-scale minor tick labels (2x, 3x, ...) crowd together when the
+        # data spans less than a decade; rotating keeps them legible at any
+        # range.
+        plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
 
-    ax.axvline(
-        LOSS_THRESHOLD, linestyle="--", color="black", label="loss threshold", alpha=0.5
-    )
-    ax.legend()
-    fig.savefig(f"{PLOT_DIR}/main_loss_vs_auroc_scatter.png", bbox_inches="tight")
+        ax.axvline(
+            LOSS_THRESHOLD,
+            linestyle="--",
+            color="black",
+            label="loss threshold",
+            alpha=0.5,
+        )
+        ax.legend()
+        fig.savefig(
+            f"{PLOT_DIR}/main_loss_vs_auroc_scatter_lam{lam:g}.png", bbox_inches="tight"
+        )
 
 
 def _collect_run_stats(
