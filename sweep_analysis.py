@@ -15,13 +15,19 @@ picking the final values -- so they're constants here, not a CLI, alongside
 everything else that may still change. Prints a summary table; plt.show()
 only, nothing written to disk.
 
-"Loss" and "AUROC" are both freshly recomputed at CKPT -- loss via
-data.eval_task_loss (deliberately excluding the adversarial/probe penalty,
-since this only cares about task performance), and AUROC via a freshly
-refit probe at PROBE_LAYER -- rather than read from history.jsonl or the
-checkpoint's own stored training-time probe. See sweep_threshold_report.py,
-which uses the same recomputation for the same reasons (some runs' final
-checkpoint predates their last history record).
+"Loss", "N-hot loss", and "AUROC" are all freshly recomputed at CKPT --
+task loss via data.eval_task_loss (deliberately excluding the
+adversarial/probe penalty, since this only cares about task performance),
+N-hot loss via data.eval_n_hot_loss for each N in N_HOT_VALUES (only N
+input coordinates nonzero per example, an OOD corner of input space a run
+could fail to generalize into even after solving the training
+distribution), and AUROC via a freshly refit probe at PROBE_LAYER -- rather
+than read from history.jsonl or the checkpoint's own stored training-time
+probe. A run only counts as having "succeeded" the task if its N-hot loss
+is below threshold for every N in N_HOT_VALUES, not just the easiest one --
+see N_HOT_LOSS_THRESHOLD below. See sweep_threshold_report.py, which uses
+the same recomputation (and the same N_HOT_VALUES) for the same reasons
+(some runs' final checkpoint predates their last history record).
 
 Recomputing both over a whole sweep is slow, so results are cached to
 CACHE_PATH keyed by the settings they depend on; changing any of those
@@ -45,17 +51,19 @@ CKPT = "best"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
 TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
 TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std
-ONE_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for the one-hot OOD loss
+N_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for each N-hot OOD loss
+N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training density
 PROBE_N_TRAIN = 5000  # per class; refit per run, across many runs in a sweep
 PROBE_N_TEST = 10_000  # per class
 PROBE_BACKEND = "newton"
 EVAL_NOISE_MULT = 1.0  # multiplier on resid_noise_std when retraining probe
 
-# task "succeeded" iff both are below their threshold -- see
-# sweep_threshold_report.py for what distinguishes the two losses (in-
-# distribution vs. one-hot-OOD input construction).
+# task "succeeded" iff loss is below threshold AND the worst (max) of its
+# N_HOT_VALUES losses is below threshold too -- see sweep_threshold_report.py
+# for what distinguishes the two (in-distribution vs. N-hot-OOD input
+# construction).
 LOSS_THRESHOLD = 0.01
-ONE_HOT_LOSS_THRESHOLD = 0.01
+N_HOT_LOSS_THRESHOLD = 0.01
 AUROC_THRESHOLDS = [
     0.6,
     0.75,
@@ -170,7 +178,8 @@ def _cache_key(tag: str) -> str:
         PROBE_LAYER,
         TASK_LOSS_N_EVAL,
         TASK_LOSS_NOISE_MULT,
-        ONE_HOT_LOSS_N_EVAL,
+        N_HOT_LOSS_N_EVAL,
+        N_HOT_VALUES,
         PROBE_N_TRAIN,
         PROBE_N_TEST,
         PROBE_BACKEND,
@@ -195,13 +204,14 @@ def _save_cache(cache: dict[str, dict]) -> None:
 
 
 def _classify(
-    loss: float, one_hot_loss: float, auroc: float, thresholds: list[float]
+    loss: float, worst_n_hot_loss: float, auroc: float, thresholds: list[float]
 ) -> int:
     """Bucket index, 0 = failed task, 1 = succeeded but not hidden (auroc
     above the highest threshold), ..., len(thresholds) + 1 = succeeded and
     most hidden (auroc below the lowest threshold). "Succeeded" requires
-    both loss and one_hot_loss below their (separate) thresholds."""
-    if loss >= LOSS_THRESHOLD or one_hot_loss >= ONE_HOT_LOSS_THRESHOLD:
+    both loss and worst_n_hot_loss (the max N-hot loss over N_HOT_VALUES)
+    below their (separate) thresholds."""
+    if loss >= LOSS_THRESHOLD or worst_n_hot_loss >= N_HOT_LOSS_THRESHOLD:
         return 0
     for i, t in enumerate(reversed(thresholds)):
         if auroc >= t:
@@ -212,7 +222,7 @@ def _classify(
 def _band_labels(thresholds: list[float]) -> list[str]:
     labels = [
         f"failed task (loss >= {LOSS_THRESHOLD:g} or "
-        f"one-hot loss >= {ONE_HOT_LOSS_THRESHOLD:g})"
+        f"worst N-hot loss >= {N_HOT_LOSS_THRESHOLD:g})"
     ]
     desc = reversed(thresholds)
     prev = None
@@ -289,15 +299,18 @@ def main(clear_cache: bool = False):
                                 TASK_LOSS_N_EVAL,
                                 TASK_LOSS_NOISE_MULT,
                             ),
-                            "one_hot_loss": recompute_n_hot_loss(
-                                tag,
-                                CKPT,
-                                g,
-                                DEVICE,
-                                ONE_HOT_LOSS_N_EVAL,
-                                1,
-                                TASK_LOSS_NOISE_MULT,
-                            ),
+                            "n_hot_losses": {
+                                str(n_hot): recompute_n_hot_loss(
+                                    tag,
+                                    CKPT,
+                                    g,
+                                    DEVICE,
+                                    N_HOT_LOSS_N_EVAL,
+                                    n_hot,
+                                    TASK_LOSS_NOISE_MULT,
+                                )
+                                for n_hot in N_HOT_VALUES
+                            },
                             "auroc": _probe_auroc(tag, g, probe_backend_name),
                         }
                     except FileNotFoundError:
@@ -308,9 +321,10 @@ def main(clear_cache: bool = False):
                 if entry["auroc"] is None:
                     print(f"  {tag}: no probe in checkpoint, skipped")
                     continue
+                worst_n_hot_loss = max(entry["n_hot_losses"].values())
                 counts[
                     _classify(
-                        entry["loss"], entry["one_hot_loss"], entry["auroc"], thresholds
+                        entry["loss"], worst_n_hot_loss, entry["auroc"], thresholds
                     )
                 ] += 1
                 n_ok += 1
