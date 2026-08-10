@@ -49,25 +49,49 @@ back on and typically nobody is watching live.
    once for all instances at the start of the wake; it also gives you the
    queues that step 8 audits. A `remote_exec` redirect writes on the
    remote, not here, so it is not a substitute.
+
+   For a real stall verdict rather than `unknown`, give `pool_health.py`
+   its liveness inputs too — the fetched queue copy, the local `runs/`
+   tree the remote rsyncs into, and the instance's sync heartbeat:
+
+   ```
+   python pool_health.py <fetched manager.log> \
+     --launched-idx <fetched launched_idx> \
+     --queue <fetched queue.txt> --sync-host <alias>
+   ```
+
+   `--runs-dir` defaults to the main checkout's `runs/`, which is right
+   even when you're running from a worktree (worktrees don't have one).
+   Nothing here touches the remote; run progress is read from the local
+   mtimes the ~10s runs-pull keeps current.
 2. **Failing?** A nonzero-`rc` line in `MANAGER_LOG` — see "Auto-retry on
    failure" below before escalating; it's not automatically a human
    issue anymore.
-3. **Stalled?** (`stalled: true`, or a rising failure count that doesn't
-   match the auto-retry path) — don't self-diagnose deeply; surface to
-   `handoff.md` and the user with the relevant `manager.log` tail. A
-   systematic failure (bad config, OOM, etc.) needs a human. If the
-   instance is actually unreachable rather than just stalled, see
-   "Instance unreachable" below instead — that one you can act on
-   yourself.
-   - **Known false positive**: `pool_health.py`'s `stalled` is derived
-     purely from time-since-last-`manager.log`-line, but long single-shot
-     runs (hours, no `--resume` restarts) never write intermediate lines
-     between their own launch and finish. A multi-hour gap with no
-     launch/finish events is expected here, not evidence of a dead
-     manager. Before escalating, cheaply verify instead: `ps aux` on the
-     instance (the job PIDs still alive, high CPU) and tail one running
-     `job<N>.log` (iter count still advancing). Only escalate if those
-     *also* look wrong.
+3. **Stalled?** Read `status`, not any single number. It is three-state:
+   - `ok` — nothing to do. Note this includes a silent `manager.log`, as
+     long as some running job is still progressing: one long run produces
+     hours of silence between its own launch and finish lines, and that is
+     healthy. (This used to be reported as `stalled: true` and cost every
+     wake a manual `ps aux` detour to disprove — it no longer fires, and
+     the old `stalled` field is gone.)
+   - `stalled` — real. No running job's `history.jsonl` has advanced while
+     the runs-pull sync is demonstrably healthy, or the manager has gone
+     quiet with nothing running at all. Don't self-diagnose deeply:
+     surface to `handoff.md` and the user with the `manager.log` tail. A
+     systematic failure (bad config, OOM, etc.) needs a human.
+   - `unknown` — the check couldn't reach a verdict; `diagnosis` says why.
+     Usually either the liveness inputs weren't passed, the fetched
+     `manager.log` copy is too old to trust, or the runs-pull loop's
+     heartbeat is stale — in which case frozen `history.jsonl` mtimes mean
+     "we stopped hearing from the box", which is *not* the same as "the box
+     stopped working". Both possibilities are worth investigating; check
+     the sync loop first (`sync_vastai.py status`), since it's the cheaper
+     one to rule out and it's local.
+
+   A rising failure count that doesn't match the auto-retry path is a
+   separate escalation regardless of `status`. If the instance is actually
+   unreachable rather than stalled, see "Instance unreachable" below —
+   that one you can act on yourself.
 4. **Manager process actually alive?** A `STOPPED`/`ALL DONE` line in
    `manager.log` (or, for an older unfixed deployment, silence past when
    the queue should have drained) means the dispatcher itself has
@@ -190,7 +214,7 @@ wake.
 
 Sweep is complete when: the pending pool is empty (`sweep_pool.py
 status`/your sweep's manifest-script `status` shows 0 pending) AND every
-registered instance's queue has drained AND no `stalled`/nonzero
+registered instance's queue has drained AND no `stalled` status or nonzero
 `failure_count` remains unexplained AND `queue_audit.py check` exits
 clean. This is a normal, expected outcome
 on any given wake — no action needed beyond noting it in `handoff.md`.
