@@ -539,11 +539,15 @@ def _plot_steer_comparison(
 
 @torch.no_grad()
 def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, device):
-    """Fit a linear map residual[layer] -> model's own final task output y,
-    for every residual-stream layer 0..num_blocks, with c ~ U[1,2] (the
-    training distribution, not pinned pairs). Layer num_blocks should score
-    ~1 (y is exactly linear in it); see module docstring for what an
-    early-layer score implies.
+    """Fit a linear map residual[layer] -> the TRUE target sat(x, c), for
+    every residual-stream layer 0..num_blocks, with c ~ U[1,2] (the training
+    distribution, not pinned pairs).
+
+    The target is the true label, not the model's own output: the model's
+    output is exactly `residual[num_blocks] @ W_U`, so regressing onto it
+    scores a trivial R²=1 at the last layer no matter how badly the model
+    solves the task (see PR #223). Against the true target the last layer
+    instead tops out near the model's own task fidelity.
 
     Always fit and evaluate noise-free (unlike the binary probe metrics
     above, which do inject eval-time noise): this analysis asks whether c's
@@ -557,9 +561,8 @@ def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, devic
     layers = list(range(0, num_blocks + 1))
 
     def _sample(n):
-        x_full, _ = sample_batch(n, num_x, generator=g, device=device)
-        pred, caches = model.forward(x_full, return_cache=True, generator=g)
-        y = pred[:, :num_x]
+        x_full, y = sample_batch(n, num_x, generator=g, device=device)
+        _, caches = model.forward(x_full, return_cache=True, generator=g)
         return {lyr: caches[lyr].cpu().numpy() for lyr in layers}, y.cpu().numpy()
 
     train_caches, y_train = _sample(n_train)
@@ -578,7 +581,10 @@ def _plot_linear_y_reconstruction(tag, r2, penalty_layers, plot_dir):
     is already close to linear (identity off-saturation), so even a linear map
     from the raw input achieves a high raw R². Rescaling so L0 -> 0 and perfect
     reconstruction -> 1 isolates how much each layer improves ON TOP OF that
-    trivial baseline; a layer scoring BELOW the baseline shows negative."""
+    trivial baseline; a layer scoring BELOW the baseline shows negative.
+
+    1.0 is exact reconstruction of the true target, which a model that
+    doesn't fit the task perfectly never reaches at any layer."""
     layers = sorted(r2)
     baseline = r2[0]
     rel_r2 = {l: (r2[l] - baseline) / (1 - baseline + 1e-9) for l in layers}
@@ -588,13 +594,13 @@ def _plot_linear_y_reconstruction(tag, r2, penalty_layers, plot_dir):
     fig, ax = plt.subplots(figsize=(max(3.5, 0.65 * len(layers)), 4.2))
     ax.bar(x, [rel_r2[l] for l in layers], color=colors)
     line_ref = ax.axhline(
-        1.0, color="k", ls="--", lw=1, label="perfect linear reconstruction"
+        1.0, color="k", ls="--", lw=1, label="exact reconstruction of true y"
     )
     ax.axhline(0.0, color="k", lw=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels([f"L{l}" for l in layers])
     ax.set_ylabel("R² relative to L0 (embedding) baseline")
-    ax.set_title(f"linear reconstruction of final y, per layer ({tag})")
+    ax.set_title(f"linear reconstruction of true y = sat(x, c), per layer ({tag})")
     handles = [
         plt.Rectangle((0, 0), 1, 1, color="crimson", label="penalized layer"),
         plt.Rectangle((0, 0), 1, 1, color="steelblue", label="unpenalized layer"),
@@ -670,8 +676,10 @@ def _build_report(args, model, adv_cfg, result: "AnalysisResult"):
         emit()
 
     if result.linear_y_r2 is not None:
-        # --- 4. linear reconstruction of final y from each layer ---
-        emit("## 4. Linear reconstruction of final y (c ~ U[1,2], per layer)")
+        # --- 4. linear reconstruction of the true target from each layer ---
+        emit(
+            "## 4. Linear reconstruction of true y = sat(x, c) (c ~ U[1,2], per layer)"
+        )
         emit("layer | penalized | R²")
         emit("------|-----------|-----")
         for lyr in sorted(result.linear_y_r2):
