@@ -203,7 +203,11 @@ broker's `fetch_files` to bring remote files to them):
   a queue goes through here.
 - `pool_health.py` — one instance's throughput/stall/failure summary from
   its `manager.log`. Importable, and what `sweep_pool.py eta` uses
-  underneath; call it directly for a per-instance read.
+  underneath; call it directly for a per-instance read. Pass `--queue`/
+  `--sync-host` as well for a real three-state stall verdict: `manager.log`
+  alone can't distinguish a dead box from one long quiet run, so liveness
+  comes from the running jobs' `history.jsonl` mtimes in the local `runs/`
+  tree instead.
 - `queue_audit.py` — verifies the remote queues against the registry
   (`fetch-request` to build the fetch, `check` to audit). Used per
   monitor wake and before declaring a sweep done.
