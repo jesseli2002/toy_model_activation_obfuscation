@@ -155,6 +155,9 @@ aggregate it/s.
   standard for the actual production runs once you've settled on a level.
 - GPU utilization% is only one clue out of many, and a 100% utilization (or near 100%) does not necessarily mean the limit has been reached. Power draw similarly represents a partial clue, not a smoking gun.
 
+## Adding additional runs or instances
+- If the user asks to add additional runs or spins up another instance, **use a forked subagent to generate the manifest, update the remote queues, evaluate concurrency, etc.** Let a subagent handle the details of everything, so that your (long-running) context remains clean.
+
 ## Gotchas
 
 - **Don't trust idle-looking spare capacity.** A CPU-only process run
