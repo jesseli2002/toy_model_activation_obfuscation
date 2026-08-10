@@ -69,6 +69,7 @@ STOPFILE="${CONC}.stop"
 
 cd "$PROJECT_DIR"
 source "$VENV_ACTIVATE"
+mkdir -p "$LOGDIR"
 
 NUM_GPUS=$(nvidia-smi -L 2>/dev/null | wc -l)
 
