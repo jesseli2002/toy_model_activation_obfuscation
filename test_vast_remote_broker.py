@@ -88,10 +88,13 @@ def remote(tmp_path, monkeypatch, sync_script):
     monkeypatch.setenv("VAST_REMOTE_DEFAULT_INSTANCE", "vtao")
     monkeypatch.setenv("VAST_REMOTE_WORKDIR", str(workdir))
     monkeypatch.setenv("VAST_REMOTE_VENV", str(venv))
+    fetch_dir = tmp_path / "fetched"
+    monkeypatch.setenv("VAST_REMOTE_FETCH_DIR", str(fetch_dir))
 
     class Remote:
         config = vast_remote_broker.load_config_from_env()
         workdir_path = workdir
+        fetch_root = fetch_dir
 
         @staticmethod
         def call(name, arguments):
@@ -116,6 +119,15 @@ def remote(tmp_path, monkeypatch, sync_script):
         @staticmethod
         def flush(**kwargs):
             return Remote.call("sync_flush", kwargs)
+
+        @staticmethod
+        def fetch(fetches, **kwargs):
+            return Remote.call("fetch_files", {"fetches": fetches, **kwargs})
+
+        @staticmethod
+        def fetched_path(instance, remote_path):
+            """Where fetch_files is documented to land a file."""
+            return fetch_dir / instance / str(remote_path).lstrip("/")
 
     return Remote
 
@@ -545,3 +557,130 @@ def test_list_instances_rejects_non_string_label_prefix(remote):
     is_error, text = remote.call("list_instances", {"label_prefix": 5})
     assert is_error
     assert "label_prefix" in text
+
+
+# --- fetch_files -------------------------------------------------------------
+#
+# fetch_files is the only path that puts a remote file on the local disk, and
+# its consumers (queue_audit.py, pool_health.py) decide real things from what
+# they find there. A silently stale or missing copy is worse than a loud
+# failure, so the destination layout and the no-stale-leftovers rule are what
+# these pin down.
+
+
+@pytest.fixture
+def remote_file(tmp_path):
+    """Writes a file on the 'remote' (this machine) and returns its path."""
+
+    def write(name, content):
+        path = tmp_path / "remote_files" / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content)
+        return path
+
+    return write
+
+
+def test_fetch_lands_files_at_the_documented_instance_scoped_path(remote, remote_file):
+    queue = remote_file("queue.txt", "python train.py --tag a\n")
+    is_error, text = remote.fetch({"vtao": [str(queue)]})
+
+    landed = remote.fetched_path("vtao", queue)
+    assert not is_error, text
+    assert landed.read_text() == queue.read_text()
+    assert str(landed) in text
+    assert "1/1 file(s) fetched" in text
+
+
+def test_fetch_keeps_instances_in_separate_trees(remote, remote_file):
+    # Every rental uses the same remote scratch layout, so identical paths on
+    # two instances must not collide into one local file.
+    queue = remote_file("queue.txt", "shared path\n")
+    is_error, _ = remote.fetch({"vtao": [str(queue)], "vtao1": [str(queue)]})
+
+    assert not is_error
+    assert remote.fetched_path("vtao", queue).exists()
+    assert remote.fetched_path("vtao1", queue).exists()
+
+
+def test_fetch_reports_a_missing_file_without_discarding_the_others(
+    remote, remote_file
+):
+    queue = remote_file("queue.txt", "real\n")
+    absent = queue.parent / "absent.txt"
+    is_error, text = remote.fetch({"vtao": [str(queue), str(absent)]})
+
+    assert not is_error, text
+    assert remote.fetched_path("vtao", queue).exists()
+    assert not remote.fetched_path("vtao", absent).exists()
+    assert "[fail]" in text and "1/2 file(s) fetched" in text
+
+
+def test_failed_refetch_deletes_the_previous_local_copy(remote, remote_file):
+    # A leftover copy would let an unreachable instance keep reading as
+    # healthy to whatever parses these files later.
+    queue = remote_file("queue.txt", "first\n")
+    remote.fetch({"vtao": [str(queue)]})
+    assert remote.fetched_path("vtao", queue).exists()
+
+    queue.unlink()
+    is_error, text = remote.fetch({"vtao": [str(queue)]})
+
+    assert not is_error
+    assert not remote.fetched_path("vtao", queue).exists()
+    assert "stale local copy" in text
+
+
+def test_fetched_copy_is_stamped_with_its_fetch_time(remote, remote_file):
+    # queue_audit.py's staleness check reads this mtime, so it has to mean
+    # "when we fetched", not the remote file's own (possibly ancient) mtime.
+    queue = remote_file("queue.txt", "x\n")
+    os.utime(queue, (0, 0))
+    remote.fetch({"vtao": [str(queue)]})
+
+    assert remote.fetched_path("vtao", queue).stat().st_mtime > 0
+
+
+@pytest.mark.parametrize(
+    "path",
+    ["relative/path", "/climbs/../../out", "/has/a\nnewline", "", 5],
+)
+def test_fetch_rejects_a_bad_path_outright(remote, path):
+    # Hard error, not a per-instance [fail] line: bad caller input and an
+    # unreachable instance need to stay distinguishable.
+    is_error, text = remote.fetch({"vtao": [path]})
+    assert is_error, text
+
+
+def test_a_bad_path_rejects_the_whole_call_before_fetching_anything(
+    remote, remote_file
+):
+    queue = remote_file("queue.txt", "x\n")
+    is_error, _ = remote.fetch({"vtao": [str(queue)], "vtao1": ["relative"]})
+
+    assert is_error
+    assert not remote.fetched_path("vtao", queue).exists()
+
+
+@pytest.mark.parametrize(
+    "fetches", [{}, {"vtao": []}, {"vtao": "not-a-list"}, {"-bad": ["/x"]}, "nope"]
+)
+def test_fetch_rejects_a_malformed_fetches_argument(remote, fetches):
+    is_error, text = remote.fetch(fetches)
+    assert is_error, text
+
+
+def test_fetch_refuses_an_oversize_request(remote, remote_file, monkeypatch):
+    big = remote_file("big.txt", "x" * 4096)
+    monkeypatch.setattr(vast_remote_broker, "MAX_FETCH_BYTES", 100)
+    is_error, text = remote.fetch({"vtao": [str(big)]})
+
+    assert "fetch limit" in text
+    assert not remote.fetched_path("vtao", big).exists()
+
+
+@pytest.mark.parametrize("timeout_s", [0, -1, "soon", True])
+def test_fetch_rejects_a_bad_timeout(remote, timeout_s):
+    is_error, text = remote.fetch({"vtao": ["/x"]}, timeout_s=timeout_s)
+    assert is_error
+    assert "timeout_s" in text

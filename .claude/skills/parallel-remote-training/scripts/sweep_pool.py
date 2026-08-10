@@ -1,5 +1,5 @@
-"""Sweep-agnostic pool bookkeeping: build/status/assign/eta/reassign over a
-generic manifest of {tag, command, stage?, weight?} dicts. A sweep-specific
+"""Sweep-agnostic pool bookkeeping: build/status/assign/eta/requeue/reassign
+over a generic manifest of {tag, command, stage?, weight?} dicts. A sweep-specific
 script (e.g. generate_sweep8.py) builds that manifest and either imports
 this module or shells out to it -- this file has no knowledge of arches,
 lambdas, or any other sweep-specific concept.
@@ -18,7 +18,15 @@ Usage:
     python sweep_pool.py status --out-dir OUT
     python sweep_pool.py assign --out-dir OUT --instance i0 --n-runs 20
     python sweep_pool.py eta --out-dir OUT --instance-log i0:manager.log:idx.txt [...]
+    python sweep_pool.py requeue --out-dir OUT --instance i0 --resume-tag TAG
     python sweep_pool.py reassign --out-dir OUT --from-instance i0 --to-instance i1 --lines-file trimmed.txt
+
+assignments.json is meant to be the single registry of which instance owns a
+tag: every command that puts work on a queue (`assign`, `requeue`,
+`reassign`) records it here, which is what makes duplicate tags across
+instances impossible by construction rather than merely unlikely. Work that
+reaches a remote queue without going through one of them is invisible to
+that guarantee -- queue_audit.py exists to find it.
 
 Writes (same shapes generate_sweep8.py already produces, so a future
 rewire of that script onto this module is a drop-in):
@@ -32,6 +40,7 @@ rewire of that script onto this module is a drop-in):
 import argparse
 import json
 import os
+import shlex
 import sys
 import time
 
@@ -78,6 +87,24 @@ def parse_args():
         "LAUNCHED_IDX is optional.",
     )
     p_eta.add_argument("--window-minutes", type=float, default=60.0)
+
+    p_requeue = sub.add_parser(
+        "requeue",
+        help="register a retry of an already-assigned tag and emit its queue delta",
+    )
+    p_requeue.add_argument("--out-dir", default="sweep_pool_scratch")
+    p_requeue.add_argument("--instance", required=True)
+    g_kind = p_requeue.add_mutually_exclusive_group(required=True)
+    g_kind.add_argument(
+        "--resume-tag",
+        help="re-run this tag from its checkpoint. Allowed only on the instance it is "
+        "already assigned to -- checkpoints don't move between remotes.",
+    )
+    g_kind.add_argument(
+        "--retry-tag",
+        help="re-run this tag from scratch under a fresh <tag>_retryN, which is "
+        "registered to --instance. Use when the checkpoint is unusable.",
+    )
 
     p_reassign = sub.add_parser(
         "reassign",
@@ -262,6 +289,96 @@ def cmd_eta(args):
     print(f"ETA: {eta_hours:.1f} hours ({eta_hours / 24:.1f} days)")
 
 
+def _retag(command, new_tag):
+    """Rewrite a queued command's --tag, appending one if it had none."""
+    argv = shlex.split(command)
+    for i, token in enumerate(argv):
+        if token == "--tag" and i + 1 < len(argv):
+            argv[i + 1] = new_tag
+            return shlex.join(argv)
+        if token.startswith("--tag="):
+            argv[i] = f"--tag={new_tag}"
+            return shlex.join(argv)
+    return shlex.join(argv + ["--tag", new_tag])
+
+
+def _emit_delta(out_dir, instance, lines):
+    delta_path = os.path.join(out_dir, f"queue_{instance}.delta.txt")
+    with open(delta_path, "w") as f:
+        f.writelines(lines)
+    with open(os.path.join(out_dir, f"queue_{instance}.txt"), "a") as f:
+        f.writelines(lines)
+    return delta_path
+
+
+def cmd_requeue(args):
+    """Retries go through the same registry as first-time assignments.
+
+    Appending a retry straight to a remote queue leaves assignments.json
+    without a row for it, so nothing stops a later assign/reassign from
+    handing the same tag to a second instance -- see queue_audit.py for what
+    that costs. Routing retries through here also enforces, rather than just
+    documents, that a --resume stays on the instance holding the checkpoint.
+    """
+    assignments_path = os.path.join(args.out_dir, "assignments.json")
+
+    with _Lock(args.out_dir):
+        assignments = _load_json(assignments_path, None)
+        if assignments is None:
+            raise SystemExit(
+                f"[error] no assignments at {assignments_path} -- run `build`/`assign` first"
+            )
+
+        source_tag = args.resume_tag or args.retry_tag
+        matches = [a for a in assignments if a["tag"] == source_tag]
+        if not matches:
+            raise SystemExit(
+                f"[error] tag {source_tag!r} has no assignment row. Retrying work that "
+                "was never registered would compound the problem -- find out how it "
+                "reached a queue first."
+            )
+        original = matches[-1]
+
+        if args.resume_tag:
+            if original["instance"] != args.instance:
+                raise SystemExit(
+                    f"[error] {source_tag!r} is assigned to {original['instance']}, not "
+                    f"{args.instance}. A --resume must run where the checkpoint is; the "
+                    "sync is local<->each-remote, so checkpoints never move between "
+                    "remotes. Use --retry-tag for a from-scratch run elsewhere."
+                )
+            # No new row: the instance is already authorized for this tag, and a
+            # second row would read as a duplicate assignment.
+            new_command = original["command"] + " --resume"
+            new_tag = source_tag
+        else:
+            n = 1
+            existing = {a["tag"] for a in assignments}
+            while f"{source_tag}_retry{n}" in existing:
+                n += 1
+            new_tag = f"{source_tag}_retry{n}"
+            new_command = _retag(original["command"], new_tag)
+            assignments.append(
+                {
+                    "tag": new_tag,
+                    "instance": args.instance,
+                    "command": new_command,
+                    "kind": "retry",
+                    "retry_of": source_tag,
+                }
+            )
+            _dump_json(assignments_path, assignments)
+
+        delta_path = _emit_delta(args.out_dir, args.instance, [new_command + "\n"])
+
+    kind = "resume" if args.resume_tag else "from-scratch retry"
+    print(f"{kind} of {source_tag!r} on {args.instance} as tag {new_tag!r}")
+    print(f"  {new_command}")
+    print(f"  push this via queue_append.sh over remote_exec -> {delta_path}")
+    if args.resume_tag:
+        print("  (no new assignment row -- the instance already holds this tag)")
+
+
 def cmd_reassign(args):
     with open(args.lines_file) as f:
         moved_commands = {line.rstrip("\n") for line in f if line.strip()}
@@ -285,12 +402,7 @@ def cmd_reassign(args):
         # assignments.json still attributes to a different (or no) instance,
         # so it'd get pulled back from the wrong runs/ dir at collection time.
         moved_lines = [c + "\n" for c in sorted(actually_moved)]
-        delta_path = os.path.join(args.out_dir, f"queue_{args.to_instance}.delta.txt")
-        with open(delta_path, "w") as f:
-            f.writelines(moved_lines)
-        queue_path = os.path.join(args.out_dir, f"queue_{args.to_instance}.txt")
-        with open(queue_path, "a") as f:
-            f.writelines(moved_lines)
+        delta_path = _emit_delta(args.out_dir, args.to_instance, moved_lines)
 
     print(f"reassigned {moved} tags from {args.from_instance} to {args.to_instance}")
     print(f"  push this via queue_append.sh over remote_exec -> {delta_path}")
@@ -308,6 +420,7 @@ def main():
         "status": cmd_status,
         "assign": cmd_assign,
         "eta": cmd_eta,
+        "requeue": cmd_requeue,
         "reassign": cmd_reassign,
     }[args.cmd](args)
 

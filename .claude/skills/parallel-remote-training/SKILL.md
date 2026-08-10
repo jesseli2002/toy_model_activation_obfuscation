@@ -6,7 +6,7 @@ description: Run training runs on the vast.ai remote instance. Use when user wan
 # Environment
 When a remote is set up for the first time, a `mutagen` session is started to sync local source files to the remote, and a `rsync` daemon is set up to pull `./runs` data back from the remote. Abstracting away the implementation, the end effect is that source files (`*.py`, `configs/**`, `.claude/worktrees/**`, `.claude/skills/**`) should be present on the remote. Changes made locally to those files will be reflected on the remote, but with some delay; use the `sync_flush` MCP endpoint to ensure changes show up. Similarly, `runs/` data gets brought back automatically, with the exception of tags matching `debug_*` (used for smoke tests).
 
-WARNING: there is NO control to prevent two runs with the same tag on different remotes from clobbering each other. It is up to you to ensure each tag is assigned to a unique remote.
+WARNING: nothing at the transport layer prevents two remotes from running the same tag, and the damage is silent. The train script's same-tag guard is per-box (it only sees that box's `runs/`, seeded once at creation), and every box rsyncs into one local `runs/` with last-writer-wins per file — so two boxes on one tag interleave their checkpoints with no error anywhere. See "Keeping tags unique across instances" below for the funnel that prevents this and the audit that detects it.
 
 For implementation details, see the vast_setup/ directory on the local machine.
 
@@ -73,9 +73,11 @@ online incrementally):
 3. Push the resulting `.delta.txt` onto the remote queue via
    `queue_append.sh` over `remote_exec` (never a bare `cat >>` — see that
    script's header for why).
-4. To report an ETA: fetch each active instance's `manager.log` locally
-   (`remote_exec cat manager.log > local_copy.log` — `sweep_pool.py eta`
-   reads *local* files, it can't reach the remote itself), then run
+4. To report an ETA: land each active instance's `manager.log` on the
+   local disk with the broker's `fetch_files` tool — `sweep_pool.py eta`
+   reads *local* files and can't reach a remote itself. Note a redirect
+   inside a `remote_exec` command string (`cat manager.log > copy.log`)
+   writes on the **remote**, so it does not do this. Then run
    `sweep_pool.py eta --instance-log NAME:local_copy.log[:launched_idx]`
    once per instance. ETA is `pending_runs / aggregate_jobs_per_hour`
    (throughput-based — NOT `avg_duration × pending_runs`, which ignores
@@ -83,6 +85,38 @@ online incrementally):
 5. With no throughput data yet (brand new instance), report an
    assign-based estimate honestly labeled as a guess, and revisit once
    `sweep_pool.py eta` has real data.
+
+## Keeping tags unique across instances
+
+`assignments.json` (under `sweep_pool.py --out-dir`) is the single registry
+of which instance owns a tag. Everything that puts work on a queue —
+`assign`, `requeue`, `reassign` — records it there, and `assign` pops from
+one shared pending pool under a lock, so **duplicates are impossible as long
+as every queue mutation goes through one of those commands**. Retries are
+the path that historically bypassed it: use `sweep_pool.py requeue`
+(`--resume-tag` for a checkpoint resume, which it will only allow on the
+instance holding that checkpoint; `--retry-tag` for a fresh `<tag>_retryN`)
+rather than hand-writing a line into `queue_append.sh`.
+
+To verify the invariant against what is *actually* on the remotes:
+
+1. `queue_audit.py fetch-request --instances instances.json` prints the
+   `fetches` argument for the broker's `fetch_files` tool (queue,
+   `launched_idx` and `manager.log` for every registered instance).
+2. Pass it to `fetch_files`, which lands them under
+   `/tmp/vast-remote-broker-fetch/<instance>/<remote path>`. That
+   destination is fixed by the server, not caller-chosen.
+3. `queue_audit.py check --instances instances.json --out-dir POOL_DIR`
+   exits nonzero on any ERROR: the same tag queued on two instances, a
+   non-resume repeat on one instance, two occurrences of one tag both still
+   awaiting dispatch (the manager fills free slots without looking at tags,
+   so those can start together — repeated `--resume` retries are fine, but
+   only one may be pending at a time), a tag with no registry row, or a tag
+   queued somewhere other than its registered owner. Duplicates are
+   classified by `launched_idx` — still in the undispatched tail means
+   `queue_trim.sh` can fix it, already dispatched means it is clobbering now
+   and needs a human. A queue copy that is missing or stale is reported
+   rather than treated as clean.
 
 For periodic unattended health-checking of a sweep already underway
 (stall/failure detection, auto-retry of known-flaky failures, rebalancing,
@@ -141,3 +175,32 @@ aggregate it/s.
   undispatched-tail isolation, `launched_idx` untouched) — a monitor
   agent may execute rebalancing autonomously, not just recommend it (see
   `monitor_brief.md`).
+
+## Script index
+
+All under `.claude/skills/parallel-remote-training/scripts/`. Each carries
+its own header comment or docstring with the full contract — argument
+order, locking, failure modes — so treat this as a map, not a reference.
+
+**Run on the remote** (via `remote_exec`, next to the live queue):
+
+- `vast_pool_manager.sh` — the dispatch loop itself. Launched once per
+  instance at setup, detached, and left running for the whole sweep.
+- `queue_append.sh` — the only safe way to add lines to a running
+  instance's queue. Every delta produced locally gets pushed with this.
+- `queue_trim.sh` — removes undispatched lines off a queue's tail, for
+  rebalancing between instances or clearing a duplicate.
+
+**Run locally** (they read local files and cannot reach a remote; use the
+broker's `fetch_files` to bring remote files to them):
+
+- `sweep_pool.py` — the pool's bookkeeping and the registry that keeps
+  tags unique: `build`/`status`/`assign` at setup, `requeue` for retries,
+  `reassign` for moves, `eta` for reporting. Everything that puts work on
+  a queue goes through here.
+- `pool_health.py` — one instance's throughput/stall/failure summary from
+  its `manager.log`. Importable, and what `sweep_pool.py eta` uses
+  underneath; call it directly for a per-instance read.
+- `queue_audit.py` — verifies the remote queues against the registry
+  (`fetch-request` to build the fetch, `check` to audit). Used per
+  monitor wake and before declaring a sweep done.
