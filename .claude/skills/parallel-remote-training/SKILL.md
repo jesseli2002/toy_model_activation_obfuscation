@@ -175,3 +175,32 @@ aggregate it/s.
   undispatched-tail isolation, `launched_idx` untouched) — a monitor
   agent may execute rebalancing autonomously, not just recommend it (see
   `monitor_brief.md`).
+
+## Script index
+
+All under `.claude/skills/parallel-remote-training/scripts/`. Each carries
+its own header comment or docstring with the full contract — argument
+order, locking, failure modes — so treat this as a map, not a reference.
+
+**Run on the remote** (via `remote_exec`, next to the live queue):
+
+- `vast_pool_manager.sh` — the dispatch loop itself. Launched once per
+  instance at setup, detached, and left running for the whole sweep.
+- `queue_append.sh` — the only safe way to add lines to a running
+  instance's queue. Every delta produced locally gets pushed with this.
+- `queue_trim.sh` — removes undispatched lines off a queue's tail, for
+  rebalancing between instances or clearing a duplicate.
+
+**Run locally** (they read local files and cannot reach a remote; use the
+broker's `fetch_files` to bring remote files to them):
+
+- `sweep_pool.py` — the pool's bookkeeping and the registry that keeps
+  tags unique: `build`/`status`/`assign` at setup, `requeue` for retries,
+  `reassign` for moves, `eta` for reporting. Everything that puts work on
+  a queue goes through here.
+- `pool_health.py` — one instance's throughput/stall/failure summary from
+  its `manager.log`. Importable, and what `sweep_pool.py eta` uses
+  underneath; call it directly for a per-instance read.
+- `queue_audit.py` — verifies the remote queues against the registry
+  (`fetch-request` to build the fetch, `check` to audit). Used per
+  monitor wake and before declaring a sweep done.

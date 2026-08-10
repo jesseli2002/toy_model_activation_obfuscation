@@ -1,5 +1,5 @@
-"""Sweep-agnostic pool bookkeeping: build/status/assign/eta/reassign over a
-generic manifest of {tag, command, stage?, weight?} dicts. A sweep-specific
+"""Sweep-agnostic pool bookkeeping: build/status/assign/eta/requeue/reassign
+over a generic manifest of {tag, command, stage?, weight?} dicts. A sweep-specific
 script (e.g. generate_sweep8.py) builds that manifest and either imports
 this module or shells out to it -- this file has no knowledge of arches,
 lambdas, or any other sweep-specific concept.
