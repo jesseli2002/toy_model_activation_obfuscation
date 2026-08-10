@@ -123,17 +123,17 @@ For periodic unattended health-checking of a sweep already underway
 and instance-down handling — all monitor-executed, not just recommended),
 see `.claude/skills/parallel-remote-training/monitor_brief.md`.
 
-## Scheduling the check-in agent
+## Scheduling the check-in subagent
 
 Once the pool is fully assigned (every instance's queue holds the whole
 remaining sweep, not just an initial chunk — see above), set up a
 recurring **~2h** check via the `schedule` skill, running as a fresh
-agent each time (no standing context growth, no stale/uncached-token
+subagent each time (no standing context growth, no stale/uncached-token
 cost). The routine's stored prompt is `monitor_brief.md`'s only input —
 it must carry the sweep's `instances.json` path explicitly, and may
 carry extra sweep-specific detail if you judge it relevant (see
 `monitor_brief.md`'s "Input" section). As of this writing, run it as a
-**local** scheduled agent, not a cloud routine (cloud support here is
+**local** scheduled subagent, not a cloud routine (cloud support here is
 unevaluated).
 
 ## Ramping concurrency
