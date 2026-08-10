@@ -83,6 +83,9 @@ def parse_args():
         "--show", type=int, default=8, help="tags to list per bucket before eliding"
     )
     p.add_argument("--json", action="store_true", help="emit the full report as JSON")
+    p.add_argument(
+        "--no-color", action="store_true", help="disable ANSI color even on a tty"
+    )
     return p.parse_args()
 
 
@@ -223,16 +226,21 @@ def instance_report(alias, cfg, fetched, default_tag, eta_window, now):
     }
 
 
+CYAN = "\033[36m"
+RESET = "\033[0m"
+
+
 def _fmt_dur(seconds):
     if seconds < 3600:
         return f"{seconds / 60:.0f}m"
     return f"{seconds / 3600:.1f}h"
 
 
-def print_human(reports, show):
+def print_human(reports, show, color):
+    heading = (lambda s: f"{CYAN}{s}{RESET}") if color else (lambda s: s)
     totals = {"running": 0, "queued": 0, "complete": 0, "failed": 0, "unknown": 0}
     for r in reports:
-        print(f"=== {r['instance']} ===")
+        print(heading(f"=== {r['instance']} ==="))
         for err in r.get("errors") or ():
             print(f"  [error] {err}")
         if "running" not in r:
@@ -253,10 +261,12 @@ def print_human(reports, show):
             totals[bucket] += len(entries)
             if not entries:
                 continue
-            shown = ", ".join(fmt(e) for e in entries[:show])
-            more = f", +{len(entries) - show} more" if len(entries) > show else ""
-            print(f"  {bucket} ({len(entries)}): {shown}{more}")
-    print("=== total ===")
+            print(f"  {bucket} ({len(entries)}):")
+            for e in entries[:show]:
+                print(f"    {fmt(e)}")
+            if len(entries) > show:
+                print(f"    ... +{len(entries) - show} more")
+    print(heading("=== total ==="))
     print("  " + "  ".join(f"{k}={v}" for k, v in totals.items()))
 
 
@@ -278,7 +288,8 @@ def main():
     if args.json:
         print(json.dumps(reports, indent=2))
     else:
-        print_human(reports, args.show)
+        color = sys.stdout.isatty() and not args.no_color
+        print_human(reports, args.show, color)
 
 
 if __name__ == "__main__":
