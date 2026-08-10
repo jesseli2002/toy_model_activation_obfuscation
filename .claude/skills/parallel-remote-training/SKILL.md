@@ -204,3 +204,9 @@ broker's `fetch_files` to bring remote files to them):
 - `queue_audit.py` — verifies the remote queues against the registry
   (`fetch-request` to build the fetch, `check` to audit). Used per
   monitor wake and before declaring a sweep done.
+- `sweep_status.py` — read-only running/queued/complete/failed breakdown
+  with a rough ETA for in-flight jobs, meant for a person to run directly
+  at a terminal (no agent, no token cost) via `--instances instances.json`.
+  Unlike the others above, its default `--source ssh` fetches over plain
+  `ssh ALIAS cat PATH` itself rather than needing `fetch_files` first
+  (`--source local` still works from inside an agent session).
