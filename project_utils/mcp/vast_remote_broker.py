@@ -5,6 +5,14 @@ but reaches the remote over the network, so a sandboxed agent cannot
 flush it directly and would otherwise have to guess whether its local
 source edits had landed before launching a run.
 
+fetch_files exists for the same reason in the opposite direction: only
+`runs/` flows remote -> local, so operational files that live outside it
+(a pool manager's queue.txt/manager.log in the remote home dir) have no
+transport back. remote_exec can print them, but that routes the bytes
+through the agent's context and leaves nothing on disk for the local
+analysis tools to read -- a redirection in a remote_exec command string
+writes on the *remote*, which is an easy thing to get backwards.
+
 Multi-instance: callers pass an `instance` argument (the base SSH alias a
 rental was created under, e.g. "vtao" or "vtao1" -- see vast_setup/
 create_instance.py's --index) rather than the server being pinned to one
@@ -47,12 +55,16 @@ hand-rolled here instead of using the `mcp` SDK.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
+import tarfile
+import tempfile
 from dataclasses import dataclass
 from typing import IO, Any
 
@@ -78,6 +90,16 @@ DEFAULT_SYNC_SCRIPT = os.path.join(_REPO_ROOT, "vast_setup", "sync_vastai.py")
 # Output cap, split head/tail so both the start of a build log and the
 # error that ended it survive truncation.
 MAX_OUTPUT_CHARS = 40_000
+
+# Where fetch_files lands remote files. Deliberately NOT caller-supplied:
+# this server runs outside the agent's sandbox, so an agent-chosen
+# destination would be a write primitive anywhere on the host filesystem.
+# Fixed per-server instead, and readable from inside the sandbox.
+DEFAULT_FETCH_DIR = "/tmp/vast-remote-broker-fetch"
+# Refused rather than truncated -- a half-file that still parses is worse
+# than a clear error, and nothing this is meant for (queues, manager logs)
+# comes close to this.
+MAX_FETCH_BYTES = 64 * 1024 * 1024
 
 # Anti-footgun only, not a security boundary: catches the obvious
 # `rm -rf runs` typo class, not a determined caller. See PR for rationale.
@@ -110,6 +132,7 @@ class Config:
     control_persist: str
     sync_script: str
     vastai_command: list[str]
+    fetch_dir: str
 
 
 class BrokerError(Exception):
@@ -123,6 +146,11 @@ def load_config_from_env() -> Config:
     vastai_command = shlex.split(os.environ.get("VAST_REMOTE_VASTAI_COMMAND", "vastai"))
     if not vastai_command:
         raise RuntimeError("vast_remote_broker: VAST_REMOTE_VASTAI_COMMAND is empty")
+    fetch_dir = os.environ.get("VAST_REMOTE_FETCH_DIR", DEFAULT_FETCH_DIR)
+    if not os.path.isabs(fetch_dir):
+        raise RuntimeError(
+            f"vast_remote_broker: VAST_REMOTE_FETCH_DIR must be absolute, got {fetch_dir!r}"
+        )
     return Config(
         ssh_command=ssh_command,
         # Matches create_instance.py's --index 0 default alias.
@@ -139,6 +167,7 @@ def load_config_from_env() -> Config:
         control_persist=os.environ.get("VAST_REMOTE_CONTROL_PERSIST", "5m"),
         sync_script=os.environ.get("VAST_REMOTE_SYNC_SCRIPT", DEFAULT_SYNC_SCRIPT),
         vastai_command=vastai_command,
+        fetch_dir=fetch_dir,
     )
 
 
@@ -360,6 +389,204 @@ def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
     )
 
 
+def _check_fetch_path(path: Any) -> str:
+    """Validate one remote path and return it relative to '/'.
+
+    Rejecting '..' here is not about escaping the *remote* (remote_exec
+    already grants arbitrary shell there) -- it's so the local
+    fetch_dir-relative destination derived from this path can't climb out
+    of fetch_dir.
+    """
+    if not isinstance(path, str) or not path:
+        raise BrokerError("each fetch path must be a non-empty string")
+    if not path.startswith("/"):
+        raise BrokerError(f"fetch paths must be absolute, got {path!r}")
+    if "\n" in path or "\0" in path:
+        raise BrokerError(f"fetch path contains a newline or NUL byte: {path!r}")
+    rel = path.lstrip("/")
+    if any(part in ("", ".", "..") for part in rel.split("/")):
+        raise BrokerError(
+            "fetch path must be normalized (no empty, '.' or '..' components), "
+            f"got {path!r}"
+        )
+    return rel
+
+
+def _fetch_instance(
+    config: Config,
+    instance: str,
+    paths: list[str],
+    rels: list[str],
+    timeout_s: float,
+) -> list[dict[str, Any]]:
+    quoted = " ".join(shlex.quote(r) for r in rels)
+    # One tar per instance rather than one cat per file: a single round trip,
+    # and tar's own member paths give the local layout for free. tar exits
+    # nonzero both for a missing member and for a file that grew while being
+    # read (manager.log always is), so per-file success is decided locally by
+    # what actually landed, not by that exit code.
+    script = (
+        "set -u\n"
+        "cd / || exit 1\n"
+        "tot=0\n"
+        f"for f in {quoted}; do\n"
+        '  if [ -f "$f" ]; then tot=$((tot + $(stat -c %s "$f"))); fi\n'
+        "done\n"
+        f'if [ "$tot" -gt {MAX_FETCH_BYTES} ]; then\n'
+        f'  echo "requested files total $tot bytes, over the '
+        f'{MAX_FETCH_BYTES}-byte fetch limit" >&2\n'
+        "  exit 9\n"
+        "fi\n"
+        f"tar -cf - -C / -- {quoted}\n"
+    )
+    ssh_host = f"{instance}-agent"
+    argv = [
+        *config.ssh_command,
+        *_control_opts(config),
+        ssh_host,
+        f"bash -c {shlex.quote(script)}",
+    ]
+
+    def run_or_raise() -> subprocess.CompletedProcess[bytes]:
+        try:
+            return subprocess.run(
+                argv, capture_output=True, timeout=timeout_s, stdin=subprocess.DEVNULL
+            )
+        except subprocess.TimeoutExpired:
+            raise BrokerError(f"fetch from {instance} timed out after {timeout_s}s")
+
+    result = run_or_raise()
+    if result.returncode == 255:
+        _teardown_master(config, ssh_host)
+        result = run_or_raise()
+    stderr = result.stderr.decode("utf-8", "replace").strip()
+    if result.returncode == 9:
+        raise BrokerError(f"{instance}: {stderr}")
+
+    dest_root = os.path.join(config.fetch_dir, instance)
+    landed: dict[str, int] = {}
+    os.makedirs(dest_root, exist_ok=True)
+    staging = tempfile.mkdtemp(dir=config.fetch_dir, prefix=".staging-")
+    try:
+        wanted = set(rels)
+        if result.stdout:
+            try:
+                with tarfile.open(fileobj=io.BytesIO(result.stdout), mode="r|") as tf:
+                    for member in tf:
+                        # Only members we asked for, and the destination is
+                        # built from our own validated list rather than from
+                        # the member name, so a hostile archive has no say in
+                        # where anything is written.
+                        if member.name not in wanted or not member.isfile():
+                            continue
+                        src = tf.extractfile(member)
+                        if src is None:
+                            continue
+                        staged = os.path.join(staging, member.name.replace("/", "_"))
+                        with open(staged, "wb") as out:
+                            shutil.copyfileobj(src, out)
+                        dest = os.path.join(dest_root, member.name)
+                        os.makedirs(os.path.dirname(dest), exist_ok=True)
+                        os.replace(staged, dest)
+                        landed[member.name] = os.path.getsize(dest)
+            except tarfile.TarError as exc:
+                raise BrokerError(
+                    f"{instance}: could not read the fetched archive ({exc}). "
+                    f"ssh stderr: {stderr or '(empty)'}"
+                )
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    records = []
+    for rel, path in zip(rels, paths):
+        dest = os.path.join(dest_root, rel)
+        if rel in landed:
+            records.append(
+                {
+                    "instance": instance,
+                    "remote": path,
+                    "local": dest,
+                    "bytes": landed[rel],
+                    "ok": True,
+                }
+            )
+        else:
+            # Drop any previous copy: a stale file left behind here would let
+            # an unreachable or reconfigured instance keep reading as healthy
+            # to whatever consumes these locally.
+            try:
+                os.remove(dest)
+                note = "not fetched; removed the stale local copy"
+            except FileNotFoundError:
+                note = "not fetched"
+            records.append(
+                {
+                    "instance": instance,
+                    "remote": path,
+                    "local": dest,
+                    "ok": False,
+                    "note": f"{note} ({stderr or 'no error output'})",
+                }
+            )
+    return records
+
+
+def fetch_files(config: Config, arguments: dict[str, Any]) -> str:
+    fetches = arguments.get("fetches")
+    timeout_s = arguments.get("timeout_s", DEFAULT_TIMEOUT_S)
+    if not isinstance(fetches, dict) or not fetches:
+        raise BrokerError(
+            "fetches is required and must be a non-empty object mapping instance "
+            'name -> list of absolute remote paths, e.g. {"vtao": ["/home/agent/q.txt"]}'
+        )
+    if not isinstance(timeout_s, (int, float)) or isinstance(timeout_s, bool):
+        raise BrokerError("timeout_s must be a number if given")
+    if not 1 <= timeout_s <= MAX_TIMEOUT_S:
+        raise BrokerError(f"timeout_s must be between 1 and {MAX_TIMEOUT_S}")
+    # Validate every instance and path before touching the network, so bad
+    # caller input fails the whole call outright instead of surfacing as a
+    # per-instance fetch failure -- those two mean very different things to a
+    # caller deciding whether an instance is reachable.
+    plan: list[tuple[str, list[str], list[str]]] = []
+    for instance, paths in fetches.items():
+        _check_instance(instance)
+        if not isinstance(paths, list) or not paths:
+            raise BrokerError(
+                f"fetches[{instance!r}] must be a non-empty list of paths"
+            )
+        plan.append((instance, paths, [_check_fetch_path(p) for p in paths]))
+
+    records: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for instance, paths, rels in plan:
+        # One unreachable instance shouldn't discard the others' results --
+        # a partial fetch is exactly the situation a caller needs to see.
+        try:
+            records.extend(_fetch_instance(config, instance, paths, rels, timeout_s))
+        except BrokerError as exc:
+            errors.append(str(exc))
+
+    lines = [f"fetch root: {config.fetch_dir}"]
+    for rec in records:
+        if rec["ok"]:
+            lines.append(
+                f"  [ok] {rec['instance']}:{rec['remote']} -> {rec['local']} "
+                f"({rec['bytes']} bytes)"
+            )
+        else:
+            lines.append(f"  [fail] {rec['instance']}:{rec['remote']} -- {rec['note']}")
+    lines.extend(f"  [error] {e}" for e in errors)
+    n_ok = sum(1 for r in records if r["ok"])
+    lines.append(f"{n_ok}/{len(records)} file(s) fetched")
+    if errors or n_ok != len(records):
+        lines.append(
+            "Local copies are stamped with their fetch time, and anything that "
+            "failed has no local copy at all -- so a consumer that checks file "
+            "age will not mistake a stale copy for a fresh one."
+        )
+    return "\n".join(lines)
+
+
 def list_instances(config: Config, arguments: dict[str, Any]) -> str:
     label_prefix = arguments.get("label_prefix", DEFAULT_LABEL_PREFIX)
     if not isinstance(label_prefix, str):
@@ -513,6 +740,57 @@ TOOLS = [
         },
     },
     {
+        "name": "fetch_files",
+        "description": (
+            "Copy files from one or more remote instances onto THIS machine's "
+            "filesystem, where local tools can read them. Use this for remote "
+            "operational files that no sync covers -- a pool manager's queue.txt, "
+            "manager.log, launched_idx -- so local analysis scripts can read them "
+            "directly.\n"
+            "This is the only way to get a remote file onto the local disk. A "
+            "redirection inside a remote_exec command string ('cat x > y') writes "
+            "on the REMOTE, not here; piping the bytes through your own context and "
+            "re-writing them locally is lossy and expensive.\n"
+            "Destination is fixed by this server and cannot be chosen by the "
+            "caller: each file lands at <fetch_root>/<instance>/<remote path minus "
+            "its leading slash>, e.g. /home/agent/q.txt on 'vtao' -> "
+            f"{DEFAULT_FETCH_DIR}/vtao/home/agent/q.txt. The reported fetch root is "
+            "authoritative if it was configured differently.\n"
+            "Each fetched file's local mtime is its fetch time, and a file that "
+            "could not be fetched leaves NO local copy (any previous one is "
+            "deleted), so an unreachable instance cannot masquerade as a fresh "
+            "one. Reading these back is a snapshot, not a live view -- re-fetch "
+            "rather than trusting an earlier copy.\n"
+            "Read-only on the remote. Regular files only; directories and globs "
+            "are not expanded."
+        ),
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "fetches": {
+                    "type": "object",
+                    "description": (
+                        "Map of instance base SSH alias (e.g. 'vtao', 'vtao1') -> "
+                        "list of absolute, normalized remote paths to fetch from "
+                        'that instance. Example: {"vtao": ["/home/agent/sweep_scratch/'
+                        'queue.txt"], "vtao1": ["/home/agent/sweep_scratch/queue.txt"]}. '
+                        "Instances are fetched independently: one unreachable "
+                        "instance still returns the others' results."
+                    ),
+                    "additionalProperties": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                    },
+                },
+                "timeout_s": {
+                    "type": "number",
+                    "description": f"Per-instance seconds to wait (default {DEFAULT_TIMEOUT_S}, max {MAX_TIMEOUT_S}).",
+                },
+            },
+            "required": ["fetches"],
+        },
+    },
+    {
         "name": "list_instances",
         "description": (
             "List this project's vast.ai rentals (filtered by label prefix, default "
@@ -538,6 +816,7 @@ TOOLS = [
 TOOL_HANDLERS = {
     "remote_exec": remote_exec,
     "sync_flush": sync_flush,
+    "fetch_files": fetch_files,
     "list_instances": list_instances,
 }
 
