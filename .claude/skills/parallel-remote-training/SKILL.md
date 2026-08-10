@@ -85,15 +85,31 @@ online incrementally):
    `sweep_pool.py eta` has real data.
 
 For periodic unattended health-checking of a sweep already underway
-(stall/failure detection, topping off, and *recommending* — not
-autonomously performing — rebalancing), see
-`.claude/skills/parallel-remote-training/monitor_brief.md`.
+(stall/failure detection, auto-retry of known-flaky failures, rebalancing,
+and instance-down handling — all monitor-executed, not just recommended),
+see `.claude/skills/parallel-remote-training/monitor_brief.md`.
+
+## Scheduling the check-in agent
+
+Once the pool is fully assigned (every instance's queue holds the whole
+remaining sweep, not just an initial chunk — see above), set up a
+recurring **~2h** check via the `schedule` skill, running as a fresh
+agent each time (no standing context growth, no stale/uncached-token
+cost). The routine's stored prompt is `monitor_brief.md`'s only input —
+it must carry the sweep's `instances.json` path explicitly, and may
+carry extra sweep-specific detail if you judge it relevant (see
+`monitor_brief.md`'s "Input" section). As of this writing, run it as a
+**local** scheduled agent, not a cloud routine (cloud support here is
+unevaluated).
 
 ## Ramping concurrency
 
 Bump the concurrency file by **one** at a time. Wait for the rate to
-re-stabilize before judging it. Cross-check against `nvidia-smi` GPU
-utilization%, which should track aggregate it/s.
+re-stabilize before judging it, in poll chunks of **≤3 min** each (never
+one long sleep) — this both keeps checks responsive and stays under the
+~5min prompt-cache TTL, so your own context doesn't go cold mid-probe.
+Cross-check against `nvidia-smi` GPU utilization%, which should track
+aggregate it/s.
 
 - A drop in **both** rate and GPU util after adding a worker is a real
   regression, not noise. Back off by killing just the newest worker:
@@ -120,8 +136,8 @@ utilization%, which should track aggregate it/s.
   does — see `vast_pool_manager.sh`'s header comment. Skipping this can
   desync `launched_idx.txt` from `queue.txt`'s actual contents, which
   corrupts every downstream decision (trim, ETA, top-off sizing).
-- **Trim/reassign is not yet proven safe to run unattended** against an
-  actively-launching manager (only tested against a paused one locally,
-  never with real concurrent load) — a monitor agent should *recommend*
-  a trim/rebalance to the user rather than execute it autonomously, until
-  someone's watched it happen live at least once.
+- **Trim/reassign is proven safe against an actively-launching manager**
+  (validated live: lock contention against a real 5s poll loop, correct
+  undispatched-tail isolation, `launched_idx` untouched) — a monitor
+  agent may execute rebalancing autonomously, not just recommend it (see
+  `monitor_brief.md`).
