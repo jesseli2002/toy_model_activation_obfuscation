@@ -29,6 +29,8 @@ block instead of num_x+1).
 First MLP block erases c by construction.
 """
 
+import os
+
 import sympy as sp
 import torch
 from jaxtyping import Float
@@ -185,6 +187,43 @@ def reference_task_losses(
     }
 
 
+def _no_c_moments(
+    x_high: float, c_low: float, c_high: float
+) -> tuple[sp.Symbol, list[tuple[sp.Expr, sp.Expr, sp.Expr, sp.Expr]]]:
+    """Piecewise mean/variance over c of sat(x,-c,c), for x >= 0.
+
+    Returns (x_symbol, [(x_lo, x_hi, mean, var), ...]) with c ~ U[c_low,c_high].
+    The mean is the best c-blind predictor of the target and the variance is the
+    loss it incurs; both halves of that pair are derived here so the analytic
+    floor and its plot cannot drift apart. Only x >= 0 is covered: sat is odd in
+    x, so the mean is odd and the variance even.
+    """
+    x, c = sp.symbols("x c", real=True)
+    xh = sp.nsimplify(x_high)
+    cl, ch = sp.nsimplify(c_low), sp.nsimplify(c_high)
+
+    def avg_c(expr, lo, hi):
+        """E over the sub-range [lo,hi] of c ~ U[cl,ch] (unnormalized by the
+        sub-range's own width -- the pieces below sum to a full expectation)."""
+        return sp.integrate(expr, (c, lo, hi)) / (ch - cl)
+
+    # On x >= 0, sat(x,-c,c) = min(x,c); the pieces split on where x sits
+    # w.r.t. [cl,ch] (min is x below cl, c above ch, and mixed in between).
+    regions = []
+    for lo, hi, mean, sq in [
+        (sp.Integer(0), cl, x, x**2),
+        (
+            cl,
+            ch,
+            avg_c(c, cl, x) + avg_c(x, x, ch),
+            avg_c(c**2, cl, x) + avg_c(x**2, x, ch),
+        ),
+        (ch, xh, avg_c(c, cl, ch), avg_c(c**2, cl, ch)),
+    ]:
+        regions.append((lo, hi, sp.simplify(mean), sp.simplify(sq - mean**2)))
+    return x, regions
+
+
 def no_c_task_loss(
     x_low: float,
     x_high: float,
@@ -209,30 +248,10 @@ def no_c_task_loss(
     the floor.
     """
     assert x_low == -x_high and 0 < c_low <= c_high <= x_high
-    x, c = sp.symbols("x c", real=True)
     xh = sp.nsimplify(x_high)
-    cl, ch = sp.nsimplify(c_low), sp.nsimplify(c_high)
+    x, regions = _no_c_moments(x_high, c_low, c_high)
 
-    def avg_c(expr, lo, hi):
-        """E over the sub-range [lo,hi] of c ~ U[cl,ch] (unnormalized by the
-        sub-range's own width -- the pieces below sum to a full expectation)."""
-        return sp.integrate(expr, (c, lo, hi)) / (ch - cl)
-
-    # sat(x,-c,c) is odd in x, so Var_c is even: integrate over x >= 0 and
-    # double. There sat = min(x,c), splitting on where x sits w.r.t. [cl,ch].
-    regions = []  # (x_lo, x_hi, Var_c(min(x,c)))
-    for lo, hi, mean, sq in [
-        (sp.Integer(0), cl, x, x**2),
-        (
-            cl,
-            ch,
-            avg_c(c, cl, x) + avg_c(x, x, ch),
-            avg_c(c**2, cl, x) + avg_c(x**2, x, ch),
-        ),
-        (ch, xh, avg_c(c, cl, ch), avg_c(c**2, cl, ch)),
-    ]:
-        regions.append((lo, hi, sp.simplify(sq - mean**2)))
-
+    # Var_c is even in x, so integrate over x >= 0 and double.
     # x's density on x > 0 (symmetric), piecewise-constant; `breaks` are where
     # it switches, so the x-integrals below can be split there.
     if x_p_outer is None:
@@ -252,11 +271,72 @@ def no_c_task_loss(
             return (1 - p_out) / (2 * t) if inner else p_out / (2 * (xh - t))
 
     total = sp.Integer(0)
-    for lo, hi, var in regions:
+    for lo, hi, _mean, var in regions:
         edges = sorted({lo, hi} | {b for b in breaks if lo < b < hi})
         for a, b in zip(edges, edges[1:]):
             total += 2 * density(a, b) * sp.integrate(var, (x, a, b))
     return float(sp.simplify(total))
+
+
+def plot_no_c_predictor(
+    x_low: float,
+    x_high: float,
+    c_low: float,
+    c_high: float,
+    out_path: str = "plot/no_c_predictor.png",
+    n_c: int = 4,
+    n_points: int = 1001,
+) -> str:
+    """Plot the best c-blind predictor f(x) = E_c[sat(x,-c,c)] behind
+    no_c_task_loss, against a sample of the sat targets it has to average over.
+
+    Shares _no_c_moments with the loss, so the curve shown is exactly the
+    predictor whose loss that function reports. Returns the written path.
+    """
+    import matplotlib.pyplot as plt
+    import numpy as np
+
+    assert x_low == -x_high and 0 < c_low <= c_high <= x_high
+    x, regions = _no_c_moments(x_high, c_low, c_high)
+    # Piecewise over x >= 0, extended to x < 0 by oddness below.
+    mean_pw = sp.Piecewise(
+        *[(mean, x <= hi) for _, hi, mean, _ in regions[:-1]], (regions[-1][2], True)
+    )
+    mean_fn = sp.lambdify(x, mean_pw, "numpy")
+
+    xs = np.linspace(x_low, x_high, n_points)
+    pred = np.sign(xs) * mean_fn(np.abs(xs))
+    loss = no_c_task_loss(x_low, x_high, c_low, c_high)
+
+    fig, ax = plt.subplots(figsize=(6, 4.2))
+    for i, c_val in enumerate(np.linspace(c_low, c_high, n_c)):
+        ax.plot(
+            xs,
+            np.clip(xs, -c_val, c_val),
+            linestyle="--",
+            color="black",
+            linewidth=1.0,
+            alpha=0.7,
+            label="sat(x,-c,c) for sampled c" if i == 0 else None,
+        )
+    ax.plot(
+        xs, pred, color="tab:blue", linewidth=2.2, label=r"$E_c[\mathrm{sat}(x,-c,c)]$"
+    )
+    ax.axhline(0, color="0.8", linewidth=0.8, zorder=0)
+    ax.axvline(0, color="0.8", linewidth=0.8, zorder=0)
+    ax.set_xlabel("x")
+    ax.set_ylabel("prediction")
+    ax.set_title(
+        f"Best c-blind predictor, c ~ U[{c_low:g}, {c_high:g}]\n"
+        f"per-coordinate L_task floor = {loss:.4f}"
+    )
+    ax.legend(loc="lower right", fontsize=9)
+    fig.tight_layout()
+
+    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
+    fig.savefig(out_path, dpi=150)
+    plt.close(fig)
+    return out_path
 
 
 def _verify_model(
@@ -324,4 +404,8 @@ if __name__ == "__main__":
     # _verify_model()
     # _verify_obfuscator()
 
-    print(no_c_task_loss(-3, 3, 1, 2))
+    import config
+
+    bounds = (config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH)
+    print(f"[analytic] c-blind minimum L_task = {no_c_task_loss(*bounds):.6f}")
+    print(f"[analytic] wrote {plot_no_c_predictor(*bounds)}")
