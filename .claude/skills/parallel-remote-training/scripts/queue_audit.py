@@ -244,6 +244,26 @@ def check_duplicates(entries, findings):
                 )
             )
             continue
+        # Sequential resumes of one tag are the normal retry path and any
+        # number of them is fine -- but only because each is appended after
+        # the previous one was seen to fail, so it is already dispatched.
+        # Two occurrences still awaiting dispatch can be launched in the same
+        # poll (the manager fills free slots without looking at tags), which
+        # puts two live processes on one runs/<tag>.
+        undispatched = [e for e in group if e["dispatched"] is False]
+        if len(undispatched) > 1:
+            findings.append(
+                (
+                    "ERROR",
+                    "concurrent-dispatch-risk",
+                    f"tag {tag!r} has {len(undispatched)} occurrences still awaiting "
+                    f"dispatch on {group[0]['instance']} -- these can start "
+                    "concurrently and clobber each other, even though each is a "
+                    "valid resume on its own. Trim all but one.\n      "
+                    + "\n      ".join(_where(e) for e in undispatched),
+                )
+            )
+
         # Same instance, same tag: fine only if every repeat is a --resume of
         # the first occurrence, which is what the retry path emits.
         if len(group) > 1:

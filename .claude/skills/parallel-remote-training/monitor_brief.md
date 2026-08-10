@@ -103,7 +103,10 @@ back on and typically nobody is watching live.
    that doesn't own the tag per `assignments.json`, then re-audit); one
    with an already-dispatched occurrence is two runs clobbering a single
    `runs/<tag>` right now — stop, don't trim, surface it to the user and
-   `handoff.md` immediately. `unregistered`/`misplaced` findings mean
+   `handoff.md` immediately. A `concurrent-dispatch-risk` finding means
+   one tag has two occurrences still awaiting dispatch — most likely a
+   second retry appended before the first was launched; trim all but one
+   before they start together. `unregistered`/`misplaced` findings mean
    something reached a queue outside `sweep_pool.py`; log them and re-run
    the audit after correcting the registry.
 8. **Any live concurrency experiment you choose to run** (bump

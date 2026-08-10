@@ -108,7 +108,10 @@ To verify the invariant against what is *actually* on the remotes:
    destination is fixed by the server, not caller-chosen.
 3. `queue_audit.py check --instances instances.json --out-dir POOL_DIR`
    exits nonzero on any ERROR: the same tag queued on two instances, a
-   non-resume repeat on one instance, a tag with no registry row, or a tag
+   non-resume repeat on one instance, two occurrences of one tag both still
+   awaiting dispatch (the manager fills free slots without looking at tags,
+   so those can start together — repeated `--resume` retries are fine, but
+   only one may be pending at a time), a tag with no registry row, or a tag
    queued somewhere other than its registered owner. Duplicates are
    classified by `launched_idx` — still in the undispatched tail means
    `queue_trim.sh` can fix it, already dispatched means it is clobbering now

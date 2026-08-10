@@ -224,11 +224,29 @@ def test_requeue_refuses_a_tag_that_was_never_registered(sweep):
     assert "no assignment row" in result.stderr
 
 
-def test_a_resume_repeat_in_a_queue_is_not_a_duplicate(sweep):
-    # The retry path legitimately puts a tag on its instance's queue twice.
+@pytest.mark.parametrize("n_resumes", [1, 2, 3])
+def test_repeated_resumes_of_one_tag_are_not_flagged(sweep, n_resumes):
+    # A run can fail recoverably more than once; each retry appends another
+    # --resume. Every one of them is legitimate, so there is no cap here --
+    # what keeps it safe is that each is appended only after the previous was
+    # seen to fail, i.e. already dispatched.
     first = sweep.queue_of("vtao").splitlines()[0]
-    sweep.place("vtao", "queue", sweep.queue_of("vtao") + first + " --resume\n")
+    queue = sweep.queue_of("vtao") + (first + " --resume\n") * n_resumes
+    sweep.place("vtao", "queue", queue)
+    sweep.place("vtao", "launched_idx", str(len(queue.splitlines())))
+
     assert "no findings" in sweep.audit()
+
+
+def test_two_undispatched_resumes_of_one_tag_are_flagged(sweep):
+    # The manager fills free slots without looking at tags, so two queued-but-
+    # unlaunched occurrences can start together and clobber one runs/<tag> --
+    # even though each is a valid resume on its own.
+    first = sweep.queue_of("vtao").splitlines()[0]
+    sweep.place("vtao", "queue", sweep.queue_of("vtao") + (first + " --resume\n") * 2)
+    sweep.place("vtao", "launched_idx", "1\n")
+
+    assert "concurrent-dispatch-risk" in sweep.audit(expect_rc=1)
 
 
 def test_a_bare_repeat_in_a_queue_is_a_duplicate(sweep):
