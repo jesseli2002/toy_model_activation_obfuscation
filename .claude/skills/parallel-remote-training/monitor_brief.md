@@ -41,11 +41,14 @@ back on and typically nobody is watching live.
 
 ## Each wake, per registered instance
 
-1. **Fetch health data.** `remote_exec cat MANAGER_LOG` and `cat
-   LAUNCHED_IDX`, save locally, then run
-   `sweep_pool.py`'s underlying `pool_health.py` (or `sweep_pool.py eta`
-   for the aggregate) against the local copies — these tools read local
-   files only, they can't reach the remote themselves.
+1. **Fetch health data.** Get the `fetches` argument from `queue_audit.py
+   fetch-request --instances instances.json`, pass it to the broker's
+   `fetch_files` tool, and run `pool_health.py` (or `sweep_pool.py eta`
+   for the aggregate) against the local copies it writes — these tools
+   read local files only, they can't reach the remote themselves. Do this
+   once for all instances at the start of the wake; it also gives you the
+   queues that step 8 audits. A `remote_exec` redirect writes on the
+   remote, not here, so it is not a substitute.
 2. **Failing?** A nonzero-`rc` line in `MANAGER_LOG` — see "Auto-retry on
    failure" below before escalating; it's not automatically a human
    issue anymore.
@@ -92,7 +95,18 @@ back on and typically nobody is watching live.
    load (lock contention against an actively-launching manager) — no
    need to route this through a human anymore. Log what you moved and
    why to `handoff.md`.
-7. **Any live concurrency experiment you choose to run** (bump
+7. **Audit tag uniqueness.** `queue_audit.py check --instances
+   instances.json --out-dir POOL_DIR` against the copies fetched in step
+   1. Nonzero exit means at least one ERROR. Treat a
+   `duplicate-across-instances` whose occurrences are all still
+   undispatched as yours to fix (`queue_trim.sh` the copy on the instance
+   that doesn't own the tag per `assignments.json`, then re-audit); one
+   with an already-dispatched occurrence is two runs clobbering a single
+   `runs/<tag>` right now — stop, don't trim, surface it to the user and
+   `handoff.md` immediately. `unregistered`/`misplaced` findings mean
+   something reached a queue outside `sweep_pool.py`; log them and re-run
+   the audit after correcting the registry.
+8. **Any live concurrency experiment you choose to run** (bump
    `conc.txt`, observe, keep/revert) must poll in chunks of **≤3
    minutes** per wait step — never one long sleep — both to keep your
    own context from going stale mid-wake and to stay under the ~5min
@@ -117,12 +131,18 @@ a sweep run through the night unattended.
    because `save_checkpoint`'s atomic-write means it can't be
    half-written — the failure mode here is corrupted *content*, not a
    torn write.
-   - Checkpoint looks clean → requeue `--resume --tag <tag>`, appended
-     to that instance's queue via `queue_append.sh` (under the lock).
+   - Checkpoint looks clean → `sweep_pool.py requeue --instance ALIAS
+     --resume-tag <tag>`.
    - Checkpoint corrupted, or the check is inconclusive → don't resume.
-     Requeue a from-scratch run under `<tag>_retry1` (increment if that
-     tag's already taken) instead, appended at the end of the queue —
-     not the front, so it doesn't delay other pending work.
+     `sweep_pool.py requeue --instance ALIAS --retry-tag <tag>` instead,
+     which allocates the next free `<tag>_retryN` for you.
+
+   Either way, push the delta it writes with `queue_append.sh` (under the
+   lock), appended at the end of the queue — not the front, so it doesn't
+   delay other pending work. Go through `requeue` rather than composing
+   the line yourself: it is what puts the retry in `assignments.json`, and
+   a retry that never lands there is invisible to the guarantee that no
+   tag reaches two instances (see SKILL.md, "Keeping tags unique").
 4. Log every retry decision (tag, reason, resume vs. from-scratch) to
    `handoff.md`.
 
@@ -137,15 +157,19 @@ mechanism):
    trim/checkpoint-validate what you can't reach.
 2. Everything past its last-known `launched_idx` (from your most recent
    successful poll of it) was never dispatched — move it straight to
-   another live instance's queue via `queue_append.sh`. Nothing to trim
-   remotely; the source is gone, not just over-provisioned.
+   another live instance's queue via `sweep_pool.py reassign` (pointing
+   `--lines-file` at that undispatched tail, taken from your last fetched
+   queue copy) plus `queue_append.sh`. Nothing to trim remotely; the
+   source is gone, not just over-provisioned. Going through `reassign`
+   rather than appending directly is what keeps `assignments.json`
+   pointing at the instance that now owns each tag.
 3. Everything at-or-before that `launched_idx` without a "finished" line
    in your last-known `MANAGER_LOG` has unknown fate. Don't attempt
    `--resume` elsewhere — cross-instance checkpoint transfer isn't
    supported by the current one-way sync (local↔each-remote, not
-   remote↔remote). Treat it like an inconclusive checkpoint check: fresh
-   run under `<tag>_retry1` on a different live instance, appended at
-   that queue's end.
+   remote↔remote), and `requeue --resume-tag` will refuse it. Treat it
+   like an inconclusive checkpoint check: `sweep_pool.py requeue
+   --instance OTHER --retry-tag <tag>`, appended at that queue's end.
 4. Mark the instance distinctly dead in `handoff.md` (not just
    "stalled") so future wakes stop spending a `remote_exec` attempt on
    it. Re-enabling it is a human call — don't un-quarantine it yourself
@@ -164,7 +188,8 @@ wake.
 Sweep is complete when: the pending pool is empty (`sweep_pool.py
 status`/your sweep's manifest-script `status` shows 0 pending) AND every
 registered instance's queue has drained AND no `stalled`/nonzero
-`failure_count` remains unexplained. This is a normal, expected outcome
+`failure_count` remains unexplained AND `queue_audit.py check` exits
+clean. This is a normal, expected outcome
 on any given wake — no action needed beyond noting it in `handoff.md`.
 Report it plainly rather than continuing to poll — whatever scheduled
 this brief should stop firing once you say so.
