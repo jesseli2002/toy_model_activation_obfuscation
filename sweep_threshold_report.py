@@ -48,7 +48,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from adversarial_report import plot_learned_curves
-from checkpoint_lib import load_model
+from checkpoint_lib import load_model, resolve_adv_config
 from probe_lib import LinearBoundary, save_plot
 from sweep_lib.discovery import matching_tags
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
@@ -88,10 +88,12 @@ def _make_curve_plots(
     os.makedirs(out_dir, exist_ok=True)
     for idx in _select_rank_indices(n):
         tag = tags_by_loss[idx]
-        model, _ck = load_model(tag, CKPT, DEVICE)
+        model, ck = load_model(tag, CKPT, DEVICE)
+        adv_cfg = resolve_adv_config(ck)
+        noise = adv_cfg.resid_noise_std if adv_cfg is not None else 0.0
         title = f"rank{idx:03d}_{tag}_{metric_tag}{losses[idx]:.4g}"
         file_tag = f"rank{idx:03d}_{metric_tag}{losses[idx]:.4g}"
-        plot_learned_curves(model, title, out_dir, filename_tag=file_tag)
+        plot_learned_curves(model, title, out_dir, filename_tag=file_tag, noise=noise)
 
 
 def _plot_probe_hist_auroc(

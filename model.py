@@ -23,6 +23,13 @@ from torch import Tensor
 
 from config import ACTIVATION_CHOICES, ResidualMLPConfig
 
+# What `ResidualMLP.forward`/`task_output` accept for `noise`: a std (drawn
+# fresh in-call, see `generate_noise`) or a pre-drawn tensor from
+# `generate_noise` (lets a caller replay identical noise across several
+# forward passes). See `forward`'s docstring for the `None` case, where
+# accepted.
+Noise = Float[Tensor, "num_blocks-1 batch d_model"] | float
+
 
 class ResidualMLPBlock(nn.Module):
     def __init__(
@@ -159,7 +166,7 @@ class ResidualMLP(nn.Module):
         self,
         x_full: Float[Tensor, "batch d_in"],
         return_cache: bool = False,
-        noise: Float[Tensor, "num_blocks-1 batch d_model"] | float | None = None,
+        noise: Noise | None = None,
         generator: torch.Generator | None = None,
     ) -> (
         Float[Tensor, "batch d_in"]
@@ -196,7 +203,7 @@ class ResidualMLP(nn.Module):
     def task_output(
         self,
         x_full: Float[Tensor, "batch d_in"],
-        noise: Float[Tensor, "num_blocks-1 batch d_model"] | float | None = None,
+        noise: Noise | None = None,
         generator: torch.Generator | None = None,
     ) -> Float[Tensor, "batch num_x"]:
         """The first num_x outputs (the part the loss constrains)."""

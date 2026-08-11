@@ -67,8 +67,8 @@ class TestHistoryEntry:
         assert d["iter"] == 7
 
     def test_extra_adds_new_keys(self):
-        d = _history_entry(_make_record(), max_err=1e-3)
-        assert d["max_err"] == 1e-3
+        d = _history_entry(_make_record(), custom_field=1e-3)
+        assert d["custom_field"] == 1e-3
 
     def test_extra_overrides_colliding_keys(self):
         d = _history_entry(_make_record(loss=1.0), loss=0.5)

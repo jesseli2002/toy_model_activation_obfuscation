@@ -135,7 +135,7 @@ from analytic import reference_task_losses
 from data import sample_batch
 from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
-from data import eval_max_err
+from model import Noise
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -157,15 +157,19 @@ def plot_learned_curves(
     model,
     tag,
     plot_dir,
+    noise: Noise,
     c_values=(1.0, 1.333, 1.667, 2.0),
     show=False,
     filename_tag=None,
+    generator: torch.Generator | None = None,
 ):
     """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
     `tag` names the plot title; `filename_tag` (defaults to `tag`) names the
     output file, for callers that want a shorter/different filename than the
     title (e.g. sweep_threshold_report.py, where the title carries the full
-    run tag but the filename stays short)."""
+    run tag but the filename stays short). `noise`/`generator` are passed
+    straight through to `model.task_output` -- pass the checkpoint's own
+    resid_noise_std so the curves reflect what the model actually outputs."""
     num_x = model.num_x
     device = next(model.parameters()).device
     xs = torch.linspace(-3, 3, 400, device=device)
@@ -181,7 +185,7 @@ def plot_learned_curves(
             x = torch.zeros(len(xs), num_x, device=device)
             x[:, j] = xs
             x_full = torch.cat([x, torch.full((len(xs), 1), c, device=device)], dim=1)
-            y = model.task_output(x_full)[:, j]
+            y = model.task_output(x_full, noise=noise, generator=generator)[:, j]
             ax.plot(xs.cpu().numpy(), y.cpu().numpy(), alpha=0.5, zorder=5)
         ax.plot(
             xs.cpu().numpy(),
@@ -252,13 +256,7 @@ def _plot_training_traces(
     if not pts:
         return
     its = [h["iter"] for h in pts]
-    fig, (ax_err, ax_auroc, ax_loss) = plt.subplots(1, 3, figsize=(16, 4.2))
-
-    ax_err.semilogy(its, [h["max_err"] for h in pts], color="crimson")
-    ax_err.set_title("task fidelity (price of hiding)")
-    ax_err.set_xlabel("iter")
-    ax_err.set_ylabel("max abs error")
-    ax_err.grid(True, alpha=0.3)
+    fig, (ax_auroc, ax_loss) = plt.subplots(1, 2, figsize=(11, 4.2))
 
     snapshots = _auroc_snapshots(tag, device, eval_noise_mult)
     if snapshots:
@@ -632,11 +630,6 @@ def _build_report(args, model, adv_cfg, result: "AnalysisResult"):
     )
     emit()
 
-    # --- 1. task fidelity ---
-    emit(f"## 1. Task fidelity")
-    emit(f"max abs elementwise error (c~U[1,2]): {result.me:.3e}")
-    emit()
-
     if adv_cfg is None:
         emit(
             "## 2+. Probe analysis skipped — c-blind demonstration run "
@@ -693,10 +686,9 @@ def _build_report(args, model, adv_cfg, result: "AnalysisResult"):
 @dataclasses.dataclass
 class AnalysisResult:
     """Everything computed in phase 1, needed by both the report (phase 2)
-    and the plots (phase 3). The probe-derived fields are None for a c-blind
-    checkpoint (adv_cfg is None) -- see `_run_analysis`."""
+    and the plots (phase 3). Every field is None for a c-blind checkpoint
+    (adv_cfg is None) -- see `_run_analysis`."""
 
-    me: float
     gap: dict | None
     gap_plot_inputs: dict | None
     heldout: dict | None
@@ -716,16 +708,13 @@ def _run_analysis(
 ) -> AnalysisResult:
     """Phase 1: all data generation, no plotting or printing.
 
-    For a c-blind checkpoint (adv_cfg is None), only task fidelity is
-    meaningful (see the c-blind branch in write_summary), so the
-    probe-derived fields come back None."""
-    me = eval_max_err(model, g, device=device)
-
+    For a c-blind checkpoint (adv_cfg is None), there is no probe to run --
+    see the c-blind branch in `_build_report` -- so every field comes back
+    None."""
     if adv_cfg is None:
-        return AnalysisResult(me, None, None, None, None)
+        return AnalysisResult(None, None, None, None)
 
     hidden_layers = list(range(1, model.num_blocks))
-    # See --train-noise-mult/--eval-noise-mult help.
     train_noise_std = adv_cfg.resid_noise_std * args.train_noise_mult
     eval_noise_std = adv_cfg.resid_noise_std * args.eval_noise_mult
 
@@ -774,7 +763,7 @@ def _run_analysis(
             device,
         )
 
-    return AnalysisResult(me, gap, gap_plot_inputs, heldout, linear_y_r2)
+    return AnalysisResult(gap, gap_plot_inputs, heldout, linear_y_r2)
 
 
 def _make_plots(args, model, adv_cfg, result: AnalysisResult, plot_dir, device):
@@ -799,7 +788,10 @@ def _make_plots(args, model, adv_cfg, result: AnalysisResult, plot_dir, device):
             args.eval_noise_mult,
             show=args.show,
         )
-    plot_learned_curves(model, args.tag, plot_dir, show=args.show)
+    plot_noise = (
+        adv_cfg.resid_noise_std * args.eval_noise_mult if adv_cfg is not None else 0.0
+    )
+    plot_learned_curves(model, args.tag, plot_dir, show=args.show, noise=plot_noise)
 
     if adv_cfg is not None:
         hidden_layers = list(range(1, model.num_blocks))

@@ -127,17 +127,6 @@ def eval_loss(model: ResidualMLP, gen: torch.Generator, device: str) -> float:
     return total / EVAL_BATCHES
 
 
-@torch.no_grad()
-def eval_max_err(model: ResidualMLP, gen: torch.Generator, device: str) -> float:
-    """Same metric as `data.eval_max_err` (clean, no noise), but blinding c
-    first -- adversarial_report.py's training-trace plot reads this from
-    history.jsonl, and the model was trained without c, so scoring it with c
-    present would evaluate a distribution it never saw."""
-    x_full, y = sample_batch(EVAL_BATCH, model.num_x, generator=gen, device=device)
-    pred = model.task_output(blind_c(x_full))
-    return (pred - y).abs().max().item()
-
-
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     torch.manual_seed(SEED)
@@ -224,7 +213,6 @@ def main(args):
                     "l_probe": float("nan"),
                     "lam_eff": None,
                     "n_exploded": 0,
-                    "max_err": eval_max_err(model, gen, device),
                 }
                 hist.write(json.dumps(entry) + "\n")
 

@@ -90,6 +90,7 @@ from tqdm import tqdm
 import config
 from adversarial_report import _linear_y_reconstruction, _steer_vectors
 from data import eval_task_loss, sample_batch
+from model import Noise
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -119,6 +120,7 @@ class PublishData:
 
     task_loss: float
     err_samples: np.ndarray  # (n_err_samples,) per-input Euclidean error
+    noise: Noise  # adv_cfg.resid_noise_std -- see _plot_learned_curves
     hidden_layers: list[int]
     gap_plot_inputs: (
         dict  # {layer: {"w_dom", "midpoint", "w_probe", "b_probe", "X_te", "y_te"}}
@@ -129,7 +131,7 @@ class PublishData:
 
 
 @torch.no_grad()
-def _sample_errors(model, n, g, device) -> np.ndarray:
+def _sample_errors(model, n, g, device, noise: Noise) -> np.ndarray:
     """Per-input RMS error between the model's task output and the true
     sat(x, c), over `n` fresh c ~ U[C_LOW, C_HIGH] inputs.
 
@@ -138,7 +140,7 @@ def _sample_errors(model, n, g, device) -> np.ndarray:
     per-coordinate errors of fixed typical size, which would make the
     histogram's scale an artifact of num_x rather than of the model."""
     x_full, y = sample_batch(n, model.num_x, generator=g, device=device)
-    pred = model.task_output(x_full)
+    pred = model.task_output(x_full, noise=noise, generator=g)
     return ((pred - y) ** 2).mean(dim=-1).sqrt().cpu().numpy()
 
 
@@ -206,7 +208,9 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         x_threshold=adv_cfg.x_threshold,
         noise=adv_cfg.resid_noise_std,
     )
-    err_samples = _sample_errors(model, args.n_err_samples, g, device)
+    err_samples = _sample_errors(
+        model, args.n_err_samples, g, device, noise=adv_cfg.resid_noise_std
+    )
 
     hidden_layers = list(range(1, model.num_blocks))
     # See --train-noise-mult/--eval-noise-mult help.
@@ -248,6 +252,7 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
     return PublishData(
         task_loss=task_loss,
         err_samples=err_samples,
+        noise=adv_cfg.resid_noise_std,
         hidden_layers=hidden_layers,
         gap_plot_inputs=gap_plot_inputs,
         auroc=auroc,
@@ -260,7 +265,7 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
 # Phase 2: plots (titles deliberately omit the tag -- see module docstring)
 # ----------------------------------------------------------------------------
 @torch.no_grad()
-def _plot_learned_curves(model, task_loss, plot_dir, tag, show=False):
+def _plot_learned_curves(model, task_loss, plot_dir, tag, noise: Noise, show=False):
     """2x2 grid of learned y(x) per coordinate, one panel per fixed c."""
     c_values = (1.0, 1.333, 1.667, 2.0)
     num_x = model.num_x
@@ -272,7 +277,7 @@ def _plot_learned_curves(model, task_loss, plot_dir, tag, show=False):
             x = torch.zeros(len(xs), num_x, device=device)
             x[:, j] = xs
             x_full = torch.cat([x, torch.full((len(xs), 1), c, device=device)], dim=1)
-            y = model.task_output(x_full)[:, j]
+            y = model.task_output(x_full, noise=noise)[:, j]
             ax.plot(xs.cpu().numpy(), y.cpu().numpy(), alpha=0.5, zorder=5)
         ax.plot(
             xs.cpu().numpy(),
@@ -624,7 +629,9 @@ def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
 
 
 def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
-    _plot_learned_curves(model, data.task_loss, plot_dir, tag, show=show)
+    _plot_learned_curves(
+        model, data.task_loss, plot_dir, tag, noise=data.noise, show=show
+    )
     _plot_error_histogram(data.err_samples, plot_dir, tag, show=show)
     _plot_auroc_line(data.auroc, data.hidden_layers, plot_dir, tag, show=show)
     _plot_roc_noise_grid(data.noise_roc, plot_dir, tag, show=show)

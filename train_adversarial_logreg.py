@@ -274,7 +274,6 @@ from sklearn.exceptions import ConvergenceWarning
 
 from data import sample_batch
 from model import ResidualMLP, ResidualMLPConfig
-from data import eval_max_err
 from probe_backend import build_probe_pipeline, fit_probe, resolve_probe_backend
 from stableadamw import StableAdamW
 
@@ -1247,19 +1246,17 @@ def main(args):
 
     t0 = time.time()
     rate_meter = EMARateMeter(start_iter, window=args.rate_meter_window)
-    max_err = None
     last_logged_iter = None
 
     def log_iter():
         """Append a history entry for `record`'s iteration and print it."""
-        nonlocal max_err, last_logged_iter
-        max_err = eval_max_err(model, gen, device=device)
-        _append_history(hist_path, _history_entry(record, max_err=max_err))
+        nonlocal last_logged_iter
+        _append_history(hist_path, _history_entry(record))
         last_logged_iter = record.iter
         rate = rate_meter.update(record.iter)
         print(
             f"iter {record.iter:>6d}  loss {record.loss:.3e}  task {record.l_task:.3e}  "
-            f"probe {record.l_probe:.3e}  max_err {max_err:.3e}  "
+            f"probe {record.l_probe:.3e}  "
             f"n_exploded {record.n_exploded}  {rate:.1f} it/s"
         )
 
@@ -1315,9 +1312,8 @@ def main(args):
             print(f"[save] {last_path} -> {os.path.basename(checkpoint())}")
     # _defer_keyboard_interrupt re-raises here if a Ctrl-C arrived above.
 
-    max_err_str = "n/a" if max_err is None else f"{max_err:.3e}"
     print(
-        f"[done] iter {record.iter}  best_loss {best_loss:.3e}  final max_err {max_err_str}  "
+        f"[done] iter {record.iter}  best_loss {best_loss:.3e}  "
         f"elapsed {time.time()-t0:.1f}s"
     )
     print(f"[done] checkpoints in {run_ckpt_dir}, history in {hist_path}")
