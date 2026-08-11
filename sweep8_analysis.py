@@ -54,7 +54,6 @@ settings misses the cache rather than reusing a stale value. Pass
 import argparse
 import re
 
-
 PLOT_DIR = "plot/sweep8"
 RUN_GLOB = "sweep8_nx*_tr*"
 TAG_RE = re.compile(r"sweep8_nx(\d+)_dm(\d+)_mlp(\d+)_lam([0-9\.]+)_tr(\d+)$")
@@ -97,17 +96,16 @@ if __name__ == "__main__":
     args = parse_args()
 
 import glob
-import json
 import os
 from typing import NamedTuple
 
-import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 from sweep_lib.outcomes import BandSpec
+from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -210,36 +208,6 @@ def _collect_run_stats(
     return stats, scatter_points
 
 
-def _draw_bars(
-    ax,
-    positions: list[float],
-    stats_at: list[RunStats],
-    n_bands: int,
-    labels: list[str],
-    colors: list[str],
-    width: float = 0.6,
-    legend: bool = False,
-) -> None:
-    """Draw one set of stacked outcome bars at the given x positions."""
-    for i, (x, s) in enumerate(zip(positions, stats_at)):
-        bottom = 0.0
-        # Draw "most hidden" at the bottom up to "failed" on top, matching
-        # sweep7_analysis's stack order.
-        for band in range(n_bands - 1, -1, -1):
-            ax.bar(
-                x,
-                s.frac[band],
-                bottom=bottom,
-                width=width,
-                color=colors[band],
-                edgecolor="black",
-                linewidth=0.4,
-                label=labels[band] if legend and i == 0 else None,
-            )
-            bottom += s.frac[band]
-        ax.text(x, 1.01, f"n={s.n_ok}", ha="center", va="bottom", fontsize=7)
-
-
 def _assert_lam0_clean(
     run_stats: dict[RunKey, RunStats], sizes: list[tuple[int, int, int]], context: str
 ) -> None:
@@ -269,13 +237,17 @@ def _plot_main_sweep(
     sizes = sorted({k[:3] for k in run_stats if _is_main_sweep(k)}, key=lambda s: s[0])
     _assert_lam0_clean(run_stats, sizes, context="main sweep")
 
-    labels = BANDS.labels()
-    colors = BANDS.colors()
-
     fig, ax = plt.subplots(figsize=(1.2 * len(sizes) + 1.5, 4.2))
     lam_stats = [run_stats[(*s, lam)] for s in sizes if (*s, lam) in run_stats]
     lam_pos = [i for i, s in enumerate(sizes) if (*s, lam) in run_stats]
-    _draw_bars(ax, lam_pos, lam_stats, n_bands, labels, colors, legend=True)
+    stacked_bars(
+        ax,
+        lam_pos,
+        [s.frac for s in lam_stats],
+        BANDS,
+        n_runs=[s.n_ok for s in lam_stats],
+        legend=True,
+    )
 
     ax.set_xticks(range(len(sizes)))
     ax.set_xticklabels([str(s[0]) for s in sizes])
@@ -305,15 +277,19 @@ def _plot_side_ray(run_stats: dict[RunKey, RunStats], n_bands: int) -> plt.Figur
     sizes = sorted({k[:3] for k in run_stats if _is_side_ray(k)}, key=lambda s: s[0])
     _assert_lam0_clean(run_stats, sizes, context="side ray")
 
-    labels = BANDS.labels()
-    colors = BANDS.colors()
-
     fig, ax = plt.subplots(figsize=(1.2 * len(sizes) + 1.5, 4.2))
     stats_at = [
         run_stats[(*s, SIDE_LAMBDA)] for s in sizes if (*s, SIDE_LAMBDA) in run_stats
     ]
     pos = [i for i, s in enumerate(sizes) if (*s, SIDE_LAMBDA) in run_stats]
-    _draw_bars(ax, pos, stats_at, n_bands, labels, colors, legend=True)
+    stacked_bars(
+        ax,
+        pos,
+        [s.frac for s in stats_at],
+        BANDS,
+        n_runs=[s.n_ok for s in stats_at],
+        legend=True,
+    )
 
     ax.set_xticks(range(len(sizes)))
     ax.set_xticklabels([str(s[0]) for s in sizes])
@@ -334,6 +310,37 @@ def _plot_side_ray(run_stats: dict[RunKey, RunStats], n_bands: int) -> plt.Figur
     )
     fig.tight_layout()
     return fig
+
+
+def _plot_loss_vs_auroc_by_size(points: list[tuple[float, float, int, float]]) -> None:
+    """One scatter per lambda of that lambda's main-sweep runs' (task loss,
+    probe AUROC), colored by num_x -- the same recomputed metrics behind the
+    outcome bars, viewed per-run instead of binned. lam=0 controls are
+    excluded, matching _plot_main_sweep.
+
+    The color scale spans every lambda's sizes, not just the one being
+    plotted, so a given num_x keeps its color across the three figures."""
+    losses, aurocs, sizes, lams = (np.array(v) for v in zip(*points))
+
+    for lam in MAIN_LAMBDAS:
+        mask = lams == lam
+        if not mask.any():
+            continue
+        fig, ax = plt.subplots(figsize=(6, 5))
+        loss_vs_auroc(
+            ax,
+            losses[mask],
+            aurocs[mask],
+            Series.ordinal(sizes[mask], "num_x"),
+            LOSS_THRESHOLD,
+            all_values=sizes,
+        )
+        ax.set_xlabel("task loss")
+        ax.set_title(f"Main sweep, $\\lambda$ = {lam:g}: task loss vs. probe AUROC")
+        ax.legend()
+        fig.savefig(
+            f"{PLOT_DIR}/main_loss_vs_auroc_scatter_lam{lam:g}.png", bbox_inches="tight"
+        )
 
 
 def main(clear_cache: bool = False) -> None:

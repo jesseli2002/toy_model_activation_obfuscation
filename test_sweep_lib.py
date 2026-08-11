@@ -160,3 +160,28 @@ def test_matches_old_sweep8_13_classify():
 def test_matches_old_band_colors(thresholds):
     spec = BandSpec(auroc_thresholds=thresholds)
     assert spec.colors() == _old_band_colors(list(thresholds))
+
+
+# ----------------------------------------------------------------------------
+# sweep_lib.plots
+# ----------------------------------------------------------------------------
+def test_categorical_series_keeps_the_callers_order():
+    """Colors and legend order follow the order the caller declared, not
+    sorted order -- sorting would put nx128 ahead of nx32."""
+    import matplotlib
+
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    from sweep_lib.plots import Series, loss_vs_auroc
+
+    groups = ["nx32", "nx64", "nx128"]
+    labels = np.array(groups * 4)
+    losses = np.linspace(0.001, 0.01, len(labels))
+    aurocs = np.linspace(0.5, 1.0, len(labels))
+
+    fig, ax = plt.subplots()
+    loss_vs_auroc(ax, losses, aurocs, Series.categorical(labels), all_values=groups)
+    legend_order = [t.split(" (")[0] for t in ax.get_legend_handles_labels()[1]]
+    plt.close(fig)
+    assert legend_order == groups

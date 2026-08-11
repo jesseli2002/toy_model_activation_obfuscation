@@ -50,7 +50,7 @@ import torch
 
 from adversarial_report import plot_learned_curves
 from checkpoint_lib import load_model
-from probe_lib import LinearBoundary, boundary_auroc, save_plot
+from probe_lib import LinearBoundary, save_plot
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"

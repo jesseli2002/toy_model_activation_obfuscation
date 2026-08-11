@@ -76,12 +76,12 @@ if __name__ == "__main__":
 import glob
 import os
 
-import matplotlib.colors as mcolors
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
+from sweep_lib.plots import Series, loss_vs_auroc, stacked_fractions
 from sweep_lib.outcomes import BandSpec
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -120,37 +120,15 @@ def _discover_tags_by_lambda() -> dict[float, list[str]]:
 
 
 def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
-    """Scatter of every run's (task loss, probe AUROC), colored by lambda
-    on a log scale. SymLogNorm rather than LogNorm so lam=0 -- which a log
-    scale can't represent -- still gets a (bottom-of-range) color, the same
-    trick the ratio x-axis above uses for the stackplot."""
+    """Scatter of every run's (task loss, probe AUROC), colored by lambda."""
     losses, aurocs, lams = (np.array(v) for v in zip(*points))
-    linthresh = lams[lams > 0].min() if np.any(lams > 0) else 1.0
-    norm = mcolors.SymLogNorm(linthresh=linthresh, vmin=lams.min(), vmax=lams.max())
 
     fig, ax = plt.subplots(figsize=(7, 5))
-    sc = ax.scatter(
-        losses,
-        aurocs,
-        c=lams,
-        cmap="viridis",
-        norm=norm,
-        edgecolor="black",
-        linewidth=0.5,
+    loss_vs_auroc(
+        ax, losses, aurocs, Series.continuous(lams, r"$\lambda$"), LOSS_THRESHOLD
     )
-    fig.colorbar(sc, ax=ax, label=r"$\lambda$")
     ax.set_xlabel("task loss")
-    ax.set_ylabel("probe AUROC")
     ax.set_title(r"Task loss vs. probe AUROC, colored by $\lambda$")
-    ax.set_xscale("log")
-    ax.grid(True, alpha=0.3)
-    # Log-scale minor tick labels (2x, 3x, ...) crowd together when the data
-    # spans less than a decade; rotating keeps them legible at any range.
-    plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
-
-    ax.axvline(
-        LOSS_THRESHOLD, linestyle="--", color="black", label="loss threshold", alpha=0.5
-    )
     ax.legend()
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
 
@@ -208,50 +186,18 @@ def _gather_sweep() -> (
 def _plot_stacked_fractions(ratios: list[float], fractions: list[np.ndarray]) -> None:
     """Stacked fraction-of-runs-per-outcome-band vs. the probe-to-task loss
     weight ratio, one stack column's worth of data per lambda."""
-    order = np.argsort(ratios)
-    x = np.array(ratios)[order]
-    frac_matrix = np.array(fractions)[order]  # (n_lambda, n_bands)
-
-    labels = BANDS.labels()
-    colors = BANDS.colors()
+    x = np.sort(np.array(ratios))
 
     fig, ax = plt.subplots(figsize=(8, 5))
-    # stackplot stacks bottom-to-top in argument order; we want "failed" on
-    # top and "most hidden" at the bottom, so feed bands in reverse.
-    stacked = frac_matrix.T[::-1]
-    ax.stackplot(
-        x,
-        *stacked,
-        labels=labels[::-1],
-        colors=colors[::-1],
-        alpha=0.9,
-    )
-    # stackplot doesn't support markers itself; overlay them on each band's
-    # upper boundary (cumulative sum) to show the underlying data points.
-    cum = np.cumsum(stacked, axis=0)
-    for row, color in zip(cum[:-1], colors[::-1][:-1]):  # don't plot top row, always 1
-        ax.plot(
-            x,
-            row,
-            marker="o",
-            ls="-",
-            color=color,
-            markeredgecolor="black",
-            markeredgewidth=0.5,
-        )
+    stacked_fractions(ax, np.array(ratios), fractions, BANDS)
 
-    SYMLOG_LINTHRESH = x[1]  # linear-region half-width (in ratio units) around lam=0
-    ax.set_xscale("symlog", linthresh=SYMLOG_LINTHRESH, linscale=0.5)
-    # ax.axvline(x[1] / 2, ls="--", lw=1, color="#52514e")
-    # ax.axvline(x[1] / 2, ls="--", lw=1, color="black")
+    # linear region around lam=0, so the ratio-0 arm has a finite position
+    ax.set_xscale("symlog", linthresh=x[1], linscale=0.5)
     ax.set_xlabel(
         r"$\lambda / (1 - \lambda)$ (ratio of probe-loss to task-loss weights)"
     )
     ax.set_ylabel("fraction of runs")
-    ax.set_ylim(0, 1)
-    ax.set_xlim(0, x[-1])
-    ax.set_title(f"Outcome vs. $\\lambda$")
-    # ax.set_title(f"Outcome vs. $\\lambda$ \n({RUN_GLOB})")
+    ax.set_title(r"Outcome vs. $\lambda$")
     ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=8)
     ax.grid(True, alpha=0.3)
 

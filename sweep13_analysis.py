@@ -47,7 +47,6 @@ full recompute.
 import argparse
 import re
 
-
 PLOT_DIR = "plot/sweep13"
 RUN_GLOB = "sweep13_layer*_tr*"
 TAG_RE = re.compile(r"sweep13_layer(\d+)_lam([0-9\.]+)_tr(\d+)$")
@@ -87,7 +86,6 @@ if __name__ == "__main__":
     args = parse_args()
 
 import glob
-import json
 import os
 from typing import NamedTuple
 
@@ -97,6 +95,7 @@ import torch
 
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 from sweep_lib.outcomes import BandSpec
+from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -177,48 +176,23 @@ def _collect_run_stats(
     return stats, scatter_points
 
 
-def _draw_bars(
-    ax,
-    positions: list[float],
-    stats_at: list[RunStats],
-    n_bands: int,
-    labels: list[str],
-    colors: list[str],
-    width: float = 0.6,
-    legend: bool = False,
-) -> None:
-    """Draw one set of stacked outcome bars at the given x positions."""
-    for i, (x, s) in enumerate(zip(positions, stats_at)):
-        bottom = 0.0
-        # Draw "most hidden" at the bottom up to "failed" on top, matching
-        # sweep7_analysis's stack order.
-        for band in range(n_bands - 1, -1, -1):
-            ax.bar(
-                x,
-                s.frac[band],
-                bottom=bottom,
-                width=width,
-                color=colors[band],
-                edgecolor="black",
-                linewidth=0.4,
-                label=labels[band] if legend and i == 0 else None,
-            )
-            bottom += s.frac[band]
-        ax.text(x, 1.01, f"n={s.n_ok}", ha="center", va="bottom", fontsize=7)
-
-
 def _plot_by_layer(
     run_stats: dict[RunKey, RunStats], lam: float, n_bands: int
 ) -> plt.Figure:
     """One panel: bars per penalized layer at `lam`."""
     layers = sorted({k[0] for k in run_stats})
-    labels = BANDS.labels()
-    colors = BANDS.colors()
 
     fig, ax = plt.subplots(figsize=(1.2 * len(layers) + 1.5, 4.2))
     lam_stats = [run_stats[(ly, lam)] for ly in layers if (ly, lam) in run_stats]
     lam_pos = [i for i, ly in enumerate(layers) if (ly, lam) in run_stats]
-    _draw_bars(ax, lam_pos, lam_stats, n_bands, labels, colors, legend=True)
+    stacked_bars(
+        ax,
+        lam_pos,
+        [s.frac for s in lam_stats],
+        BANDS,
+        n_runs=[s.n_ok for s in lam_stats],
+        legend=True,
+    )
 
     ax.set_xticks(range(len(layers)))
     ax.set_xticklabels([str(ly) for ly in layers])
@@ -255,39 +229,23 @@ def _plot_loss_vs_auroc_by_layer(
     once overplots into mush."""
     losses, aurocs, layers, lams = (np.array(v) for v in zip(*points))
     plot_layers = [ly for ly in SCATTER_LAYERS if ly in set(layers.tolist())]
-    cycle = plt.rcParams["axes.prop_cycle"].by_key()["color"]
 
     for lam in LAMBDAS:
         if not (lams == lam).any():
             continue
+        keep = (lams == lam) & np.isin(layers, plot_layers)
         fig, ax = plt.subplots(figsize=(6, 5))
-        for i, layer in enumerate(plot_layers):
-            mask = (lams == lam) & (layers == layer)
-            ax.scatter(
-                losses[mask],
-                aurocs[mask],
-                color=cycle[i % len(cycle)],
-                edgecolor="black",
-                linewidth=0.5,
-                label=f"layer {layer}",
-            )
+        loss_vs_auroc(
+            ax,
+            losses[keep],
+            aurocs[keep],
+            Series.categorical([f"layer {ly}" for ly in layers[keep]]),
+            LOSS_THRESHOLD,
+            all_values=[f"layer {ly}" for ly in plot_layers],
+        )
         ax.set_xlabel("task loss on training distribution")
         ax.set_ylabel("probe AUROC (at each run's penalized layer)")
         ax.set_title(f"$\\lambda$ = {lam:g}: task loss vs. probe AUROC")
-        ax.set_xscale("log")
-        ax.grid(True, alpha=0.3)
-        # Log-scale minor tick labels (2x, 3x, ...) crowd together when the
-        # data spans less than a decade; rotating keeps them legible at any
-        # range.
-        plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
-
-        ax.axvline(
-            LOSS_THRESHOLD,
-            linestyle="--",
-            color="black",
-            label="loss threshold",
-            alpha=0.5,
-        )
         ax.legend()
         fig.savefig(
             f"{PLOT_DIR}/loss_vs_auroc_scatter_lam{lam:g}.png", bbox_inches="tight"

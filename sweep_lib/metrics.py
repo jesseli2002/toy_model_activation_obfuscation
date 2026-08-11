@@ -25,7 +25,7 @@ from config import C_HIGH, C_LOW
 from paths import ckpt_dir
 from probe_backend import resolve_probe_backend
 from probe_lib import LinearBoundary, binary_probe_metrics_all_layers, boundary_auroc
-from sweep_lib.cache import MetricCache, cache_key, file_fingerprint, key_seed
+from sweep_lib.cache import MetricCache, cache_key, file_fingerprint
 
 # One cache for the whole sweep*.py family. Keys are exact and cover every
 # setting a value depends on, so reports with different settings coexist here

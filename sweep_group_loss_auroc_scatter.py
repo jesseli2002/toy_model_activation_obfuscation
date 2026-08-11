@@ -47,6 +47,7 @@ import matplotlib.pyplot as plt
 import torch
 
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
+from sweep_lib.plots import Series, loss_vs_auroc
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -90,35 +91,28 @@ def _plot_group_scatter(metrics: dict[str, dict], loss_metrics: list[str | int])
     """One scatter of (max loss over loss_metrics, probe AUROC), one color
     per GROUPS label. Returns `ax` so main() can read/align xlim across
     every plot after the fact."""
-    fig, ax = plt.subplots(figsize=(7, 5))
-    colors = plt.cm.tab10.colors
-
-    for (label, tags), color in zip(GROUPS.items(), colors):
-        xs, ys = [], []
+    losses, aurocs, labels = [], [], []
+    for label, tags in GROUPS.items():
         for tag in tags:
             entry = metrics.get(tag)
             if entry is None:
                 continue
-            xs.append(max(_metric_value(entry, m) for m in loss_metrics))
-            ys.append(entry["auroc"])
-        if not xs:
-            continue
-        ax.scatter(
-            xs,
-            ys,
-            color=color,
-            edgecolor="black",
-            linewidth=0.5,
-            label=f"{label} (n={len(xs)})",
-        )
+            losses.append(max(_metric_value(entry, m) for m in loss_metrics))
+            aurocs.append(entry["auroc"])
+            labels.append(label)
+
+    fig, ax = plt.subplots(figsize=(7, 5))
+    loss_vs_auroc(
+        ax,
+        losses,
+        aurocs,
+        Series.categorical(labels),
+        all_values=list(GROUPS),
+    )
 
     metric_str = " / ".join(str(m) for m in loss_metrics)
     ax.set_xlabel(f"max task loss over [{metric_str}]")
-    ax.set_ylabel("probe AUROC")
     ax.set_title(f"Loss vs. AUROC ({CKPT} ckpt), loss = max({metric_str})")
-    ax.set_xscale("log")
-    ax.grid(True, alpha=0.3)
-    plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
     ax.legend(fontsize=8)
     fig.tight_layout()
     return ax
