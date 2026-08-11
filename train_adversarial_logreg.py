@@ -391,6 +391,11 @@ def load_run_config(
             f"geometrically and never reaches its floor, so it needs "
             f"lr_min_frac > 0; got {adv_config.lr_min_frac}."
         )
+    if not 0.0 <= adv_config.lr_warmup_start_frac <= 1.0:
+        raise SystemExit(
+            f"[error] --config {config_path}: lr_warmup_start_frac must be in "
+            f"[0, 1]; got {adv_config.lr_warmup_start_frac}."
+        )
     return adv_config, adv_config.penalty_layers
 
 
@@ -453,7 +458,11 @@ def _lr_at(it: int, max_iters: int, adv_config: LogregAdversarialConfig) -> floa
     lr * lr_min_frac over the rest of the run, shaped by lr_schedule -- see
     LogregAdversarialConfig.lr_warmup_iters."""
     if it < adv_config.lr_warmup_iters:
-        return adv_config.lr * (it + 1) / adv_config.lr_warmup_iters
+        start_frac = adv_config.lr_warmup_start_frac
+        warmup_frac = (
+            start_frac + (1 - start_frac) * (it + 1) / adv_config.lr_warmup_iters
+        )
+        return adv_config.lr * warmup_frac
     decay_span = max(1, max_iters - adv_config.lr_warmup_iters)
     progress = min(1.0, (it - adv_config.lr_warmup_iters) / decay_span)
     if adv_config.lr_schedule == "exponential":
@@ -1206,6 +1215,7 @@ def main(args):
         f"resid_noise_std={adv_config.resid_noise_std} probe_noise={adv_config.probe_noise} "
         f"grad_clip={adv_config.grad_clip} "
         f"lr={adv_config.lr} lr_warmup_iters={adv_config.lr_warmup_iters} "
+        f"lr_warmup_start_frac={adv_config.lr_warmup_start_frac} "
         f"lr_min_frac={adv_config.lr_min_frac} lr_schedule={adv_config.lr_schedule} "
         f"adam_eps={adv_config.adam_eps} "
         f"adam_beta1={adv_config.adam_beta1} adam_beta2={adv_config.adam_beta2} "
