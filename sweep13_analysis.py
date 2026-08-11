@@ -57,7 +57,7 @@ RUN_GLOB = "sweep13_layer*_tr*"
 TAG_RE = re.compile(r"sweep13_layer(\d+)_lam([0-9\.]+)_tr(\d+)$")
 
 LAMBDAS = [0.01, 0.1]  # one bar plot and one scatter each
-SCATTER_LAYERS = [2, 6, 10]  # hand-picked subset; see module docstring
+SCATTER_LAYERS = [2, 4, 6, 8, 10]  # hand-picked subset; see module docstring
 
 EXCLUDE_LAYERS: set[int] = set()
 MIN_RUNS = 1  # drop (layer, lambda) points with fewer usable runs than this
@@ -265,19 +265,16 @@ def _classify(
 
 
 def _band_labels(thresholds: list[float]) -> list[str]:
-    labels = [
-        f"failed task (loss >= {LOSS_THRESHOLD:g} or "
-        f"one-hot loss >= {ONE_HOT_LOSS_THRESHOLD:g})"
-    ]
+    labels = [f"failed task"]
     desc = reversed(thresholds)
     prev = None
     for t in desc:
         if prev is None:
-            labels.append(f"not hidden (auroc >= {t:g})")
+            labels.append(f"not hidden\n(AUROC >= {t:g})")
         else:
-            labels.append(f"partially hidden ({t:g} <= auroc < {prev:g})")
+            labels.append(f"partially hidden\n({t:g} <= AUROC < {prev:g})")
         prev = t
-    labels.append(f"hidden (auroc < {prev:g})")
+    labels.append(f"hidden\n(AUROC < {prev:g})")
     return labels
 
 
@@ -448,10 +445,10 @@ def _plot_by_layer(
     ax.set_xticklabels([str(ly) for ly in layers])
     ax.set_xlim(-0.6, len(layers) - 0.4)
     ax.set_ylim(0, 1.08)
-    ax.set_xlabel("penalized layer (also the layer probed)")
+    ax.set_xlabel("Probed layer")
     ax.set_ylabel("fraction of runs")
     ax.grid(True, axis="y", alpha=0.3)
-    ax.set_title(f"Penalized layer, $\\lambda$ = {lam:g}", fontsize=11, pad=14)
+    ax.set_title(f"Outcome vs probed layer, $\\lambda$ = {lam:g}", fontsize=11, pad=14)
 
     handles, leg_labels = ax.get_legend_handles_labels()
     fig.legend(
@@ -495,7 +492,7 @@ def _plot_loss_vs_auroc_by_layer(
                 linewidth=0.5,
                 label=f"layer {layer}",
             )
-        ax.set_xlabel("task loss (training distribution)")
+        ax.set_xlabel("task loss on training distribution")
         ax.set_ylabel("probe AUROC (at each run's penalized layer)")
         ax.set_title(f"$\\lambda$ = {lam:g}: task loss vs. probe AUROC")
         ax.set_xscale("log")
