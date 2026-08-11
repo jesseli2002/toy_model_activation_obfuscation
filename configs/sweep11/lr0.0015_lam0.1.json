@@ -20,6 +20,7 @@
   "x_threshold": 1.0,
   "batch_size": 16384,
   "lr": 0.0015,
+  "lr_schedule": "cosine",
   "adam_eps": 1e-05,
   "adam_beta1": 0.7,
   "adam_beta2": 0.97,
