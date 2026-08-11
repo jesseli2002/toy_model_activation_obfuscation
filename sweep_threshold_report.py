@@ -42,7 +42,6 @@ N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training den
 # plot every Nth rank (0-indexed, ascending) in each metric's sorted order
 RANK_STEP = 1
 
-import glob
 import os
 
 import matplotlib.pyplot as plt
@@ -51,6 +50,7 @@ import torch
 from adversarial_report import plot_learned_curves
 from checkpoint_lib import load_model
 from probe_lib import LinearBoundary, save_plot
+from sweep_lib.discovery import matching_tags
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
@@ -59,18 +59,12 @@ SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
 
 
 def _discover_tags() -> list[str]:
-    tags = []
-    for path in sorted(glob.glob(os.path.join("runs", RUN_GLOB))):
-        tag = os.path.basename(path)
-        m = TAG_RE.match(tag)
-        if not m:
-            continue
-        if float(m.group(1)) in EXCLUDE_LAMBDAS:
-            continue
-        if int(m.group(2)) > EXCLUDE_TRIAL_ABOVE:
-            continue
-        tags.append(tag)
-    return tags
+    return [
+        tag
+        for tag, m in matching_tags(RUN_GLOB, TAG_RE)
+        if float(m.group(1)) not in EXCLUDE_LAMBDAS
+        and int(m.group(2)) <= EXCLUDE_TRIAL_ABOVE
+    ]
 
 
 def _select_rank_indices(n: int) -> list[int]:

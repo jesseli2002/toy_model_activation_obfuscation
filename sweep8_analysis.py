@@ -95,7 +95,6 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-import glob
 import os
 from typing import NamedTuple
 
@@ -103,6 +102,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from sweep_lib.discovery import group_tags
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 from sweep_lib.outcomes import BandSpec
 from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
@@ -138,33 +138,29 @@ def _is_side_ray(key: RunKey) -> bool:
     return d_mlp == 16 and d_model == 2 * num_x
 
 
+def _size_lam_of(m: re.Match) -> RunKey | None:
+    size = (int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    lam = float(m.group(4))
+    if lam in EXCLUDE_LAMBDAS or size in EXCLUDE_SIZES:
+        return None
+    return (*size, lam)
+
+
+def _sweep7_key_of(m: re.Match) -> RunKey | None:
+    lam = float(m.group(1))
+    if lam not in SWEEP7_LAMBDAS or lam in EXCLUDE_LAMBDAS:
+        return None
+    if SWEEP7_SIZE in EXCLUDE_SIZES:
+        return None
+    return (*SWEEP7_SIZE, lam)
+
+
 def _discover_tags() -> dict[RunKey, list[str]]:
     """Run tags grouped by the (num_x, d_model, d_mlp, lambda) they belong
     to, from both runs/sweep8_* and the matching runs/sweep7_* points."""
-    by_key: dict[RunKey, list[str]] = {}
-    for path in sorted(glob.glob(os.path.join("runs", RUN_GLOB))):
-        tag = os.path.basename(path)
-        m = TAG_RE.match(tag)
-        if not m:
-            continue
-        num_x, d_model, d_mlp = int(m.group(1)), int(m.group(2)), int(m.group(3))
-        lam = float(m.group(4))
-        if lam in EXCLUDE_LAMBDAS or (num_x, d_model, d_mlp) in EXCLUDE_SIZES:
-            continue
-        by_key.setdefault((num_x, d_model, d_mlp, lam), []).append(tag)
-
-    for path in sorted(glob.glob(os.path.join("runs", SWEEP7_GLOB))):
-        tag = os.path.basename(path)
-        m = SWEEP7_TAG_RE.match(tag)
-        if not m:
-            continue
-        lam = float(m.group(1))
-        if lam not in SWEEP7_LAMBDAS or lam in EXCLUDE_LAMBDAS:
-            continue
-        if SWEEP7_SIZE in EXCLUDE_SIZES:
-            continue
-        by_key.setdefault((*SWEEP7_SIZE, lam), []).append(tag)
-
+    by_key = group_tags(RUN_GLOB, TAG_RE, _size_lam_of)
+    for key, tags in group_tags(SWEEP7_GLOB, SWEEP7_TAG_RE, _sweep7_key_of).items():
+        by_key.setdefault(key, []).extend(tags)
     return by_key
 
 

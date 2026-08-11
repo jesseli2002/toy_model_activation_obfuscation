@@ -73,13 +73,13 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-import glob
 import os
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from sweep_lib.discovery import group_tags, matching_tags
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 from sweep_lib.plots import Series, loss_vs_auroc, stacked_fractions
 from sweep_lib.outcomes import BandSpec
@@ -96,24 +96,16 @@ BANDS = BandSpec(
 )
 
 
+def _lambda_of(m: re.Match) -> float | None:
+    lam = float(m.group(1))
+    assert lam != 0.0, "sweep7 has no lambda=0 arm -- see LAM0_GLOB above"
+    return None if lam in EXCLUDE_LAMBDAS else lam
+
+
 def _discover_tags_by_lambda() -> dict[float, list[str]]:
-    by_lambda: dict[float, list[str]] = {}
-    for path in sorted(glob.glob(os.path.join("runs", RUN_GLOB))):
-        tag = os.path.basename(path)
-        m = TAG_RE.match(tag)
-        if not m:
-            continue
-        lam = float(m.group(1))
-        assert lam != 0.0, f"{tag}: sweep7 has no lambda=0 arm -- see LAM0_GLOB above"
-        if lam in EXCLUDE_LAMBDAS:
-            continue
-        by_lambda.setdefault(lam, []).append(tag)
+    by_lambda = group_tags(RUN_GLOB, TAG_RE, _lambda_of)
     if 0.0 not in EXCLUDE_LAMBDAS:
-        lam0_tags = [
-            os.path.basename(path)
-            for path in sorted(glob.glob(os.path.join("runs", LAM0_GLOB)))
-            if LAM0_TAG_RE.match(os.path.basename(path))
-        ]
+        lam0_tags = [tag for tag, _ in matching_tags(LAM0_GLOB, LAM0_TAG_RE)]
         if lam0_tags:
             by_lambda[0.0] = lam0_tags
     return by_lambda

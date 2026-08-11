@@ -85,7 +85,6 @@ def parse_args() -> argparse.Namespace:
 if __name__ == "__main__":
     args = parse_args()
 
-import glob
 import os
 from typing import NamedTuple
 
@@ -93,6 +92,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
+from sweep_lib.discovery import group_tags
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 from sweep_lib.outcomes import BandSpec
 from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
@@ -119,19 +119,14 @@ class RunStats(NamedTuple):
     n_ok: int  # usable trials this is averaged over
 
 
+def _layer_lam_of(m: re.Match) -> RunKey | None:
+    layer, lam = int(m.group(1)), float(m.group(2))
+    return None if layer in EXCLUDE_LAYERS else (layer, lam)
+
+
 def _discover_tags() -> dict[RunKey, list[str]]:
     """Run tags grouped by the (penalized layer, lambda) they belong to."""
-    by_key: dict[RunKey, list[str]] = {}
-    for path in sorted(glob.glob(os.path.join("runs", RUN_GLOB))):
-        tag = os.path.basename(path)
-        m = TAG_RE.match(tag)
-        if not m:
-            continue
-        layer, lam = int(m.group(1)), float(m.group(2))
-        if layer in EXCLUDE_LAYERS:
-            continue
-        by_key.setdefault((layer, lam), []).append(tag)
-    return by_key
+    return group_tags(RUN_GLOB, TAG_RE, _layer_lam_of)
 
 
 def _collect_run_stats(
