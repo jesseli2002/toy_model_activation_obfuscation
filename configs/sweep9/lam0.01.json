@@ -25,6 +25,7 @@
   "adam_beta2": 0.97,
   "lr_warmup_iters": 0,
   "lr_min_frac": 0.1,
+  "lr_schedule": "cosine",
   "optimizer_kind": "stableadamw",
   "stableadamw_d": 1.0,
   "explode_factor": 0.0,
