@@ -138,16 +138,21 @@ unevaluated).
 
 ## Ramping concurrency
 
-Bump the concurrency file by **one** at a time. Wait for the rate to
-re-stabilize before judging it, in poll chunks of **≤3 min** each (never
-one long sleep) — this both keeps checks responsive and stays under the
-~5min prompt-cache TTL, so your own context doesn't go cold mid-probe.
-Cross-check against `nvidia-smi` GPU utilization%, which should track
-aggregate it/s.
+Bump the concurrency file by **one GPU's worth of jobs at a time** — i.e.
+by `N`, the instance's GPU count (1 on a single-GPU box, same as before;
+more on a multi-GPU box, so each step adds one job per GPU rather than
+skewing the count across them). After each bump, wait **60s to warm up**,
+then measure over a **30s window** (iter-count delta at the window's
+start and end) — this is plenty to read true instantaneous throughput
+and stays well under the ~5min prompt-cache TTL, so your own context
+doesn't go cold mid-probe. Cross-check against `nvidia-smi` GPU
+utilization% (per-GPU on a multi-GPU box), which should track aggregate
+it/s.
 
-- A drop in **both** rate and GPU util after adding a worker is a real
-  regression, not noise. Back off by killing just the newest worker:
-  - If it already wrote a checkpoint, it just needs `--resume` later.
+- A drop in **both** rate and GPU util after adding workers is a real
+  regression, not noise. Back off by killing just the newest `N` workers
+  (the ones added in that last bump):
+  - If a worker already wrote a checkpoint, it just needs `--resume` later.
   - If not, delete its `runs/<tag>` dir first — the script refuses to
     restart an existing tag without `--resume`/`--tag-force`.
 - Use `--rate-meter-window` with a short value specifically
