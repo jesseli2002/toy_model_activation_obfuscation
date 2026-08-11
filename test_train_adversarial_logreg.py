@@ -28,6 +28,7 @@ from train_adversarial_logreg import (
     _forked_history,
     _history_entry,
     _history_path,
+    _lr_at,
     _read_history,
     _resolve_hidden_layers,
     _restore_rng_state,
@@ -231,6 +232,61 @@ class TestLoadRunConfig:
         del file_fields["lam_warmup_iters"]
         with pytest.raises(SystemExit, match="my_config.json"):
             load_run_config(file_fields, num_blocks=4, config_path="my_config.json")
+
+    def test_unknown_lr_schedule_raises_system_exit(self):
+        with pytest.raises(SystemExit, match="lr_schedule"):
+            load_run_config(
+                _logreg_config_file_fields(lr_schedule="cosign"),
+                num_blocks=4,
+                config_path="my_config.json",
+            )
+
+    def test_exponential_with_zero_floor_raises_system_exit(self):
+        with pytest.raises(SystemExit, match="lr_min_frac"):
+            load_run_config(
+                _logreg_config_file_fields(lr_schedule="exponential", lr_min_frac=0.0),
+                num_blocks=4,
+                config_path="my_config.json",
+            )
+
+
+class TestLrSchedule:
+    """Both shapes share the warmup and hit the same two endpoints; they
+    differ only in how they interpolate between them."""
+
+    @pytest.mark.parametrize("schedule", ["cosine", "exponential"])
+    def test_warmup_then_endpoints(self, schedule):
+        cfg = _make_adv_config(
+            lr=1.0, lr_warmup_iters=10, lr_min_frac=0.01, lr_schedule=schedule
+        )
+        assert _lr_at(0, 100, cfg) == pytest.approx(0.1)
+        assert _lr_at(9, 100, cfg) == pytest.approx(1.0)
+        assert _lr_at(10, 100, cfg) == pytest.approx(1.0)
+        assert _lr_at(100, 100, cfg) == pytest.approx(0.01)
+
+    def test_exponential_is_geometric(self):
+        """Constant ratio per step is the defining property -- equivalently,
+        log-lr is linear in the iteration."""
+        cfg = _make_adv_config(
+            lr=1.0, lr_warmup_iters=0, lr_min_frac=1e-3, lr_schedule="exponential"
+        )
+        ratios = [_lr_at(it + 1, 90, cfg) / _lr_at(it, 90, cfg) for it in range(0, 80)]
+        assert ratios == pytest.approx([ratios[0]] * len(ratios))
+        assert _lr_at(45, 90, cfg) == pytest.approx(1e-3**0.5)
+
+    @pytest.mark.parametrize("schedule", ["cosine", "exponential"])
+    def test_min_frac_one_is_constant_lr(self, schedule):
+        cfg = _make_adv_config(
+            lr=3e-3, lr_warmup_iters=0, lr_min_frac=1.0, lr_schedule=schedule
+        )
+        assert [_lr_at(it, 50, cfg) for it in (0, 25, 50)] == pytest.approx([3e-3] * 3)
+
+    def test_lr_is_clamped_past_max_iters(self):
+        """--resume past max_iters must not keep decaying below the floor."""
+        cfg = _make_adv_config(
+            lr=1.0, lr_warmup_iters=0, lr_min_frac=0.01, lr_schedule="exponential"
+        )
+        assert _lr_at(500, 100, cfg) == pytest.approx(0.01)
 
 
 def _write_input_config(path: Path, **overrides) -> Path:
