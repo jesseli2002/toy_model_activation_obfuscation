@@ -271,7 +271,9 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
 # Phase 2: plots (titles deliberately omit the tag -- see module docstring)
 # ----------------------------------------------------------------------------
 @torch.no_grad()
-def _plot_learned_curves(model, task_loss, plot_dir, tag, noise: Noise, show=False):
+def _plot_learned_curves(
+    model, task_loss, plot_dir, tag, noise: Noise, filename: str, show=False
+):
     """2x2 grid of learned y(x) per coordinate, one panel per fixed c."""
     c_values = (1.0, 1.333, 1.667, 2.0)
     num_x = model.num_x
@@ -302,7 +304,7 @@ def _plot_learned_curves(model, task_loss, plot_dir, tag, noise: Noise, show=Fal
         ax.set_ylabel("y")
     fig.suptitle(f"Learned y(x, c)  (task loss = {task_loss:.3e})")
     fig.tight_layout()
-    return save_plot(fig, plot_dir, f"{tag}_curves.png", close=not show)
+    return save_plot(fig, plot_dir, filename=filename, close=not show)
 
 
 def _plot_error_histogram(err_samples, plot_dir, tag, show=False):
@@ -510,6 +512,7 @@ def _plot_steer_comparison(
     tag,
     device,
     noise: Noise,
+    filename: str,
     show=False,
 ):
     """Same content as adversarial_report._plot_steer_comparison, minus the
@@ -553,14 +556,21 @@ def _plot_steer_comparison(
         f"Steering effectiveness, DoM vs logreg direction (layer {steer_layer})"
     )
     fig.tight_layout()
-    return save_plot(
-        fig, plot_dir, f"{tag}_L{steer_layer}_steer_cmp.png", close=not show
-    )
+    return save_plot(fig, plot_dir, filename=filename, close=not show)
 
 
 @torch.no_grad()
 def _plot_steer_direction_magnitude(
-    steer_layer, num_x, model, w_dom, plot_dir, tag, device, noise: Noise, show=False
+    steer_layer,
+    num_x,
+    model,
+    w_dom,
+    plot_dir,
+    tag,
+    device,
+    noise: Noise,
+    filename: str,
+    show=False,
 ):
     """DoM-direction steering, forward (c=1 -> c=2) vs reverse (c=2 -> c=1),
     each at 1x and 2x the DoM shift magnitude. Complements
@@ -619,9 +629,7 @@ def _plot_steer_direction_magnitude(
     axes[0].set_ylim([-2.8, 2.8])
     fig.suptitle(f"DoM steering, forward and reverse (layer {steer_layer})")
     fig.tight_layout()
-    return save_plot(
-        fig, plot_dir, f"{tag}_L{steer_layer}_steer_dir_mag.png", close=not show
-    )
+    return save_plot(fig, plot_dir, filename=filename, close=not show)
 
 
 def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
@@ -650,6 +658,16 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
         plot_dir,
         tag,
         noise=data.noise * PLOT_LEARNED_CURVES_NOISE_MULT,
+        filename=f"{tag}_curves.png",
+        show=show,
+    )
+    _plot_learned_curves(
+        model,
+        data.task_loss,
+        plot_dir,
+        tag,
+        noise=0.0,
+        filename=f"{tag}_curves_noisefree.png",
         show=show,
     )
     _plot_error_histogram(data.err_samples, plot_dir, tag, show=show)
@@ -675,6 +693,7 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
             tag,
             device,
             noise=data.noise * PLOT_STEER_NOISE_MULT,
+            filename=f"{tag}_L{lyr}_steer_cmp.png",
             show=show,
         )
         _plot_steer_direction_magnitude(
@@ -686,6 +705,32 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
             tag,
             device,
             noise=data.noise * PLOT_STEER_NOISE_MULT,
+            filename=f"{tag}_L{lyr}_steer_dir_mag.png",
+            show=show,
+        )
+        _plot_steer_comparison(
+            lyr,
+            model.num_x,
+            model,
+            pi["w_dom"],
+            pi["w_probe"],
+            plot_dir,
+            tag,
+            device,
+            noise=0.0,
+            filename=f"{tag}_L{lyr}_steer_cmp_noisefree.png",
+            show=show,
+        )
+        _plot_steer_direction_magnitude(
+            lyr,
+            model.num_x,
+            model,
+            pi["w_dom"],
+            plot_dir,
+            tag,
+            device,
+            noise=0.0,
+            filename=f"{tag}_L{lyr}_steer_dir_mag_noisefree.png",
             show=show,
         )
 
