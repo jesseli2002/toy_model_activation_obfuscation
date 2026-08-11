@@ -1,9 +1,9 @@
 """MCP stdio server exposing shell access to one or more vast.ai GPU instances.
 
-Also exposes the local mutagen sync as a tool. Mutagen runs on this side
-but reaches the remote over the network, so a sandboxed agent cannot
-flush it directly and would otherwise have to guess whether its local
-source edits had landed before launching a run.
+Also exposes the local source<->remote sync as a tool. It runs on this
+side but reaches the remote over the network, so a sandboxed agent
+cannot flush it directly and would otherwise have to guess whether its
+local source edits had landed before launching a run.
 
 fetch_files exists for the same reason in the opposite direction: only
 `runs/` flows remote -> local, so operational files that live outside it
@@ -374,7 +374,7 @@ def sync_flush(config: Config, arguments: dict[str, Any]) -> str:
         "exit code: 0 (both sessions flushed)"
         if result.returncode == 0
         else (
-            f"exit code: {result.returncode} -- flush failed. A halted session (mutagen "
+            f"exit code: {result.returncode} -- flush failed. A halted session (sync "
             "stops rather than clobbering either side on conflict) must be resolved "
             "locally; until then the remote source is stale."
         )
@@ -642,7 +642,7 @@ TOOLS = [
             "directory with the remote venv activated, so `python train_*.py ...` and "
             "`nvidia-smi` work directly. Arbitrary commands are allowed.\n"
             "Stateless executor: source syncs this-machine -> remote and runs/ syncs "
-            "remote -> this-machine on mutagen's own schedule (see sync_flush); "
+            "remote -> this-machine on its own schedule (see sync_flush); "
             "remote-side source edits get overwritten, so edit source locally instead. "
             "Tag scratch/debug runs `debug_*` -- excluded from sync and backup, so "
             "delete or leave them freely.\n"
@@ -708,16 +708,16 @@ TOOLS = [
     {
         "name": "sync_flush",
         "description": (
-            "Force the local mutagen sync sessions to settle now, and report their "
+            "Force the local sync sessions to settle now, and report their "
             "status. Source (*.py + configs/) flows local -> remote and runs/ flows "
-            "remote -> local, normally on mutagen's own schedule; this blocks until "
+            "remote -> local, normally on their own schedule; this blocks until "
             "both are in a steady state.\n"
             "Call this after editing source locally and before launching anything on "
             "the remote that depends on the edit, otherwise the remote may still be "
             "running the previous version. Also call it before reading a finished "
             "run's outputs locally, to pull runs/ back.\n"
             "A non-zero exit usually means a session has HALTED on a conflict: the "
-            "sessions are one-way-safe, so mutagen stops rather than overwriting "
+            "sessions are one-way-safe, so sync stops rather than overwriting "
             "either side. That needs resolving locally -- until it is, the remote "
             "source stays stale and remote_exec will keep running old code."
         ),
