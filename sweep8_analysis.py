@@ -54,9 +54,6 @@ settings misses the cache rather than reusing a stale value. Pass
 import argparse
 import re
 
-SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
-# -- lets you preview the plot's layout without waiting on a full sweep's
-# worth of checkpoint loading / task-loss / probe recomputation.
 
 PLOT_DIR = "plot/sweep8"
 CACHE_PATH = "plot/sweep8/metrics_cache.json"
@@ -310,65 +307,6 @@ def _band_colors(thresholds: list[float]) -> list[str]:
     n_hiding_bins = len(thresholds) + 1
     idxs = np.linspace(0, len(SEQ_RAMP) - 1, n_hiding_bins).astype(int)
     return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
-
-
-SMOKE_MAIN_SIZES = [(8, 16, 4), (16, 32, 8), (32, 64, 16), (64, 128, 32)]
-SMOKE_SIDE_SIZES = [(16, 32, 16), (32, 64, 16), (48, 96, 16), (64, 128, 16)]
-
-
-def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
-    """Synthetic per-run-config stats standing in for a real sweep's
-    results, just to preview the plots' layout/styling without an analysis
-    run. Covers both rays, including clean (all not-hidden) lam=0 controls
-    so _assert_lam0_clean has something to check without tripping."""
-    rng = np.random.default_rng(SEED)
-
-    def band_fracs(p: float) -> np.ndarray:
-        # p: 0..1 knob, bigger model / bigger lambda -> more hiding.
-        failed = 0.05 + 0.4 * p
-        weights = np.linspace(1 - p, p, n_bands - 1) + 0.1
-        weights = weights / weights.sum() * (1 - failed)
-        counts = np.clip(np.concatenate([[failed], weights]), 0.001, None)
-        counts = np.clip(counts + rng.normal(0, 0.02, size=n_bands), 0.001, None)
-        return counts / counts.sum()
-
-    clean = np.zeros(n_bands)
-    clean[1] = 1.0  # all succeeded, none hidden
-
-    stats: dict[RunKey, RunStats] = {}
-
-    for i, size in enumerate(SMOKE_MAIN_SIZES):
-        p = i / len(SMOKE_MAIN_SIZES)
-        stats[(*size, 0.0)] = RunStats(clean, 10)
-        for lam in MAIN_LAMBDAS:
-            stats[(*size, lam)] = RunStats(band_fracs(p), 10)
-
-    for i, size in enumerate(SMOKE_SIDE_SIZES):
-        p = i / len(SMOKE_SIDE_SIZES)
-        stats[(*size, 0.0)] = RunStats(clean, 10)
-        stats[(*size, SIDE_LAMBDA)] = RunStats(band_fracs(p), 10)
-
-    return stats
-
-
-def _smoke_scatter_points() -> list[tuple[float, float, int, float]]:
-    """Synthetic (loss, auroc, num_x, lam) quadruples for the main sweep,
-    several per (size, lambda), standing in for a real sweep's per-run
-    results -- bigger models trading off task loss for lower (more hidden)
-    AUROC at a given lambda, both with noise."""
-    rng = np.random.default_rng(SEED)
-    n = 8  # synthetic runs per (size, lambda)
-    points = []
-    for i, (num_x, _, _) in enumerate(SMOKE_MAIN_SIZES):
-        p = i / (len(SMOKE_MAIN_SIZES) - 1)
-        for lam in MAIN_LAMBDAS:
-            losses = np.clip(rng.normal(0.002 + 0.03 * p, 0.005, n), 1e-4, None)
-            aurocs = np.clip(rng.normal(0.95 - 0.4 * p, 0.05, n), 0.5, 1.0)
-            points += [
-                (float(loss), float(auroc), num_x, lam)
-                for loss, auroc in zip(losses, aurocs)
-            ]
-    return points
 
 
 def _plot_loss_vs_auroc_by_size(points: list[tuple[float, float, int, float]]) -> None:
@@ -632,10 +570,7 @@ def main(clear_cache: bool = False) -> None:
     thresholds = sorted(AUROC_THRESHOLDS)
     n_bands = len(thresholds) + 2
 
-    if SMOKE:
-        run_stats, scatter_points = _smoke_run_stats(n_bands), _smoke_scatter_points()
-    else:
-        run_stats, scatter_points = _collect_run_stats(n_bands)
+    run_stats, scatter_points = _collect_run_stats(n_bands)
     if not run_stats:
         raise SystemExit(f"no usable runs matched runs/{RUN_GLOB}")
 

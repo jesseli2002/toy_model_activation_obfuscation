@@ -47,9 +47,6 @@ full recompute.
 import argparse
 import re
 
-SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
-# -- lets you preview the plot's layout without waiting on a full sweep's
-# worth of checkpoint loading / task-loss / probe recomputation.
 
 PLOT_DIR = "plot/sweep13"
 CACHE_PATH = "plot/sweep13/metrics_cache.json"
@@ -284,50 +281,6 @@ def _band_colors(thresholds: list[float]) -> list[str]:
     return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
 
 
-SMOKE_LAYERS = [2, 4, 6, 8, 10]
-
-
-def _smoke_run_stats(n_bands: int) -> dict[RunKey, RunStats]:
-    """Synthetic per-(layer, lambda) stats standing in for a real sweep's
-    results, just to preview the plots' layout/styling without an analysis
-    run."""
-    rng = np.random.default_rng(SEED)
-
-    def band_fracs(p: float) -> np.ndarray:
-        # p: 0..1 knob, later layer / bigger lambda -> more hiding.
-        failed = 0.05 + 0.4 * p
-        weights = np.linspace(1 - p, p, n_bands - 1) + 0.1
-        weights = weights / weights.sum() * (1 - failed)
-        counts = np.clip(np.concatenate([[failed], weights]), 0.001, None)
-        counts = np.clip(counts + rng.normal(0, 0.02, size=n_bands), 0.001, None)
-        return counts / counts.sum()
-
-    stats: dict[RunKey, RunStats] = {}
-    for i, layer in enumerate(SMOKE_LAYERS):
-        for j, lam in enumerate(LAMBDAS):
-            p = (i / (len(SMOKE_LAYERS) - 1)) * (0.5 + 0.5 * j)
-            stats[(layer, lam)] = RunStats(band_fracs(p), 10)
-    return stats
-
-
-def _smoke_scatter_points() -> list[tuple[float, float, int, float]]:
-    """Synthetic (loss, auroc, layer, lam) quadruples, several per (layer,
-    lambda), standing in for a real sweep's per-run results."""
-    rng = np.random.default_rng(SEED)
-    n = 10  # synthetic runs per (layer, lambda)
-    points = []
-    for i, layer in enumerate(SMOKE_LAYERS):
-        p = i / (len(SMOKE_LAYERS) - 1)
-        for lam in LAMBDAS:
-            losses = np.clip(rng.normal(0.002 + 0.03 * p, 0.005, n), 1e-4, None)
-            aurocs = np.clip(rng.normal(0.95 - 0.4 * p, 0.05, n), 0.5, 1.0)
-            points += [
-                (float(loss), float(auroc), layer, lam)
-                for loss, auroc in zip(losses, aurocs)
-            ]
-    return points
-
-
 def _run_metrics(
     tag: str, cache: dict[str, dict], g: torch.Generator, probe_backend_name: str
 ) -> dict | None:
@@ -522,10 +475,7 @@ def main(clear_cache: bool = False) -> None:
     thresholds = sorted(AUROC_THRESHOLDS)
     n_bands = len(thresholds) + 2
 
-    if SMOKE:
-        run_stats, scatter_points = _smoke_run_stats(n_bands), _smoke_scatter_points()
-    else:
-        run_stats, scatter_points = _collect_run_stats(n_bands)
+    run_stats, scatter_points = _collect_run_stats(n_bands)
     if not run_stats:
         raise SystemExit(f"no usable runs matched runs/{RUN_GLOB}")
 

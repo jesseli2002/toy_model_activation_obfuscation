@@ -40,9 +40,6 @@ settings misses the cache rather than reusing a stale value. Pass
 import argparse
 import re
 
-SMOKE = False  # if True, skip the real analysis and plot synthetic data instead
-# -- lets you preview the plot's layout without waiting on a full sweep's
-# worth of checkpoint loading / task-loss / probe recomputation.
 
 PLOT_DIR = "plot/sweep7"
 CACHE_PATH = "plot/sweep7/metrics_cache.json"
@@ -265,43 +262,6 @@ def _band_colors(thresholds: list[float]) -> list[str]:
     return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
 
 
-def _smoke_data(n_bands: int) -> tuple[list[float], list[np.ndarray]]:
-    """Synthetic (ratios, fractions) standing in for a real sweep's results,
-    just to preview the plot's layout/styling without a full analysis run."""
-    rng = np.random.default_rng(SEED)
-    lambdas = np.concatenate([[0.0], np.geomspace(1e-4, 0.9, 12)])
-    ratios = (lambdas / (1 - lambdas)).tolist()
-    fractions = []
-    for ratio in ratios:
-        # p: 0..1 knob, low ratio -> low p, high ratio -> high p
-        p = np.clip((np.log10(ratio + 1e-4) + 4) / 4, 0, 1)
-        failed = 0.05 + 0.5 * p
-        weights = np.linspace(1 - p, p, n_bands - 1) + 0.1
-        weights = weights / weights.sum() * (1 - failed)
-        counts = np.clip(np.concatenate([[failed], weights]), 0.001, None)
-        counts += rng.normal(0, 0.02, size=n_bands)
-        counts = np.clip(counts, 0.001, None)
-        fractions.append(counts / counts.sum())
-    return ratios, fractions
-
-
-def _smoke_scatter_points() -> list[tuple[float, float, float]]:
-    """Synthetic (loss, auroc, lam) triples, several per lambda, standing
-    in for a real sweep's per-run results -- higher lambda trading off
-    task loss for lower (more hidden) AUROC, both with noise."""
-    rng = np.random.default_rng(SEED)
-    lambdas = np.concatenate([[0.0], np.geomspace(1e-4, 0.9, 12)])
-    points = []
-    for lam in lambdas:
-        ratio = lam / (1 - lam)
-        p = np.clip((np.log10(ratio + 1e-4) + 4) / 4, 0, 1)  # 0..1 knob
-        for _ in range(8):
-            loss = np.clip(rng.normal(0.002 + 0.03 * p, 0.005), 1e-4, None)
-            auroc = np.clip(rng.normal(0.95 - 0.4 * p, 0.05), 0.5, 1.0)
-            points.append((float(loss), float(auroc), float(lam)))
-    return points
-
-
 def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     """Scatter of every run's (task loss, probe AUROC), colored by lambda
     on a log scale. SymLogNorm rather than LogNorm so lam=0 -- which a log
@@ -497,11 +457,7 @@ def main(clear_cache: bool = False):
     thresholds = sorted(AUROC_THRESHOLDS)
     n_bands = len(thresholds) + 2
 
-    if SMOKE:
-        ratios, fractions = _smoke_data(n_bands)
-        scatter_points = _smoke_scatter_points()
-    else:
-        ratios, fractions, scatter_points = _gather_sweep(n_bands, thresholds)
+    ratios, fractions, scatter_points = _gather_sweep(n_bands, thresholds)
 
     _plot_stacked_fractions(ratios, fractions, thresholds)
     _plot_loss_vs_auroc(scatter_points)
