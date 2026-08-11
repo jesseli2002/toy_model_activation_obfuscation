@@ -27,6 +27,9 @@ STEER_LAYERS = [1, 2, 3, 4, 5]
 NOISE_GRID_EVAL_MULTS = (0.0, 0.5, 1.0)
 NOISE_GRID_LAYER = 2
 
+# Multiplier on noise when plotting learned curves.
+PLOT_LEARNED_CURVES_NOISE_MULT = 1
+
 
 def parse_args():
     p = argparse.ArgumentParser(
@@ -630,7 +633,12 @@ def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
 
 def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
     _plot_learned_curves(
-        model, data.task_loss, plot_dir, tag, noise=data.noise, show=show
+        model,
+        data.task_loss,
+        plot_dir,
+        tag,
+        noise=data.noise * PLOT_LEARNED_CURVES_NOISE_MULT,
+        show=show,
     )
     _plot_error_histogram(data.err_samples, plot_dir, tag, show=show)
     _plot_auroc_line(data.auroc, data.hidden_layers, plot_dir, tag, show=show)
