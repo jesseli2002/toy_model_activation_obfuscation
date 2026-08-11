@@ -43,6 +43,7 @@ def _logreg_config_file_fields(**overrides) -> dict:
         lr=3e-3,
         lr_warmup_iters=0,
         lr_min_frac=1.0,
+        lr_schedule="cosine",
         adam_eps=1e-8,
         adam_beta1=0.9,
         adam_beta2=0.999,

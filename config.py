@@ -20,6 +20,7 @@ MAX_ITERS = 100_000
 ACTIVATION_CHOICES = ["leaky_relu", "gelu"]
 PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch", "newton"]
 OPTIMIZER_KIND_CHOICES = ["adamw", "stableadamw"]
+LR_SCHEDULE_CHOICES = ["cosine", "exponential"]
 
 
 class _CheckpointConfigMixin:
@@ -167,13 +168,24 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     adam_beta1: float
     adam_beta2: float
     # Linear warmup from ~0 to lr over the first lr_warmup_iters steps, then
-    # cosine decay from lr down to lr * lr_min_frac over the remaining steps
-    # (0 warmup / lr_min_frac=1.0 reproduces the old constant-lr behavior
-    # exactly). Computed as a pure function of (it, max_iters), so it needs
-    # no scheduler object/state and just falls out correctly across
-    # --resume/--fork-from.
+    # decay from lr down to lr * lr_min_frac over the remaining steps, shaped
+    # by lr_schedule (0 warmup / lr_min_frac=1.0 reproduces the old
+    # constant-lr behavior exactly, under either shape). Computed as a pure
+    # function of (it, max_iters), so it needs no scheduler object/state and
+    # just falls out correctly across --resume/--fork-from.
+    #
+    # Both endpoints are pinned, which leaves an exponential no free shape
+    # parameter: it is the unique geometric interpolation, lr_min_frac
+    # ** progress. Its one extra constraint over cosine is lr_min_frac > 0 --
+    # a geometric decay approaches its floor but never reaches it, so a zero
+    # floor has no finite decay rate (validated at config-load time).
+    # Relative to cosine it leaves peak lr immediately rather than holding
+    # flat near the top, and correspondingly spends longer in the low-lr
+    # tail, so a matched-feel exponential run usually wants a larger
+    # lr_min_frac than the cosine run it is being compared against.
     lr_warmup_iters: int
     lr_min_frac: float
+    lr_schedule: str  # "cosine" or "exponential" (LR_SCHEDULE_CHOICES)
     # "adamw" or "stableadamw" (per-tensor update-clipping in place of
     # grad_clip/adam_eps/adam_beta2 band-aids) -- both consume adam_eps
     # /adam_beta1/adam_beta2 above with the same meaning.
@@ -207,6 +219,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
         "lam_warmup_iters": 0,
         "lr_warmup_iters": 0,
         "lr_min_frac": 1.0,
+        "lr_schedule": "cosine",  # legacy runs predate the shape being selectable
         "penalty_layers": None,
         "probe_C": 1.0,
         "probe_init_iters": 1000,

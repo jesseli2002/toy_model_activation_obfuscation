@@ -378,6 +378,19 @@ def load_run_config(
                 f"[error] --config {config_path} missing required key(s): {missing}"
             )
         raise
+    # _lr_at treats anything that isn't "exponential" as cosine, so an
+    # unrecognized value would silently train on the wrong shape.
+    if adv_config.lr_schedule not in config.LR_SCHEDULE_CHOICES:
+        raise SystemExit(
+            f"[error] --config {config_path}: lr_schedule must be one of "
+            f"{config.LR_SCHEDULE_CHOICES}, got {adv_config.lr_schedule!r}."
+        )
+    if adv_config.lr_schedule == "exponential" and adv_config.lr_min_frac <= 0:
+        raise SystemExit(
+            f"[error] --config {config_path}: lr_schedule 'exponential' decays "
+            f"geometrically and never reaches its floor, so it needs "
+            f"lr_min_frac > 0; got {adv_config.lr_min_frac}."
+        )
     return adv_config, adv_config.penalty_layers
 
 
@@ -436,15 +449,18 @@ def _check_config_json(
 
 
 def _lr_at(it: int, max_iters: int, adv_config: LogregAdversarialConfig) -> float:
-    """Linear warmup over lr_warmup_iters, then cosine decay from lr to
-    lr * lr_min_frac over the rest of the run -- see
+    """Linear warmup over lr_warmup_iters, then decay from lr to
+    lr * lr_min_frac over the rest of the run, shaped by lr_schedule -- see
     LogregAdversarialConfig.lr_warmup_iters."""
     if it < adv_config.lr_warmup_iters:
         return adv_config.lr * (it + 1) / adv_config.lr_warmup_iters
     decay_span = max(1, max_iters - adv_config.lr_warmup_iters)
     progress = min(1.0, (it - adv_config.lr_warmup_iters) / decay_span)
-    cos_frac = 0.5 * (1 + math.cos(math.pi * progress))
-    frac = adv_config.lr_min_frac + (1 - adv_config.lr_min_frac) * cos_frac
+    if adv_config.lr_schedule == "exponential":
+        frac = adv_config.lr_min_frac**progress
+    else:
+        cos_frac = 0.5 * (1 + math.cos(math.pi * progress))
+        frac = adv_config.lr_min_frac + (1 - adv_config.lr_min_frac) * cos_frac
     return adv_config.lr * frac
 
 
@@ -1190,7 +1206,8 @@ def main(args):
         f"resid_noise_std={adv_config.resid_noise_std} probe_noise={adv_config.probe_noise} "
         f"grad_clip={adv_config.grad_clip} "
         f"lr={adv_config.lr} lr_warmup_iters={adv_config.lr_warmup_iters} "
-        f"lr_min_frac={adv_config.lr_min_frac} adam_eps={adv_config.adam_eps} "
+        f"lr_min_frac={adv_config.lr_min_frac} lr_schedule={adv_config.lr_schedule} "
+        f"adam_eps={adv_config.adam_eps} "
         f"adam_beta1={adv_config.adam_beta1} adam_beta2={adv_config.adam_beta2} "
         f"optimizer_kind={adv_config.optimizer_kind} "
         f"stableadamw_d={adv_config.stableadamw_d} "
