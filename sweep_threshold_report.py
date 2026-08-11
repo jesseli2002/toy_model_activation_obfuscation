@@ -37,98 +37,34 @@ EXCLUDE_LAMBDAS = {}  #  for partial lambdas currently running
 EXCLUDE_TRIAL_ABOVE = 10  # for partial trials greater than this index
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
-TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
-TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std, matching the noise the model trained under (see PROBE_*_NOISE_MULT for the probe analogs)
-N_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for each n-hot OOD loss
 N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training density
-LOSS_LOWPASS_WINDOW = 2000  # matches sweep_report.py's smoothing window
 
 # plot every Nth rank (0-indexed, ascending) in each metric's sorted order
 RANK_STEP = 1
-PROBE_N_TRAIN = 10000  # per class; smaller than adversarial_report's default (20_000) since a probe gets refit per selected run, across many runs
-PROBE_N_TEST = 10_000  # per class
-PROBE_BACKEND = "newton"
-# Multipliers on the checkpoint's own resid_noise_std for the refit probe's fit
-# and scoring passes. Both 1.0: these runs trained with probe_noise, so the
-# adversary they actually hid from was itself fit under noise, and a fit/score
-# noise mismatch measures a different probe than the model hid from.
-PROBE_TRAIN_NOISE_MULT = 1.0
-PROBE_EVAL_NOISE_MULT = 1.0
-SEED = 20260718
 
-import glob
 import os
 
 import matplotlib.pyplot as plt
 import torch
 
 from adversarial_report import plot_learned_curves
-from checkpoint_lib import (
-    load_model,
-    recompute_n_hot_loss,
-    recompute_task_loss,
-    resolve_adv_config,
-)
-from probe_backend import resolve_probe_backend
-from probe_lib import (
-    LinearBoundary,
-    binary_probe_metrics_all_layers,
-    boundary_auroc,
-    save_plot,
-)
+from checkpoint_lib import load_model
+from probe_lib import LinearBoundary, save_plot
+from sweep_lib.discovery import matching_tags
+from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
+SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
+
 
 def _discover_tags() -> list[str]:
-    tags = []
-    for path in sorted(glob.glob(os.path.join("runs", RUN_GLOB))):
-        tag = os.path.basename(path)
-        m = TAG_RE.match(tag)
-        if not m:
-            continue
-        if float(m.group(1)) in EXCLUDE_LAMBDAS:
-            continue
-        if int(m.group(2)) > EXCLUDE_TRIAL_ABOVE:
-            continue
-        tags.append(tag)
-    return tags
-
-
-def _fit_probe(tag: str, g: torch.Generator, probe_backend_name: str) -> dict | None:
-    """Fit a fresh probe at PROBE_LAYER for `tag`'s CKPT checkpoint and return
-    its `plot_inputs` (see _binary_probe_metrics_all_layers) -- the single
-    source of truth for both AUROC sorting/filenames and the by_auroc
-    diagnostic plots, run once per run. (Previously these used two different
-    probes -- the checkpoint's own stored training-time probe for sorting vs.
-    a freshly-refit one for the plots -- so the AUROC in a plot's filename
-    never matched the AUROC in its own title.) None for a checkpoint with no
-    adversarial config (nothing to probe for)."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = resolve_adv_config(ck)
-    if adv_cfg is None:
-        return None
-    eval_noise_std = adv_cfg.resid_noise_std * PROBE_EVAL_NOISE_MULT
-    train_noise_std = adv_cfg.resid_noise_std * PROBE_TRAIN_NOISE_MULT
-    _metrics, plot_inputs = binary_probe_metrics_all_layers(
-        model,
-        1.0,
-        2.0,
-        [PROBE_LAYER],
-        PROBE_N_TRAIN,
-        PROBE_N_TEST,
-        g,
-        probe_backend_name,
-        desc=tag,
-        eval_noise=eval_noise_std,
-        train_noise=train_noise_std,
-    )
-    return plot_inputs[PROBE_LAYER]
-
-
-def _probe_auroc(pi: dict) -> float:
-    probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
-    return boundary_auroc(probe, pi["X_te"], pi["y_te"])
+    return [
+        tag
+        for tag, m in matching_tags(RUN_GLOB, TAG_RE)
+        if float(m.group(1)) not in EXCLUDE_LAMBDAS
+        and int(m.group(2)) <= EXCLUDE_TRIAL_ABOVE
+    ]
 
 
 def _select_rank_indices(n: int) -> list[int]:
@@ -258,22 +194,26 @@ def _plot_probe_pca_resid(
 
 
 def _make_probe_plots(
-    tags_by_auroc: list[str], aurocs: list[float], probe_fits: dict[str, dict]
+    tags_by_auroc: list[str], aurocs: list[float], store: MetricStore
 ) -> None:
+    """Diagnostic plots for the selected ranks. The probe is refit here rather
+    than kept from the AUROC pass, since plot_inputs holds a whole test set per
+    run; store.probe_fit seeds it to match the cached AUROC, so a plot's
+    filename and its title agree."""
     n = len(tags_by_auroc)
     out_dir = os.path.join(OUT_DIR, "by_auroc")
     os.makedirs(out_dir, exist_ok=True)
     for idx in _select_rank_indices(n):
         tag = tags_by_auroc[idx]
-        pi = probe_fits[tag]
+        layer, pi = store.probe_fit(tag)
         title = f"rank{idx:03d}_{tag}_auroc{aurocs[idx]:.4f}"
         file_tag = f"rank{idx:03d}_auroc{aurocs[idx]:.4f}"
         probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
         _plot_probe_hist_auroc(
-            title, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
+            title, [layer], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
         )
         _plot_probe_pca_resid(
-            title, [PROBE_LAYER], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
+            title, [layer], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
         )
 
 
@@ -283,33 +223,16 @@ def main():
         f"found {len(tags)} runs matching {RUN_GLOB!r} (excluding lam in {EXCLUDE_LAMBDAS})"
     )
 
-    g = torch.Generator(device=DEVICE).manual_seed(SEED)
-    losses = {
-        t: recompute_task_loss(
-            t, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
-        )
-        for t in tags
-    }
-
-    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
-    probe_fits = {t: _fit_probe(t, g, probe_backend_name) for t in tags}
-    aurocs = {
-        t: (_probe_auroc(pi) if pi is not None else None)
-        for t, pi in probe_fits.items()
-    }
+    store = MetricStore(SPEC, CACHE_PATH, DEVICE)
+    losses = {t: store.task_loss(t) for t in tags}
+    aurocs = {t: store.auroc(t) for t in tags}
 
     missing = [t for t in tags if aurocs[t] is None]
     if missing:
         print(f"no adversarial config, excluded from AUROC ranking: {missing}")
 
     n_hot_losses = {
-        n_hot: {
-            t: recompute_n_hot_loss(
-                t, CKPT, g, DEVICE, N_HOT_LOSS_N_EVAL, n_hot, TASK_LOSS_NOISE_MULT
-            )
-            for t in tags
-        }
-        for n_hot in N_HOT_VALUES
+        n_hot: {t: store.n_hot_loss(t, n_hot) for t in tags} for n_hot in N_HOT_VALUES
     }
 
     tags_by_loss = sorted(tags, key=lambda t: losses[t])
@@ -339,7 +262,7 @@ def main():
             out_subdir=f"by_{n_hot}hot_loss",
             metric_tag=f"{n_hot}hloss",
         )
-    _make_probe_plots(tags_by_auroc, [aurocs[t] for t in tags_by_auroc], probe_fits)
+    _make_probe_plots(tags_by_auroc, [aurocs[t] for t in tags_by_auroc], store)
 
 
 if __name__ == "__main__":
