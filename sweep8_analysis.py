@@ -56,7 +56,6 @@ import re
 
 
 PLOT_DIR = "plot/sweep8"
-CACHE_PATH = "plot/sweep8/metrics_cache.json"
 RUN_GLOB = "sweep8_nx*_tr*"
 TAG_RE = re.compile(r"sweep8_nx(\d+)_dm(\d+)_mlp(\d+)_lam([0-9\.]+)_tr(\d+)$")
 
@@ -75,18 +74,6 @@ EXCLUDE_SIZES: set[tuple[int, int, int]] = set()  # (num_x, d_model, d_mlp)
 MIN_RUNS = 1  # drop (size, lambda) points with fewer usable runs than this
 CKPT = "best"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
-TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
-TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std
-ONE_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for the one-hot OOD loss
-PROBE_N_TRAIN = 5000  # per class; refit per run, across many runs in a sweep
-PROBE_N_TEST = 10_000  # per class
-PROBE_BACKEND = "newton"
-# Multipliers on the checkpoint's own resid_noise_std for the refit probe's fit
-# and scoring passes. Both 1.0: these runs trained with probe_noise, so the
-# adversary they actually hid from was itself fit under noise -- fitting clean
-# measures a different, weaker probe (worth ~0.1 AUROC here).
-PROBE_TRAIN_NOISE_MULT = 1.0
-PROBE_EVAL_NOISE_MULT = 1.0
 
 # task "succeeded" iff both are below their threshold -- see
 # sweep_threshold_report.py for what distinguishes the two losses (in-
@@ -101,7 +88,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--clear-cache",
         action="store_true",
-        help=f"delete {CACHE_PATH} before running, forcing a full recompute",
+        help="delete the shared metrics cache before running, forcing a full recompute",
     )
     return p.parse_args()
 
@@ -119,22 +106,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from checkpoint_lib import (
-    load_model,
-    recompute_n_hot_loss,
-    recompute_task_loss,
-    resolve_adv_config,
-)
-from probe_backend import resolve_probe_backend
-from probe_lib import (
-    LinearBoundary,
-    binary_probe_metrics_all_layers,
-    boundary_auroc,
-)
+from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 from sweep_lib.outcomes import BandSpec
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SEED = 0
+
+SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
 
 RunKey = tuple[int, int, int, float]  # (num_x, d_model, d_mlp, lam)
 
@@ -193,152 +170,6 @@ def _discover_tags() -> dict[RunKey, list[str]]:
     return by_key
 
 
-def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float | None:
-    """AUROC of a freshly refit probe at PROBE_LAYER for `tag`'s CKPT
-    checkpoint -- not the checkpoint's own stored training-time probe, so
-    this stays comparable across a sweep whose runs may have trained with
-    different probe settings. None for a checkpoint with no adversarial
-    config (nothing to probe for)."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = resolve_adv_config(ck)
-    if adv_cfg is None:
-        return None
-    eval_noise_std = adv_cfg.resid_noise_std * PROBE_EVAL_NOISE_MULT
-    train_noise_std = adv_cfg.resid_noise_std * PROBE_TRAIN_NOISE_MULT
-    _metrics, plot_inputs = binary_probe_metrics_all_layers(
-        model,
-        1.0,
-        2.0,
-        [PROBE_LAYER],
-        PROBE_N_TRAIN,
-        PROBE_N_TEST,
-        g,
-        probe_backend_name,
-        desc=tag,
-        eval_noise=eval_noise_std,
-        train_noise=train_noise_std,
-    )
-    pi = plot_inputs[PROBE_LAYER]
-    probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
-    return boundary_auroc(probe, pi["X_te"], pi["y_te"])
-
-
-def _cache_key(tag: str) -> str:
-    """Cache identity for a run's (loss, auroc): the tag plus every setting
-    the recomputation depends on, so edits to those miss rather than reuse."""
-    settings = (
-        CKPT,
-        PROBE_LAYER,
-        TASK_LOSS_N_EVAL,
-        TASK_LOSS_NOISE_MULT,
-        ONE_HOT_LOSS_N_EVAL,
-        PROBE_N_TRAIN,
-        PROBE_N_TEST,
-        PROBE_BACKEND,
-        PROBE_TRAIN_NOISE_MULT,
-        PROBE_EVAL_NOISE_MULT,
-    )
-    return "|".join([tag] + [f"{s}" for s in settings])
-
-
-def _load_cache() -> dict[str, dict]:
-    if not os.path.exists(CACHE_PATH):
-        return {}
-    with open(CACHE_PATH) as f:
-        return json.load(f)
-
-
-def _save_cache(cache: dict[str, dict]) -> None:
-    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
-    tmp = CACHE_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cache, f, indent=1, sort_keys=True)
-    os.replace(tmp, CACHE_PATH)
-
-
-def _plot_loss_vs_auroc_by_size(points: list[tuple[float, float, int, float]]) -> None:
-    """One scatter per lambda of that lambda's main-sweep runs' (task loss,
-    probe AUROC), colored by num_x (model size) -- the same recomputed
-    metrics behind the outcome bars above, viewed per-run instead of
-    binned/averaged. lam=0 controls are excluded, matching _plot_main_sweep.
-
-    A shared discrete color scale (over every lambda's sizes, not just the
-    one being plotted) keeps a given num_x the same color across the three
-    plots, so they stay comparable side by side. Discrete rather than
-    continuous since num_x only takes a handful of swept values -- a
-    continuous colorbar would interpolate between them misleadingly."""
-    losses, aurocs, sizes, lams = (np.array(v) for v in zip(*points))
-    uniq_sizes = sorted(set(sizes.tolist()))
-    cmap = plt.get_cmap("viridis", len(uniq_sizes))
-    norm = mcolors.BoundaryNorm(np.arange(len(uniq_sizes) + 1) - 0.5, len(uniq_sizes))
-    size_idx = np.searchsorted(uniq_sizes, sizes)
-
-    for lam in MAIN_LAMBDAS:
-        mask = lams == lam
-        if not mask.any():
-            continue
-        fig, ax = plt.subplots(figsize=(6, 5))
-        sc = ax.scatter(
-            losses[mask],
-            aurocs[mask],
-            c=size_idx[mask],
-            cmap=cmap,
-            norm=norm,
-            edgecolor="black",
-            linewidth=0.5,
-        )
-        cbar = fig.colorbar(sc, ax=ax, ticks=range(len(uniq_sizes)), label="num_x")
-        cbar.set_ticklabels([str(s) for s in uniq_sizes])
-        ax.set_xlabel("task loss")
-        ax.set_ylabel("probe AUROC")
-        ax.set_title(f"Main sweep, $\\lambda$ = {lam:g}: task loss vs. probe AUROC")
-        ax.set_xscale("log")
-        ax.grid(True, alpha=0.3)
-        # Log-scale minor tick labels (2x, 3x, ...) crowd together when the
-        # data spans less than a decade; rotating keeps them legible at any
-        # range.
-        plt.setp(ax.get_xticklabels(which="both"), rotation=45, ha="right")
-
-        ax.axvline(
-            LOSS_THRESHOLD,
-            linestyle="--",
-            color="black",
-            label="loss threshold",
-            alpha=0.5,
-        )
-        ax.legend()
-        fig.savefig(
-            f"{PLOT_DIR}/main_loss_vs_auroc_scatter_lam{lam:g}.png", bbox_inches="tight"
-        )
-
-
-def _run_metrics(
-    tag: str, cache: dict[str, dict], g: torch.Generator, probe_backend_name: str
-) -> dict | None:
-    """A run's recomputed {loss, one_hot_loss, auroc}, from the cache when
-    it's there and recomputed (then cached) when it isn't. None for a run
-    whose checkpoint doesn't exist yet."""
-    cache_key = _cache_key(tag)
-    if cache_key in cache:
-        return cache[cache_key]
-    try:
-        entry = {
-            "loss": recompute_task_loss(
-                tag, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
-            ),
-            "one_hot_loss": recompute_n_hot_loss(
-                tag, CKPT, g, DEVICE, ONE_HOT_LOSS_N_EVAL, 1, TASK_LOSS_NOISE_MULT
-            ),
-            "auroc": _probe_auroc(tag, g, probe_backend_name),
-        }
-    except FileNotFoundError:
-        print(f"  {tag}: no history/checkpoint yet, skipped")
-        return None
-    cache[cache_key] = entry
-    _save_cache(cache)  # per run, so an interrupted pass keeps progress
-    return entry
-
-
 def _collect_run_stats(
     n_bands: int,
 ) -> tuple[dict[RunKey, RunStats], list[tuple[float, float, int, float]]]:
@@ -346,11 +177,7 @@ def _collect_run_stats(
     run's loss/AUROC where the cache doesn't already have them, plus each
     usable main-sweep run's (loss, auroc, num_x, lam) for the scatter."""
     by_key = _discover_tags()
-    cache = _load_cache()
-    # One RNG across every run config, so its draws (eval noise, probe
-    # train/test sampling) are reproducible across a full run of the script.
-    g = torch.Generator(device=DEVICE).manual_seed(SEED)
-    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
+    store = MetricStore(SPEC, CACHE_PATH, DEVICE)
 
     stats: dict[RunKey, RunStats] = {}
     scatter_points: list[tuple[float, float, int, float]] = []
@@ -361,19 +188,19 @@ def _collect_run_stats(
         counts = np.zeros(n_bands)
         n_ok = 0
         for tag in tags:
-            entry = _run_metrics(tag, cache, g, probe_backend_name)
-            if entry is None:
+            if not store.has_checkpoint(tag):
+                print(f"  {tag}: no checkpoint yet, skipped")
                 continue
-            if entry["auroc"] is None:
+            auroc = store.auroc(tag)
+            if auroc is None:
                 print(f"  {tag}: no probe in checkpoint, skipped")
                 continue
-            band = BANDS.classify(
-                entry["loss"], {1: entry["one_hot_loss"]}, entry["auroc"]
-            )
+            loss = store.task_loss(tag)
+            band = BANDS.classify(loss, {1: store.n_hot_loss(tag, 1)}, auroc)
             counts[band] += 1
             n_ok += 1
             if _is_main_sweep(key) and lam in MAIN_LAMBDAS:
-                scatter_points.append((entry["loss"], entry["auroc"], num_x, lam))
+                scatter_points.append((loss, auroc, num_x, lam))
         if n_ok < MIN_RUNS:
             print(f"  {key}: {n_ok} usable runs, skipped")
             continue

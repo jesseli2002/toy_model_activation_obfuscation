@@ -31,17 +31,14 @@ sweep_threshold_report.py, which uses the same recomputation (and the same
 N_HOT_VALUES) for the same reasons (some runs' final checkpoint predates
 their last history record).
 
-Recomputing both over a whole sweep is slow, so results are cached to
-CACHE_PATH keyed by the settings they depend on; changing any of those
-settings misses the cache rather than reusing a stale value. Pass
---clear-cache to force a full recompute.
+Recomputing over a whole sweep is slow, so metrics are cached (see
+sweep_lib.metrics). Pass --clear-cache to force a full recompute.
 """
 
 import argparse
 import re
 
 PLOT_DIR = "plot/sweep7"
-CACHE_PATH = "plot/sweep7/metrics_cache.json"
 RUN_GLOB = "sweep7_lam*_tr*"
 TAG_RE = re.compile(r"sweep7_lam([0-9\.]+)_tr(\d+)$")
 # sweep7 has no lambda=0 arm of its own; sweep3's is reused instead (lambda=0
@@ -52,19 +49,7 @@ LAM0_TAG_RE = re.compile(r"sweep3_lam0_tr(\d+)$")
 EXCLUDE_LAMBDAS: set[float] = set()
 CKPT = "best"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 PROBE_LAYER = 2  # matches adversarial.penalty_layers in these runs' config.json
-TASK_LOSS_N_EVAL = 50_000  # fresh examples per run for the recomputed task loss
-TASK_LOSS_NOISE_MULT = 1.0  # multiplier on the checkpoint's own resid_noise_std
-N_HOT_LOSS_N_EVAL = 50_000  # fresh examples per run for each N-hot OOD loss
 N_HOT_VALUES = (1, 2, 4, 8)  # 1 = one-hot; larger N approaches the training density
-PROBE_N_TRAIN = 5000  # per class; refit per run, across many runs in a sweep
-PROBE_N_TEST = 10_000  # per class
-PROBE_BACKEND = "newton"
-# Multipliers on the checkpoint's own resid_noise_std for the refit probe's fit
-# and scoring passes. Both 1.0: these runs trained with probe_noise, so the
-# adversary they actually hid from was itself fit under noise -- fitting clean
-# measures a different, weaker probe (worth ~0.1 AUROC here).
-PROBE_TRAIN_NOISE_MULT = 1.0
-PROBE_EVAL_NOISE_MULT = 1.0
 
 # task "succeeded" iff the in-distribution loss is below threshold AND every
 # one of N_HOT_VALUES' losses is too -- see sweep_threshold_report.py for what
@@ -80,7 +65,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--clear-cache",
         action="store_true",
-        help=f"delete {CACHE_PATH} before running, forcing a full recompute",
+        help="delete the shared metrics cache before running, forcing a full recompute",
     )
     return p.parse_args()
 
@@ -89,7 +74,6 @@ if __name__ == "__main__":
     args = parse_args()
 
 import glob
-import json
 import os
 
 import matplotlib.colors as mcolors
@@ -97,22 +81,12 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 
-from checkpoint_lib import (
-    load_model,
-    recompute_n_hot_loss,
-    recompute_task_loss,
-    resolve_adv_config,
-)
-from probe_backend import resolve_probe_backend
-from probe_lib import (
-    LinearBoundary,
-    binary_probe_metrics_all_layers,
-    boundary_auroc,
-)
+from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 from sweep_lib.outcomes import BandSpec
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
-SEED = 0
+
+SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
 
 BANDS = BandSpec(
     loss_threshold=LOSS_THRESHOLD,
@@ -143,70 +117,6 @@ def _discover_tags_by_lambda() -> dict[float, list[str]]:
         if lam0_tags:
             by_lambda[0.0] = lam0_tags
     return by_lambda
-
-
-def _probe_auroc(tag: str, g: torch.Generator, probe_backend_name: str) -> float | None:
-    """AUROC of a freshly refit probe at PROBE_LAYER for `tag`'s CKPT
-    checkpoint -- not the checkpoint's own stored training-time probe, so
-    this stays comparable across a sweep whose runs may have trained with
-    different probe settings. None for a checkpoint with no adversarial
-    config (nothing to probe for)."""
-    model, ck = load_model(tag, CKPT, DEVICE)
-    adv_cfg = resolve_adv_config(ck)
-    if adv_cfg is None:
-        return None
-    eval_noise_std = adv_cfg.resid_noise_std * PROBE_EVAL_NOISE_MULT
-    train_noise_std = adv_cfg.resid_noise_std * PROBE_TRAIN_NOISE_MULT
-    _metrics, plot_inputs = binary_probe_metrics_all_layers(
-        model,
-        1.0,
-        2.0,
-        [PROBE_LAYER],
-        PROBE_N_TRAIN,
-        PROBE_N_TEST,
-        g,
-        probe_backend_name,
-        desc=tag,
-        eval_noise=eval_noise_std,
-        train_noise=train_noise_std,
-    )
-    pi = plot_inputs[PROBE_LAYER]
-    probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
-    return boundary_auroc(probe, pi["X_te"], pi["y_te"])
-
-
-def _cache_key(tag: str) -> str:
-    """Cache identity for a run's (loss, auroc): the tag plus every setting
-    the recomputation depends on, so edits to those miss rather than reuse."""
-    settings = (
-        CKPT,
-        PROBE_LAYER,
-        TASK_LOSS_N_EVAL,
-        TASK_LOSS_NOISE_MULT,
-        N_HOT_LOSS_N_EVAL,
-        N_HOT_VALUES,
-        PROBE_N_TRAIN,
-        PROBE_N_TEST,
-        PROBE_BACKEND,
-        PROBE_TRAIN_NOISE_MULT,
-        PROBE_EVAL_NOISE_MULT,
-    )
-    return "|".join([tag] + [f"{s}" for s in settings])
-
-
-def _load_cache() -> dict[str, dict]:
-    if not os.path.exists(CACHE_PATH):
-        return {}
-    with open(CACHE_PATH) as f:
-        return json.load(f)
-
-
-def _save_cache(cache: dict[str, dict]) -> None:
-    os.makedirs(os.path.dirname(CACHE_PATH), exist_ok=True)
-    tmp = CACHE_PATH + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(cache, f, indent=1, sort_keys=True)
-    os.replace(tmp, CACHE_PATH)
 
 
 def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
@@ -245,46 +155,8 @@ def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
 
 
-def _run_metrics(
-    tag: str, cache: dict[str, dict], g: torch.Generator, probe_backend_name: str
-) -> dict | None:
-    """Cached (loss, n_hot_losses, auroc) for one run, recomputing and
-    persisting on a cache miss. None if the run isn't usable yet (no
-    checkpoint) -- see also the None auroc for a checkpoint with no probe."""
-    cache_key = _cache_key(tag)
-    if cache_key in cache:
-        return cache[cache_key]
-    try:
-        cache[cache_key] = {
-            "loss": recompute_task_loss(
-                tag, CKPT, g, DEVICE, TASK_LOSS_N_EVAL, TASK_LOSS_NOISE_MULT
-            ),
-            "n_hot_losses": {
-                str(n_hot): recompute_n_hot_loss(
-                    tag,
-                    CKPT,
-                    g,
-                    DEVICE,
-                    N_HOT_LOSS_N_EVAL,
-                    n_hot,
-                    TASK_LOSS_NOISE_MULT,
-                )
-                for n_hot in N_HOT_VALUES
-            },
-            "auroc": _probe_auroc(tag, g, probe_backend_name),
-        }
-    except FileNotFoundError:
-        print(f"  {tag}: no history/checkpoint yet, skipped")
-        return None
-    _save_cache(cache)  # per run, so an interrupted pass keeps progress
-    return cache[cache_key]
-
-
 def _lambda_counts(
-    tags: list[str],
-    cache: dict[str, dict],
-    g: torch.Generator,
-    probe_backend_name: str,
+    tags: list[str], store: MetricStore
 ) -> tuple[np.ndarray, list[tuple[float, float]]]:
     """Per-band run counts for one lambda's `tags`, plus each usable run's
     (loss, auroc) for the scatter. Unusable runs are skipped, so the counts
@@ -292,15 +164,17 @@ def _lambda_counts(
     counts = np.zeros(BANDS.n_bands)
     points = []
     for tag in tags:
-        entry = _run_metrics(tag, cache, g, probe_backend_name)
-        if entry is None:
+        if not store.has_checkpoint(tag):
+            print(f"  {tag}: no checkpoint yet, skipped")
             continue
-        if entry["auroc"] is None:
+        auroc = store.auroc(tag)
+        if auroc is None:
             print(f"  {tag}: no probe in checkpoint, skipped")
             continue
-        n_hot = {int(n): v for n, v in entry["n_hot_losses"].items()}
-        counts[BANDS.classify(entry["loss"], n_hot, entry["auroc"])] += 1
-        points.append((entry["loss"], entry["auroc"]))
+        loss = store.task_loss(tag)
+        n_hot = store.n_hot_losses(tag, N_HOT_VALUES)
+        counts[BANDS.classify(loss, n_hot, auroc)] += 1
+        points.append((loss, auroc))
     return counts, points
 
 
@@ -311,19 +185,15 @@ def _gather_sweep() -> (
     fraction of runs in each outcome band, and (loss, auroc, lam) per run.
     Prints a per-lambda summary table as it goes."""
     by_lambda = _discover_tags_by_lambda()
-    cache = _load_cache()
+    store = MetricStore(SPEC, CACHE_PATH, DEVICE)
     ratios = []
     fractions = []  # one length-BANDS.n_bands array per lambda
     scatter_points = []  # (loss, auroc, lam) per run, across all lambdas
-    # One RNG across every lambda, so its draws (eval noise, probe
-    # train/test sampling) are reproducible across a full run of the script.
-    g = torch.Generator(device=DEVICE).manual_seed(SEED)
-    probe_backend_name = resolve_probe_backend(PROBE_BACKEND, DEVICE)
 
     print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
     for lam in sorted(by_lambda):
         tags = by_lambda[lam]
-        counts, points = _lambda_counts(tags, cache, g, probe_backend_name)
+        counts, points = _lambda_counts(tags, store)
         if not points:
             print(f"  {lam}: no usable runs, skipped")
             continue
