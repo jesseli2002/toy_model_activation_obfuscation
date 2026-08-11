@@ -129,12 +129,12 @@ def eval_loss(model: ResidualMLP, gen: torch.Generator, device: str) -> float:
 
 @torch.no_grad()
 def eval_max_err(model: ResidualMLP, gen: torch.Generator, device: str) -> float:
-    """Same metric as `data.eval_max_err` (clean, no noise), but blinding c
-    first -- adversarial_report.py's training-trace plot reads this from
+    """Same metric as `data.eval_max_err`, but blinding c first --
+    adversarial_report.py's training-trace plot reads this from
     history.jsonl, and the model was trained without c, so scoring it with c
     present would evaluate a distribution it never saw."""
     x_full, y = sample_batch(EVAL_BATCH, model.num_x, generator=gen, device=device)
-    pred = model.task_output(blind_c(x_full))
+    pred = model.task_output(blind_c(x_full), noise=RESID_NOISE_STD, generator=gen)
     return (pred - y).abs().max().item()
 
 

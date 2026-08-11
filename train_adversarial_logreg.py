@@ -1253,7 +1253,9 @@ def main(args):
     def log_iter():
         """Append a history entry for `record`'s iteration and print it."""
         nonlocal max_err, last_logged_iter
-        max_err = eval_max_err(model, gen, device=device)
+        max_err = eval_max_err(
+            model, gen, device=device, noise=adv_config.resid_noise_std
+        )
         _append_history(hist_path, _history_entry(record, max_err=max_err))
         last_logged_iter = record.iter
         rate = rate_meter.update(record.iter)

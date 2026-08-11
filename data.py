@@ -83,6 +83,7 @@ def eval_max_err(
     device: str = "cpu",
     n: int = 100_000,
     batch: int = 20_000,
+    noise: float = 0.0,
 ) -> float:
     # Accumulated on-device and read back once: a per-batch .item() would
     # sync the host against the GPU on every chunk, which at a short
@@ -93,7 +94,9 @@ def eval_max_err(
     while done < n:
         b = min(batch, n - done)
         x_full, y = sample_batch(b, model.num_x, generator=generator, device=device)
-        pred: Float[Tensor, "b num_x"] = model.task_output(x_full)
+        pred: Float[Tensor, "b num_x"] = model.task_output(
+            x_full, noise=noise, generator=generator
+        )
         worst = torch.maximum(worst, (pred - y).abs().max())
         done += b
     return worst.item()
