@@ -40,7 +40,6 @@ settings misses the cache rather than reusing a stale value. Pass
 import argparse
 import re
 
-
 PLOT_DIR = "plot/sweep7"
 CACHE_PATH = "plot/sweep7/metrics_cache.json"
 RUN_GLOB = "sweep7_lam*_tr*"
@@ -67,18 +66,13 @@ PROBE_BACKEND = "newton"
 PROBE_TRAIN_NOISE_MULT = 1.0
 PROBE_EVAL_NOISE_MULT = 1.0
 
-# task "succeeded" iff loss is below threshold AND the worst (max) of its
-# N_HOT_VALUES losses is below threshold too -- see sweep_threshold_report.py
-# for what distinguishes the two (in-distribution vs. N-hot-OOD input
-# construction).
+# task "succeeded" iff the in-distribution loss is below threshold AND every
+# one of N_HOT_VALUES' losses is too -- see sweep_threshold_report.py for what
+# distinguishes the two (in-distribution vs. N-hot-OOD input construction).
 LOSS_THRESHOLD = 0.01
 N_HOT_LOSS_THRESHOLD = 0.01
 
-AUROC_THRESHOLDS = [
-    0.6,
-    0.75,
-    0.9,
-]  # ascending; splits "succeeded" runs into len+1 hiding bins
+AUROC_THRESHOLDS = (0.6, 0.75, 0.9)  # ascending; splits survivors into len+1 bins
 
 
 def parse_args() -> argparse.Namespace:
@@ -115,28 +109,17 @@ from probe_lib import (
     binary_probe_metrics_all_layers,
     boundary_auroc,
 )
+from sweep_lib.outcomes import BandSpec
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 0
 
-
-# Sequential blue ramp (references/palette.md), lightest -> darkest, 100..700.
-SEQ_RAMP = [
-    "#cde2fb",
-    "#b7d3f6",
-    "#9ec5f4",
-    "#86b6ef",
-    "#6da7ec",
-    "#5598e7",
-    "#3987e5",
-    "#2a78d6",
-    "#256abf",
-    "#1c5cab",
-    "#184f95",
-    "#104281",
-    "#0d366b",
-]
-FAILED_COLOR = "#eb6834"  # categorical slot 2 (orange) -- distinct "problem" hue
+BANDS = BandSpec(
+    loss_threshold=LOSS_THRESHOLD,
+    n_hot_loss_threshold=N_HOT_LOSS_THRESHOLD,
+    n_hot_values=N_HOT_VALUES,
+    auroc_thresholds=AUROC_THRESHOLDS,
+)
 
 
 def _discover_tags_by_lambda() -> dict[float, list[str]]:
@@ -226,42 +209,6 @@ def _save_cache(cache: dict[str, dict]) -> None:
     os.replace(tmp, CACHE_PATH)
 
 
-def _classify(
-    loss: float, worst_n_hot_loss: float, auroc: float, thresholds: list[float]
-) -> int:
-    """Bucket index, 0 = failed task, 1 = succeeded but not hidden (auroc
-    above the highest threshold), ..., len(thresholds) + 1 = succeeded and
-    most hidden (auroc below the lowest threshold). "Succeeded" requires
-    both loss and worst_n_hot_loss (the max N-hot loss over N_HOT_VALUES)
-    below their (separate) thresholds."""
-    if loss >= LOSS_THRESHOLD or worst_n_hot_loss >= N_HOT_LOSS_THRESHOLD:
-        return 0
-    for i, t in enumerate(reversed(thresholds)):
-        if auroc >= t:
-            return i + 1
-    return len(thresholds) + 1
-
-
-def _band_labels(thresholds: list[float]) -> list[str]:
-    labels = ["failed task"]
-    desc = reversed(thresholds)
-    prev = None
-    for t in desc:
-        if prev is None:
-            labels.append(f"not hidden\n(AUROC $\\geq$ {t:g})")
-        else:
-            labels.append(f"partially hidden\n({t:g} $\\leq$ AUROC < {prev:g})")
-        prev = t
-    labels.append(f"hidden\n(AUROC < {prev:g})")
-    return labels
-
-
-def _band_colors(thresholds: list[float]) -> list[str]:
-    n_hiding_bins = len(thresholds) + 1
-    idxs = np.linspace(0, len(SEQ_RAMP) - 1, n_hiding_bins).astype(int)
-    return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
-
-
 def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     """Scatter of every run's (task loss, probe AUROC), colored by lambda
     on a log scale. SymLogNorm rather than LogNorm so lam=0 -- which a log
@@ -335,8 +282,6 @@ def _run_metrics(
 
 def _lambda_counts(
     tags: list[str],
-    n_bands: int,
-    thresholds: list[float],
     cache: dict[str, dict],
     g: torch.Generator,
     probe_backend_name: str,
@@ -344,7 +289,7 @@ def _lambda_counts(
     """Per-band run counts for one lambda's `tags`, plus each usable run's
     (loss, auroc) for the scatter. Unusable runs are skipped, so the counts
     sum to len(usable) <= len(tags)."""
-    counts = np.zeros(n_bands)
+    counts = np.zeros(BANDS.n_bands)
     points = []
     for tag in tags:
         entry = _run_metrics(tag, cache, g, probe_backend_name)
@@ -353,24 +298,22 @@ def _lambda_counts(
         if entry["auroc"] is None:
             print(f"  {tag}: no probe in checkpoint, skipped")
             continue
-        worst_n_hot_loss = max(entry["n_hot_losses"].values())
-        counts[
-            _classify(entry["loss"], worst_n_hot_loss, entry["auroc"], thresholds)
-        ] += 1
+        n_hot = {int(n): v for n, v in entry["n_hot_losses"].items()}
+        counts[BANDS.classify(entry["loss"], n_hot, entry["auroc"])] += 1
         points.append((entry["loss"], entry["auroc"]))
     return counts, points
 
 
-def _gather_sweep(
-    n_bands: int, thresholds: list[float]
-) -> tuple[list[float], list[np.ndarray], list[tuple[float, float, float]]]:
+def _gather_sweep() -> (
+    tuple[list[float], list[np.ndarray], list[tuple[float, float, float]]]
+):
     """Walk the sweep's runs, returning per-lambda loss-weight ratios, the
     fraction of runs in each outcome band, and (loss, auroc, lam) per run.
     Prints a per-lambda summary table as it goes."""
     by_lambda = _discover_tags_by_lambda()
     cache = _load_cache()
     ratios = []
-    fractions = []  # one length-n_bands array per lambda
+    fractions = []  # one length-BANDS.n_bands array per lambda
     scatter_points = []  # (loss, auroc, lam) per run, across all lambdas
     # One RNG across every lambda, so its draws (eval noise, probe
     # train/test sampling) are reproducible across a full run of the script.
@@ -380,9 +323,7 @@ def _gather_sweep(
     print(f"{'lambda':>10s} {'ratio':>10s} {'n_ok':>5s} {'n_total':>7s}")
     for lam in sorted(by_lambda):
         tags = by_lambda[lam]
-        counts, points = _lambda_counts(
-            tags, n_bands, thresholds, cache, g, probe_backend_name
-        )
+        counts, points = _lambda_counts(tags, cache, g, probe_backend_name)
         if not points:
             print(f"  {lam}: no usable runs, skipped")
             continue
@@ -394,17 +335,15 @@ def _gather_sweep(
     return ratios, fractions, scatter_points
 
 
-def _plot_stacked_fractions(
-    ratios: list[float], fractions: list[np.ndarray], thresholds: list[float]
-) -> None:
+def _plot_stacked_fractions(ratios: list[float], fractions: list[np.ndarray]) -> None:
     """Stacked fraction-of-runs-per-outcome-band vs. the probe-to-task loss
     weight ratio, one stack column's worth of data per lambda."""
     order = np.argsort(ratios)
     x = np.array(ratios)[order]
     frac_matrix = np.array(fractions)[order]  # (n_lambda, n_bands)
 
-    labels = _band_labels(thresholds)
-    colors = _band_colors(thresholds)
+    labels = BANDS.labels()
+    colors = BANDS.colors()
 
     fig, ax = plt.subplots(figsize=(8, 5))
     # stackplot stacks bottom-to-top in argument order; we want "failed" on
@@ -454,12 +393,9 @@ def main(clear_cache: bool = False):
     if clear_cache and os.path.exists(CACHE_PATH):
         os.remove(CACHE_PATH)
 
-    thresholds = sorted(AUROC_THRESHOLDS)
-    n_bands = len(thresholds) + 2
+    ratios, fractions, scatter_points = _gather_sweep()
 
-    ratios, fractions, scatter_points = _gather_sweep(n_bands, thresholds)
-
-    _plot_stacked_fractions(ratios, fractions, thresholds)
+    _plot_stacked_fractions(ratios, fractions)
     _plot_loss_vs_auroc(scatter_points)
 
     plt.show()

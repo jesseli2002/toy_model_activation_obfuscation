@@ -77,11 +77,7 @@ PROBE_EVAL_NOISE_MULT = 1.0
 # distribution vs. one-hot-OOD input construction).
 LOSS_THRESHOLD = 0.01
 ONE_HOT_LOSS_THRESHOLD = 0.01
-AUROC_THRESHOLDS = [
-    0.6,
-    0.75,
-    0.9,
-]  # ascending; splits "succeeded" runs into len+1 hiding bins
+AUROC_THRESHOLDS = (0.6, 0.75, 0.9)  # ascending; splits survivors into len+1 bins
 
 
 def parse_args() -> argparse.Namespace:
@@ -118,30 +114,19 @@ from probe_lib import (
     binary_probe_metrics_all_layers,
     boundary_auroc,
 )
+from sweep_lib.outcomes import BandSpec
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 SEED = 0
 
 RunKey = tuple[int, float]  # (penalized layer, lam)
 
-
-# Sequential blue ramp (references/palette.md), lightest -> darkest, 100..700.
-SEQ_RAMP = [
-    "#cde2fb",
-    "#b7d3f6",
-    "#9ec5f4",
-    "#86b6ef",
-    "#6da7ec",
-    "#5598e7",
-    "#3987e5",
-    "#2a78d6",
-    "#256abf",
-    "#1c5cab",
-    "#184f95",
-    "#104281",
-    "#0d366b",
-]
-FAILED_COLOR = "#eb6834"  # categorical slot 2 (orange) -- distinct "problem" hue
+BANDS = BandSpec(
+    loss_threshold=LOSS_THRESHOLD,
+    n_hot_loss_threshold=ONE_HOT_LOSS_THRESHOLD,
+    n_hot_values=(1,),
+    auroc_thresholds=AUROC_THRESHOLDS,
+)
 
 
 class RunStats(NamedTuple):
@@ -246,41 +231,6 @@ def _save_cache(cache: dict[str, dict]) -> None:
     os.replace(tmp, CACHE_PATH)
 
 
-def _classify(
-    loss: float, one_hot_loss: float, auroc: float, thresholds: list[float]
-) -> int:
-    """Bucket index, 0 = failed task, 1 = succeeded but not hidden (auroc
-    above the highest threshold), ..., len(thresholds) + 1 = succeeded and
-    most hidden (auroc below the lowest threshold). "Succeeded" requires
-    both loss and one_hot_loss below their (separate) thresholds."""
-    if loss >= LOSS_THRESHOLD or one_hot_loss >= ONE_HOT_LOSS_THRESHOLD:
-        return 0
-    for i, t in enumerate(reversed(thresholds)):
-        if auroc >= t:
-            return i + 1
-    return len(thresholds) + 1
-
-
-def _band_labels(thresholds: list[float]) -> list[str]:
-    labels = [f"failed task"]
-    desc = reversed(thresholds)
-    prev = None
-    for t in desc:
-        if prev is None:
-            labels.append(f"not hidden\n(AUROC >= {t:g})")
-        else:
-            labels.append(f"partially hidden\n({t:g} <= AUROC < {prev:g})")
-        prev = t
-    labels.append(f"hidden\n(AUROC < {prev:g})")
-    return labels
-
-
-def _band_colors(thresholds: list[float]) -> list[str]:
-    n_hiding_bins = len(thresholds) + 1
-    idxs = np.linspace(0, len(SEQ_RAMP) - 1, n_hiding_bins).astype(int)
-    return [FAILED_COLOR] + [SEQ_RAMP[i] for i in idxs]
-
-
 def _run_metrics(
     tag: str, cache: dict[str, dict], g: torch.Generator, probe_backend_name: str
 ) -> dict | None:
@@ -314,7 +264,6 @@ def _collect_run_stats(
     """Per-(layer, lambda) band fractions and usable-run count, recomputing
     each run's loss/AUROC where the cache doesn't already have them, plus
     every usable run's (loss, auroc, layer, lam) for the scatter."""
-    thresholds = sorted(AUROC_THRESHOLDS)
     by_key = _discover_tags()
     cache = _load_cache()
     # One RNG across every run config, so its draws (eval noise, probe
@@ -337,8 +286,8 @@ def _collect_run_stats(
             if entry["auroc"] is None:
                 print(f"  {tag}: no probe in checkpoint, skipped")
                 continue
-            band = _classify(
-                entry["loss"], entry["one_hot_loss"], entry["auroc"], thresholds
+            band = BANDS.classify(
+                entry["loss"], {1: entry["one_hot_loss"]}, entry["auroc"]
             )
             counts[band] += 1
             n_ok += 1
@@ -386,8 +335,8 @@ def _plot_by_layer(
 ) -> plt.Figure:
     """One panel: bars per penalized layer at `lam`."""
     layers = sorted({k[0] for k in run_stats})
-    labels = _band_labels(sorted(AUROC_THRESHOLDS))
-    colors = _band_colors(sorted(AUROC_THRESHOLDS))
+    labels = BANDS.labels()
+    colors = BANDS.colors()
 
     fig, ax = plt.subplots(figsize=(1.2 * len(layers) + 1.5, 4.2))
     lam_stats = [run_stats[(ly, lam)] for ly in layers if (ly, lam) in run_stats]
@@ -472,8 +421,7 @@ def main(clear_cache: bool = False) -> None:
     if clear_cache and os.path.exists(CACHE_PATH):
         os.remove(CACHE_PATH)
 
-    thresholds = sorted(AUROC_THRESHOLDS)
-    n_bands = len(thresholds) + 2
+    n_bands = BANDS.n_bands
 
     run_stats, scatter_points = _collect_run_stats(n_bands)
     if not run_stats:
