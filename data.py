@@ -80,10 +80,10 @@ def sample_fixed_c(
 def eval_max_err(
     model: ResidualMLP,
     generator: torch.Generator,
+    noise: float,
     device: str = "cpu",
     n: int = 100_000,
     batch: int = 20_000,
-    noise: float = 0.0,
 ) -> float:
     # Accumulated on-device and read back once: a per-batch .item() would
     # sync the host against the GPU on every chunk, which at a short

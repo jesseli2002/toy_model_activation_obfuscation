@@ -157,10 +157,10 @@ def plot_learned_curves(
     model,
     tag,
     plot_dir,
+    noise: float,
     c_values=(1.0, 1.333, 1.667, 2.0),
     show=False,
     filename_tag=None,
-    noise: float = 0.0,
     generator: torch.Generator | None = None,
 ):
     """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
@@ -169,8 +169,7 @@ def plot_learned_curves(
     title (e.g. sweep_threshold_report.py, where the title carries the full
     run tag but the filename stays short). `noise`/`generator` are passed
     straight through to `model.task_output` -- pass the checkpoint's own
-    resid_noise_std so the curves reflect what the model actually outputs,
-    not a noise-free replay."""
+    resid_noise_std so the curves reflect what the model actually outputs."""
     num_x = model.num_x
     device = next(model.parameters()).device
     xs = torch.linspace(-3, 3, 400, device=device)
@@ -727,7 +726,7 @@ def _run_analysis(
     to score under (train_no_c.py's own noise is a module constant, not
     persisted to the checkpoint), so `me` stays clean in that case."""
     if adv_cfg is None:
-        me = eval_max_err(model, g, device=device)
+        me = eval_max_err(model, g, noise=0.0, device=device)
         return AnalysisResult(me, None, None, None, None)
 
     # See --train-noise-mult/--eval-noise-mult help; eval (not train) noise,

@@ -130,7 +130,7 @@ class PublishData:
 
 
 @torch.no_grad()
-def _sample_errors(model, n, g, device, noise: float = 0.0) -> np.ndarray:
+def _sample_errors(model, n, g, device, noise: float) -> np.ndarray:
     """Per-input RMS error between the model's task output and the true
     sat(x, c), over `n` fresh c ~ U[C_LOW, C_HIGH] inputs.
 
@@ -264,7 +264,7 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
 # Phase 2: plots (titles deliberately omit the tag -- see module docstring)
 # ----------------------------------------------------------------------------
 @torch.no_grad()
-def _plot_learned_curves(model, task_loss, plot_dir, tag, noise=0.0, show=False):
+def _plot_learned_curves(model, task_loss, plot_dir, tag, noise: float, show=False):
     """2x2 grid of learned y(x) per coordinate, one panel per fixed c."""
     c_values = (1.0, 1.333, 1.667, 2.0)
     num_x = model.num_x
