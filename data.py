@@ -16,7 +16,7 @@ from jaxtyping import Float
 from torch import Tensor
 
 from config import X_LOW, X_HIGH, C_LOW, C_HIGH
-from model import ResidualMLP
+from model import Noise, ResidualMLP
 
 
 def _uniform(
@@ -80,7 +80,7 @@ def sample_fixed_c(
 def eval_max_err(
     model: ResidualMLP,
     generator: torch.Generator,
-    noise: float,
+    noise: Noise,
     device: str = "cpu",
     n: int = 100_000,
     batch: int = 20_000,
@@ -111,7 +111,7 @@ def eval_task_loss(
     batch: int = 20_000,
     x_p_outer: float | None = None,
     x_threshold: float = 1.0,
-    noise: float = 0.0,
+    noise: Noise = 0.0,
 ) -> float:
     """Mean-squared task error over `n` fresh examples, matching the training
     loop's own `l_task` formula (see train_adversarial_logreg.py's
@@ -147,7 +147,7 @@ def eval_n_hot_loss(
     n: int = 100_000,
     batch: int = 20_000,
     n_hot: int = 1,
-    noise: float = 0.0,
+    noise: Noise = 0.0,
 ) -> float:
     """Mean-squared task error with only `n_hot` input coordinates nonzero per
     example (the rest held at 0) -- the same input construction used by

@@ -90,6 +90,7 @@ from tqdm import tqdm
 import config
 from adversarial_report import _linear_y_reconstruction, _steer_vectors
 from data import eval_task_loss, sample_batch
+from model import Noise
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -119,7 +120,7 @@ class PublishData:
 
     task_loss: float
     err_samples: np.ndarray  # (n_err_samples,) per-input Euclidean error
-    noise: float  # adv_cfg.resid_noise_std -- see _plot_learned_curves
+    noise: Noise  # adv_cfg.resid_noise_std -- see _plot_learned_curves
     hidden_layers: list[int]
     gap_plot_inputs: (
         dict  # {layer: {"w_dom", "midpoint", "w_probe", "b_probe", "X_te", "y_te"}}
@@ -130,7 +131,7 @@ class PublishData:
 
 
 @torch.no_grad()
-def _sample_errors(model, n, g, device, noise: float) -> np.ndarray:
+def _sample_errors(model, n, g, device, noise: Noise) -> np.ndarray:
     """Per-input RMS error between the model's task output and the true
     sat(x, c), over `n` fresh c ~ U[C_LOW, C_HIGH] inputs.
 
@@ -264,7 +265,7 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
 # Phase 2: plots (titles deliberately omit the tag -- see module docstring)
 # ----------------------------------------------------------------------------
 @torch.no_grad()
-def _plot_learned_curves(model, task_loss, plot_dir, tag, noise: float, show=False):
+def _plot_learned_curves(model, task_loss, plot_dir, tag, noise: Noise, show=False):
     """2x2 grid of learned y(x) per coordinate, one panel per fixed c."""
     c_values = (1.0, 1.333, 1.667, 2.0)
     num_x = model.num_x

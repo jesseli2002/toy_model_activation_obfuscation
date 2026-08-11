@@ -136,6 +136,7 @@ from data import sample_batch
 from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
 from data import eval_max_err
+from model import Noise
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -157,7 +158,7 @@ def plot_learned_curves(
     model,
     tag,
     plot_dir,
-    noise: float,
+    noise: Noise,
     c_values=(1.0, 1.333, 1.667, 2.0),
     show=False,
     filename_tag=None,
