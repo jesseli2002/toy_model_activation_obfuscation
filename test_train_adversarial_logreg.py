@@ -288,6 +288,28 @@ class TestLrSchedule:
         )
         assert _lr_at(500, 100, cfg) == pytest.approx(0.01)
 
+    def test_warmup_start_frac_one_holds_lr_constant_through_warmup(self):
+        """lr_warmup_start_frac=1.0 should behave like no warmup at all,
+        constant at lr, until the decay phase takes over."""
+        cfg = _make_adv_config(
+            lr=1.0,
+            lr_warmup_iters=10,
+            lr_warmup_start_frac=1.0,
+            lr_min_frac=0.01,
+            lr_schedule="cosine",
+        )
+        assert [_lr_at(it, 100, cfg) for it in (0, 5, 9)] == pytest.approx([1.0] * 3)
+        assert _lr_at(10, 100, cfg) == pytest.approx(1.0)
+        assert _lr_at(100, 100, cfg) == pytest.approx(0.01)
+
+    def test_warmup_start_frac_interpolates_linearly(self):
+        cfg = _make_adv_config(
+            lr=1.0, lr_warmup_iters=10, lr_warmup_start_frac=0.5, lr_min_frac=1.0
+        )
+        assert _lr_at(0, 100, cfg) == pytest.approx(0.55)
+        assert _lr_at(4, 100, cfg) == pytest.approx(0.75)
+        assert _lr_at(9, 100, cfg) == pytest.approx(1.0)
+
 
 def _write_input_config(path: Path, **overrides) -> Path:
     d = _logreg_config_file_fields(**overrides)

@@ -42,6 +42,7 @@ def _logreg_config_file_fields(**overrides) -> dict:
         batch_size=4096,
         lr=3e-3,
         lr_warmup_iters=0,
+        lr_warmup_start_frac=0.0,
         lr_min_frac=1.0,
         lr_schedule="cosine",
         adam_eps=1e-8,
