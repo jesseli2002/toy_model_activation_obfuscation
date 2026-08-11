@@ -29,6 +29,9 @@ NOISE_GRID_LAYER = 2
 
 # Multiplier on noise when plotting learned curves.
 PLOT_LEARNED_CURVES_NOISE_MULT = 1
+# Multiplier on noise when steering, so steer plots reflect the model's
+# actual (noisy) forward pass instead of an unrealistically clean one.
+PLOT_STEER_NOISE_MULT = 1
 
 
 def parse_args():
@@ -498,7 +501,16 @@ def _plot_probe_hist_roc(lyr, pi, plot_dir, tag, show=False):
 
 @torch.no_grad()
 def _plot_steer_comparison(
-    steer_layer, num_x, model, w_dom, w_probe, plot_dir, tag, device, show=False
+    steer_layer,
+    num_x,
+    model,
+    w_dom,
+    w_probe,
+    plot_dir,
+    tag,
+    device,
+    noise: Noise,
+    show=False,
 ):
     """Same content as adversarial_report._plot_steer_comparison, minus the
     tag in the title."""
@@ -515,7 +527,7 @@ def _plot_steer_comparison(
             x = torch.zeros(len(xs), num_x, device=device)
             x[:, j] = xs
             x_full = torch.cat([x, torch.full((len(xs), 1), 1.0, device=device)], dim=1)
-            y = forward_steered(model, x_full, steer_layer, vec)[:, j]
+            y = forward_steered(model, x_full, steer_layer, vec, noise=noise)[:, j]
             ax.plot(
                 xs.cpu().numpy(), y.cpu().numpy(), color="blue", alpha=0.3, zorder=5
             )
@@ -548,7 +560,7 @@ def _plot_steer_comparison(
 
 @torch.no_grad()
 def _plot_steer_direction_magnitude(
-    steer_layer, num_x, model, w_dom, plot_dir, tag, device, show=False
+    steer_layer, num_x, model, w_dom, plot_dir, tag, device, noise: Noise, show=False
 ):
     """DoM-direction steering, forward (c=1 -> c=2) vs reverse (c=2 -> c=1),
     each at 1x and 2x the DoM shift magnitude. Complements
@@ -577,7 +589,7 @@ def _plot_steer_direction_magnitude(
                 x_full = torch.cat(
                     [x, torch.full((len(xs), 1), c_start, device=device)], dim=1
                 )
-                y = forward_steered(model, x_full, steer_layer, vec)[:, j]
+                y = forward_steered(model, x_full, steer_layer, vec, noise=noise)[:, j]
                 ax.plot(
                     xs.cpu().numpy(),
                     y.cpu().numpy(),
@@ -662,6 +674,7 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
             plot_dir,
             tag,
             device,
+            noise=data.noise * PLOT_STEER_NOISE_MULT,
             show=show,
         )
         _plot_steer_direction_magnitude(
@@ -672,6 +685,7 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
             plot_dir,
             tag,
             device,
+            noise=data.noise * PLOT_STEER_NOISE_MULT,
             show=show,
         )
 

@@ -23,7 +23,7 @@ from jaxtyping import Bool, Float
 from checkpoint_lib import load_model, load_model_path, resolve_adv_config
 from config import C_HIGH, C_LOW
 from data import sample_fixed_c
-from model import ResidualMLP
+from model import Noise, ResidualMLP
 
 
 class LinearBoundary(NamedTuple):
@@ -355,14 +355,21 @@ def forward_steered(
     x_full: torch.Tensor,
     steer_layer: int,
     steer_vec: torch.Tensor | None,
+    noise: Noise | None = None,
+    generator: torch.Generator | None = None,
 ) -> torch.Tensor:
     """Manual replay of ResidualMLP.forward, injecting steer_vec into the
-    residual stream at index steer_layer (0=embedding, i=after block i-1)."""
+    residual stream at index steer_layer (0=embedding, i=after block i-1).
+    `noise`/`generator` follow ResidualMLP.forward's convention (see there)."""
+    if isinstance(noise, float):
+        noise = model.generate_noise(x_full.shape[0], noise, generator)
     r = x_full @ model.W_E
     if steer_layer == 0 and steer_vec is not None:
         r = r + steer_vec
     for i, block in enumerate(model.blocks):
         r = r + block(r)
+        if noise is not None and i + 1 < model.num_blocks:
+            r = r + noise[i]
         if (i + 1) == steer_layer and steer_vec is not None:
             r = r + steer_vec
     y = r @ model.W_U
