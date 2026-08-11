@@ -1,7 +1,7 @@
-"""sweep_analysis.py's outcome breakdown, for runs/sweep8_* -- a sweep over
+"""sweep7_analysis.py's outcome breakdown, for runs/sweep8_* -- a sweep over
 model size at three lambdas, plus a side ray over model size at one lambda.
 
-Same per-run classification as sweep_analysis: a run either failed the task
+Same per-run classification as sweep7_analysis: a run either failed the task
 (loss) or, having succeeded, is binned by how well it hid from the
 layer-PROBE_LAYER linear probe (AUROC). sweep8 has two distinct rays through
 (num_x, d_model, d_mlp, lambda) space, each answering a different question,
@@ -14,7 +14,7 @@ so each gets its own plot(s) rather than one generic size x lambda grid:
   lam=0.01 -- "does hiding change with size alone, off the main ratio?"
   One plot.
 - Main sweep, per-run: the same main-sweep runs as unbinned (task loss,
-  AUROC) points, colored by num_x -- see sweep_analysis's analogous
+  AUROC) points, colored by num_x -- see sweep7_analysis's analogous
   loss-vs-AUROC scatter. One plot per lambda.
 
 Each ray also has lam=0 controls, which aren't plotted (a run that always
@@ -26,7 +26,7 @@ The (32, 64, 16) point sits on both rays; runs/sweep7_* already covers it
 in instead. It shows up on both the relevant main-sweep plot and the side
 ray.
 
-Bars, not sweep_analysis's stackplot: sweep8 samples only a handful of
+Bars, not sweep7_analysis's stackplot: sweep8 samples only a handful of
 lambdas, too few for a filled area between them to mean anything.
 
 Lambda coverage is deliberately uneven across sizes (only some sizes get the
@@ -41,7 +41,7 @@ data.eval_task_loss (deliberately excluding the adversarial/probe penalty,
 since this only cares about task performance), and AUROC via a freshly refit
 probe at PROBE_LAYER (fit and scored under the same residual-stream noise,
 see PROBE_*_NOISE_MULT) -- rather than read from history.jsonl or the
-checkpoint's own stored training-time probe. See sweep_analysis.py and
+checkpoint's own stored training-time probe. See sweep7_analysis.py and
 sweep_threshold_report.py, which recompute the same way for the same reasons
 (some runs' final checkpoint predates their last history record).
 
@@ -513,7 +513,7 @@ def _draw_bars(
     for i, (x, s) in enumerate(zip(positions, stats_at)):
         bottom = 0.0
         # Draw "most hidden" at the bottom up to "failed" on top, matching
-        # sweep_analysis's stack order.
+        # sweep7_analysis's stack order.
         for band in range(n_bands - 1, -1, -1):
             ax.bar(
                 x,

@@ -1,4 +1,4 @@
-"""sweep_analysis.py's outcome breakdown, for runs/sweep13_* -- a sweep over
+"""sweep7_analysis.py's outcome breakdown, for runs/sweep13_* -- a sweep over
 *which* layer the probe penalty is applied to, at two lambdas.
 
 Every other sweep penalized (and probed) layer 2; sweep13 holds the model
@@ -14,7 +14,7 @@ Two views, each one plot per lambda:
 - Outcome bars: per-layer stacked fractions, x-axis = penalized layer. A run
   either failed the task (loss) or, having succeeded, is binned by how well
   it hid from the linear probe at its own penalized layer (AUROC). Bars, not
-  sweep_analysis's stackplot: "layer" is discrete and unordered-ish, with no
+  sweep7_analysis's stackplot: "layer" is discrete and unordered-ish, with no
   meaningful interpolation between neighbouring values.
 - Loss-vs-AUROC scatter: per-run (task loss on the training distribution,
   probe AUROC), for SCATTER_LAYERS only. All five layers at once is
@@ -34,7 +34,7 @@ data.eval_task_loss (deliberately excluding the adversarial/probe penalty,
 since this only cares about task performance), and AUROC via a freshly refit
 probe (fit and scored under the same residual-stream noise, see PROBE_*_NOISE_MULT)
 -- rather than read from history.jsonl or the checkpoint's own stored
-training-time probe. See sweep_analysis.py and sweep8_analysis.py, which
+training-time probe. See sweep7_analysis.py and sweep8_analysis.py, which
 recompute the same way for the same reasons (some runs' final checkpoint
 predates their last history record).
 
@@ -412,7 +412,7 @@ def _draw_bars(
     for i, (x, s) in enumerate(zip(positions, stats_at)):
         bottom = 0.0
         # Draw "most hidden" at the bottom up to "failed" on top, matching
-        # sweep_analysis's stack order.
+        # sweep7_analysis's stack order.
         for band in range(n_bands - 1, -1, -1):
             ax.bar(
                 x,
