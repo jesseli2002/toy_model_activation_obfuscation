@@ -133,12 +133,110 @@ back on and typically nobody is watching live.
    before they start together. `unregistered`/`misplaced` findings mean
    something reached a queue outside `sweep_pool.py`; log them and re-run
    the audit after correcting the registry.
-8. **Any live concurrency experiment you choose to run** (bump
-   `conc.txt`, observe, keep/revert) must poll in chunks of **≤3
-   minutes** per wait step — never one long sleep — both to keep your
-   own context from going stale mid-wake and to stay under the ~5min
-   prompt-cache TTL. Log any change you make to `handoff.md` as passive
-   context for the next wake, since you won't remember doing it.
+8. **Reassess optimal concurrency every wake, not just when something
+   looks wrong.** The queue is heterogeneous (different model sizes,
+   different `--max-iters`, different per-job GPU/memory footprints) —
+   the concurrency level that was optimal for an earlier mix of running
+   jobs can drift as the mix changes, in either direction. Treat this as
+   routine upkeep, same tier as the throughput/ETA read in step 1, not an
+   optional experiment you might skip.
+
+   **Measure correctly, not off the printed `it/s` field.** Each job's
+   printed `it/s` is a running average over *that job's entire lifetime*
+   and keeps climbing for a while after startup regardless of
+   concurrency — comparing two single-snapshot readings at different
+   concurrency levels conflates "rate matured" with "concurrency
+   changed" and reads as a false improvement. Instead, sample the last
+   `iter <N>` line of every running `job<N>.log`, wait a fixed interval
+   (a `≤3min` chunk works), sample again, and sum `(iter_t1 - iter_t0)`
+   across jobs, divided by elapsed wall-clock time — that is the
+   aggregate instantaneous throughput. Only compare two such windows
+   that each fall entirely within one concurrency setting.
+
+   **Testing an increase:** bump `conc.txt`, wait for the new jobs to
+   land, measure per the method above. If the new level is a net
+   regression (aggregate throughput *drops*, not just per-job rate — an
+   increase that raises aggregate while lowering per-job rate is fine,
+   that's the expected tradeoff of adding parallelism up to the real
+   ceiling), **lowering `conc.txt` back down is not sufficient by
+   itself** — it only stops future launches, and the newly-added job(s)
+   that caused the regression keep running (and keep dragging down
+   everyone else's throughput) for as long as they'd otherwise take,
+   which can be hours. Actually remove them: SIGINT the specific job(s)
+   this experiment just added (their `launched pid=...` lines are the
+   newest in `manager.log`), following the same stop/confirm/ledger/
+   requeue steps as "testing a decrease" immediately below — treat a
+   failed increase-experiment as "now testing a decrease back to the
+   prior level," not a separate case.
+
+   **Testing a decrease is now also permitted**, via SIGINT + `--resume`
+   rather than waiting for natural completions to thin the pool out —
+   useful when you suspect the *current* level (inherited from an
+   earlier, different job mix) is already past the ceiling:
+   1. Lower `conc.txt` to the candidate target **first**. The manager
+      never kills already-running jobs on a lower target, it only stops
+      backfilling finished ones — so this alone doesn't reduce the
+      running count, but it prevents the manager from immediately
+      refilling the slot(s) you're about to free, which would defeat
+      the measurement.
+   2. Pick the newest running job(s) to stop (their `launched pid=...`
+      line is near the tail of `manager.log`) until the running count
+      matches the candidate target.
+   3. `kill -INT <pid>` on each, via `remote_exec`. This reaches the
+      training process directly — `vast_pool_manager.sh` launches jobs
+      as `bash -c "$CMD" ... &` with nothing following in the string, so
+      bash execs straight into `python`, and the pid `manager.log`
+      records for that job **is** the training process, not a wrapper.
+   4. SIGINT is safe here: the training loop defers it, and only
+      breaks/checkpoints/exits at an iteration boundary, so `last.pt`
+      and `history.jsonl` are left consistent — confirmed by reading
+      `train_adversarial_logreg.py`'s `_defer_keyboard_interrupt`/
+      `save_checkpoint`/`_atomic_write`. The one gap is the first ~10s
+      of a *fresh* run's startup (before the training loop begins, e.g.
+      during initial probe fit) — a SIGINT landing there is uncaught and
+      leaves no checkpoint. Not a concern in practice (Jesse: "losing
+      data in initialization is not a worry, that takes <10s"); just
+      don't be surprised if a just-launched job's stop leaves nothing to
+      resume — requeue it as a fresh `--retry-tag` instead in that case.
+   5. Confirm the stop actually landed (poll for `logs/job<N>.log`'s
+      `[save] ... -> ...` line, or `manager.log`'s `finished pid=...
+      rc=...` line for that pid) before measuring the new throughput —
+      same ≤3min-chunk, iter-delta method as above.
+   6. **Record every SIGINT you send in the manual-stop ledger in
+      `handoff.md` immediately** (tag, pid, iteration it was stopped at,
+      timestamp, `conc.txt` target you were testing) — see "Manual-stop
+      ledger" below. This is required, not optional bookkeeping: without
+      it, the next `rc=[1-9]` audit (yours or a future wake's) can't
+      tell your own SIGINTs apart from real crashes.
+   7. Requeue the stopped tag the normal way — `sweep_pool.py requeue
+      --instance ALIAS --resume-tag <tag>` + `queue_append.sh`, appended
+      at the queue's end (same path as an eligible auto-retry below) —
+      once you're done with the experiment, or immediately if you expect
+      it to relaunch at the new lower concurrency anyway.
+
+   All polling here (either direction) stays in **≤3 minute** chunks per
+   wait step — never one long sleep — both to keep your own context from
+   going stale mid-wake and to stay under the ~5min prompt-cache TTL. Log
+   the outcome (kept new level / reverted, and why) to `handoff.md`.
+
+### Manual-stop ledger
+
+`handoff.md` must carry a running ledger of every tag you've personally
+SIGINT'd for a concurrency experiment (point 8) and not yet resolved —
+e.g. a `## Manual stops` section with one line per entry:
+`<tag> | pid=<pid> | stopped at iter <N> | <timestamp> | reason: <why> |
+status: pending-resume / resumed`.
+
+This is what makes `rc=[1-9]` counts interpretable: a SIGINT'd job exits
+nonzero (an uncaught `KeyboardInterrupt` past the deferred block) and
+looks identical, by exit code alone, to a real crash. Before triaging any
+`rc=[1-9]` line (step 2 below, and the "Auto-retry on failure" section),
+cross-check its tag against this ledger first. The count of *unexplained*
+failures for step 2's "Failing?" and the "Done condition" check is
+`(total rc=[1-9] lines) − (lines whose tag is a ledger entry)` — mark a
+ledger entry `resumed` once you've requeued it, so it stops being
+subtracted forever and a *second*, unexpected failure on that same tag
+still surfaces normally.
 
 ## Auto-retry on failure
 
