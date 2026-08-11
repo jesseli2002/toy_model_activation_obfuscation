@@ -41,63 +41,9 @@ LOSS_TYPE = "task"
 TRIAL_ALPHA = 0.4
 MEDIAN_LINEWIDTH = 2.5
 
-import functools
-import json
-import os
-
 import matplotlib.pyplot as plt
-import numpy as np
 
-from paths import log_dir
-
-
-def _load_history(tag: str) -> tuple[np.ndarray, np.ndarray]:
-    """(iters, loss) from a run's logs/history.jsonl. Skips the trailing
-    'final' summary record, which repeats the last iter with loss fields
-    nulled out."""
-    iters, losses = [], []
-    with open(os.path.join(log_dir(tag), "history.jsonl")) as f:
-        for line in f:
-            rec = json.loads(line)
-            if rec.get("final"):
-                continue
-            iters.append(rec["iter"])
-            if LOSS_TYPE == "total":
-                losses.append(rec["loss"])
-            elif LOSS_TYPE == "task":
-                losses.append(rec["l_task"])
-            else:
-                raise RuntimeError(f"Unrecognized {LOSS_TYPE=}")
-    return np.array(iters), np.array(losses)
-
-
-def _running_mean(iters: np.ndarray, values: np.ndarray, window: int) -> np.ndarray:
-    """Causal low-pass: mean of logged points within the trailing `window`
-    iterations (not `window` logged points -- --log-interval defaults to 100
-    and can vary run to run, so this has to key off `iters`, not array
-    index)."""
-    out = np.empty_like(values)
-    lo = 0
-    for i in range(len(iters)):
-        cutoff = iters[i] - window + 1
-        while iters[lo] < cutoff:
-            lo += 1
-        out[i] = values[lo : i + 1].mean()
-    return out
-
-
-def _median_trajectory(
-    trials: list[tuple[np.ndarray, np.ndarray]],
-) -> tuple[np.ndarray, np.ndarray]:
-    """Per-iteration median across trials' (iters, values), computed on a
-    common grid via linear interpolation (trials can log at different iters
-    / run to different lengths)."""
-    lo = max(iters[0] for iters, _ in trials)
-    hi = min(iters[-1] for iters, _ in trials)
-    grid = functools.reduce(np.union1d, [iters for iters, _ in trials])
-    grid = grid[(grid >= lo) & (grid <= hi)]
-    stacked = np.stack([np.interp(grid, iters, values) for iters, values in trials])
-    return grid, np.median(stacked, axis=0)
+from sweep_lib.history import causal_lowpass, load_history, median_trajectory
 
 
 def main():
@@ -107,12 +53,12 @@ def main():
     for (group_name, tags), color in zip(GROUPS.items(), colors):
         trials = []
         for tag in tags:
-            iters, losses = _load_history(tag)
-            filtered = _running_mean(iters, losses, LOSS_LOWPASS_WINDOW)
+            iters, losses = load_history(tag, LOSS_TYPE)
+            filtered = causal_lowpass(iters, losses, LOSS_LOWPASS_WINDOW)
             trials.append((iters, filtered))
             ax.plot(iters, filtered, color=color, alpha=TRIAL_ALPHA, lw=1)
 
-        median_iters, median_vals = _median_trajectory(trials)
+        median_iters, median_vals = median_trajectory(trials)
         ax.plot(
             median_iters,
             median_vals,
