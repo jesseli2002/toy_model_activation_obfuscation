@@ -135,7 +135,6 @@ from analytic import reference_task_losses
 from data import sample_batch
 from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
-from data import eval_max_err
 from model import Noise
 from probe_backend import resolve_probe_backend
 from probe_lib import (
@@ -257,13 +256,7 @@ def _plot_training_traces(
     if not pts:
         return
     its = [h["iter"] for h in pts]
-    fig, (ax_err, ax_auroc, ax_loss) = plt.subplots(1, 3, figsize=(16, 4.2))
-
-    ax_err.semilogy(its, [h["max_err"] for h in pts], color="crimson")
-    ax_err.set_title("task fidelity (price of hiding)")
-    ax_err.set_xlabel("iter")
-    ax_err.set_ylabel("max abs error")
-    ax_err.grid(True, alpha=0.3)
+    fig, (ax_auroc, ax_loss) = plt.subplots(1, 2, figsize=(11, 4.2))
 
     snapshots = _auroc_snapshots(tag, device, eval_noise_mult)
     if snapshots:
@@ -637,11 +630,6 @@ def _build_report(args, model, adv_cfg, result: "AnalysisResult"):
     )
     emit()
 
-    # --- 1. task fidelity ---
-    emit(f"## 1. Task fidelity")
-    emit(f"max abs elementwise error (c~U[1,2]): {result.me:.3e}")
-    emit()
-
     if adv_cfg is None:
         emit(
             "## 2+. Probe analysis skipped — c-blind demonstration run "
@@ -698,10 +686,9 @@ def _build_report(args, model, adv_cfg, result: "AnalysisResult"):
 @dataclasses.dataclass
 class AnalysisResult:
     """Everything computed in phase 1, needed by both the report (phase 2)
-    and the plots (phase 3). The probe-derived fields are None for a c-blind
-    checkpoint (adv_cfg is None) -- see `_run_analysis`."""
+    and the plots (phase 3). Every field is None for a c-blind checkpoint
+    (adv_cfg is None) -- see `_run_analysis`."""
 
-    me: float
     gap: dict | None
     gap_plot_inputs: dict | None
     heldout: dict | None
@@ -721,20 +708,11 @@ def _run_analysis(
 ) -> AnalysisResult:
     """Phase 1: all data generation, no plotting or printing.
 
-    For a c-blind checkpoint (adv_cfg is None), only task fidelity is
-    meaningful (see the c-blind branch in write_summary), so the
-    probe-derived fields come back None. It also carries no resid_noise_std
-    to score under (train_no_c.py's own noise is a module constant, not
-    persisted to the checkpoint), so `me` stays clean in that case."""
+    For a c-blind checkpoint (adv_cfg is None), there is no probe to run --
+    see the c-blind branch in `_build_report` -- so every field comes back
+    None."""
     if adv_cfg is None:
-        me = eval_max_err(model, g, noise=0.0, device=device)
-        return AnalysisResult(me, None, None, None, None)
-
-    # See --train-noise-mult/--eval-noise-mult help; eval (not train) noise,
-    # since this scores the model's actual behavior, not a probe fit.
-    me = eval_max_err(
-        model, g, device=device, noise=adv_cfg.resid_noise_std * args.eval_noise_mult
-    )
+        return AnalysisResult(None, None, None, None)
 
     hidden_layers = list(range(1, model.num_blocks))
     train_noise_std = adv_cfg.resid_noise_std * args.train_noise_mult
@@ -785,7 +763,7 @@ def _run_analysis(
             device,
         )
 
-    return AnalysisResult(me, gap, gap_plot_inputs, heldout, linear_y_r2)
+    return AnalysisResult(gap, gap_plot_inputs, heldout, linear_y_r2)
 
 
 def _make_plots(args, model, adv_cfg, result: AnalysisResult, plot_dir, device):

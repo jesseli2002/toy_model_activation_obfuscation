@@ -77,32 +77,6 @@ def sample_fixed_c(
 
 
 @torch.no_grad()
-def eval_max_err(
-    model: ResidualMLP,
-    generator: torch.Generator,
-    noise: Noise,
-    device: str = "cpu",
-    n: int = 100_000,
-    batch: int = 20_000,
-) -> float:
-    # Accumulated on-device and read back once: a per-batch .item() would
-    # sync the host against the GPU on every chunk, which at a short
-    # --log-interval costs more than the eval itself. Chunking (and so the
-    # generator's draw sequence) is unchanged.
-    worst = torch.zeros((), device=device)
-    done = 0
-    while done < n:
-        b = min(batch, n - done)
-        x_full, y = sample_batch(b, model.num_x, generator=generator, device=device)
-        pred: Float[Tensor, "b num_x"] = model.task_output(
-            x_full, noise=noise, generator=generator
-        )
-        worst = torch.maximum(worst, (pred - y).abs().max())
-        done += b
-    return worst.item()
-
-
-@torch.no_grad()
 def eval_task_loss(
     model: ResidualMLP,
     generator: torch.Generator,
