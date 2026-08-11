@@ -183,8 +183,8 @@ def parse_args():
         "others force a backend regardless of device -- e.g. to smoke-test "
         "a GPU backend on a CPU-only machine.",
     )
-    g_book.add_argument("--log-interval", type=int, default=100)
-    g_book.add_argument("--ckpt-interval", type=int, default=200)
+    g_book.add_argument("--log-interval", type=int, default=125)
+    g_book.add_argument("--ckpt-interval", type=int, default=20000)
     g_book.add_argument("--max-iters", type=int, default=config.MAX_ITERS)
     g_book.add_argument("--rate-meter-window", type=float, default=1000.0)
     g_book.add_argument(
