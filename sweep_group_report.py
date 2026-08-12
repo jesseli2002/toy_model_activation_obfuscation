@@ -20,32 +20,99 @@ import argparse
 # Each group: label -> run tags. Vary only the trial suffix within a group;
 # everything else about the group's runs should match. Each label keeps its
 # own color across every plot.
+
 # fmt: off
+# sweep 7/11/14/17 -> model sizes
+PLOT_LAM = "0.1" # or 0.01
 GROUPS = {
-    f"lam{lam}/warm{warm}": [
-        f"sweep15_layer10_lam{lam}_warm{warm}{warm}_lr0.003_tr{i}" for i in range(5)
-    ]
-    for lam, warm in [("0.1", "10k"), ("0.01", "10k"), ("0.1", "20k"), ("0.01", "20k")]
-} | {
-    "lam0.1/warm0": [f"sweep13_layer10_lam0.1_tr{i}" for i in range(10)],
-    "lam0.01/warm0": [f"sweep13_layer10_lam0.01_tr{i}" for i in range(10)],
+    "nx32": [f"sweep17_lr0.0015_iter100k_lam{PLOT_LAM}_tr{i}" for i in range(10)],
+    "nx64": [f"sweep11_lr0.0015_iter200k_lam{PLOT_LAM}_tr{i}" for i in range(10)],
+    "nx128": [f"sweep14_lr0.0015_iter400k_lam{PLOT_LAM}_tr{i}" for i in range(10)],
 }
 
-# # sweep 7/11/14/17 -> model sizes
-# GROUPS = {
-#     "nx32": [f"sweep17_lr0.0015_iter100k_lam0.01_tr{i}" for i in range(10)],
-#     "nx64": [f"sweep11_lr0.0015_iter200k_lam0.01_tr{i}" for i in range(10)],
-#     "nx128": [f"sweep14_lr0.0015_iter400k_lam0.01_tr{i}" for i in range(10)],
-# }
+# # sweep1j: probe on different layers
+PLOT_LAM = "0.1"
+GROUPS = {
+    # #lam0.01
+    # # "lrfin0.05": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.05_tr{i}" for i in range(5)],
+    # "lrfin0.1_20k": [f"sweep16_layer10_lam{PLOT_LAM}_iter120k_exp_lrfin0.1_tr{i}" for i in range(5)],
+    # # "lrfin0.2": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.2_tr{i}" for i in range(5)],
+    # "cos100k_20k20k_warmup": [f"sweep15_layer10_lam{PLOT_LAM}_warm20k20k_lr0.0015_tr{i}" for i in range(5)],
+    # "cos100k_10k10k_warmup": [f"sweep15_layer10_lam{PLOT_LAM}_warm10k10k_lr0.0015_tr{i}" for i in range(5)],
+    # #100k "cos200k": [f"sweep16_layer10_lam0.01_iter200k_cos_lrfin0.1_tr{i}" for i in range(5)],
+    # # "200kcos200k": [f"sweep16_layer10_lam0.01_iter200k_cos_lrfin0.1_tr{i}" for i in range(5)],
+    # # Compare lrfin (What's the best lr final?)
+    # # Compare lrfi13(What's the best lr final?)
+    # "lrfin0.1": [f"sweep16_layer10_lam{PLOT_LAM}_iter120k_exp_lrfin0.1_tr{i}" for i in range(5)],
+    # "lrfin0.2": [f"sweep16_layer10_lam{PLOT_LAM}_iter120k_exp_lrfin0.2_tr{i}" for i in range(5)],
 
-# # sweep16: probe on different layers
-# GROUPS = {
-#     "train": [f"sweep16_layer10_lam0.01_iter200k_tr{i}" for i in range(4)],
-# }
-# fmt: on
+    # # Compare lrfin on refit (What's the best lr final?)
+    # "lrfin0.05": [f"sweep16_layer10_lam{PLOT_LAM}_iter120k_exp_lrfin0.05_refit1_tr{i}" for i in range(5)],
+    # "lrfin0.1": [f"sweep16_layer10_lam{PLOT_LAM}_iter120k_exp_lrfin0.1_refit1_tr{i}" for i in range(5)],
+    # "lrfin0.2": [f"sweep16_layer10_lam{PLOT_LAM}_iter120k_exp_lrfin0.2_refit1_tr{i}" for i in range(5)],
+
+
+
+    # Compare fitting behaviour (Does refitting every iteration help?)
+    # "fit2": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.05_tr{i}" for i in range(5)],
+    # "fit1": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.05_refit1_tr{i}" for i in range(5)],
+    # "fit2": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.1_tr{i}" for i in range(5)],
+    # "fit1": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.1_refit1_tr{i}" for i in range(5)],
+    # "fit2": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.2_tr{i}" for i in range(5)],
+    # "fit1": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.2_refit1_tr{i}" for i in range(5)],
+
+    # # Compare more vs less iterations
+    # "120k": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.1_refit1_tr{i}" for i in range(5)],
+    # "220k": [f"sweep16_layer10_lam0.01_iter220k_exp_lrfin0.1_refit1_tr{i}" for i in range(5)],
+    # "120k": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.1_refit1_lamramp_tr{i}" for i in range(5)],
+    # "220k": [f"sweep16_layer10_lam0.01_iter220k_exp_lrfin0.1_refit1_lamramp_tr{i}" for i in range(5)],
+
+    # # Compare lamramp (220k)
+    # "20k + step": [f"sweep16_layer10_lam0.01_iter220k_exp_lrfin0.1_refit1_tr{i}" for i in range(5)],
+    # "10k + ramp": [f"sweep16_layer10_lam0.01_iter220k_exp_lrfin0.1_refit1_lamramp_tr{i}" for i in range(5)],
+
+    # # Compare lamramp (others)
+    # "20k + step": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.05_refit1_tr{i}" for i in range(5)],
+    # "10k + ramp lr0.1": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.1_refit1_lamramp_tr{i}" for i in range(5)],
+    # "10k + ramp lr0.2": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.2_refit1_lamramp_tr{i}" for i in range(5)],
+    # "10k + ramp lr0.05": [f"sweep16_layer10_lam0.01_iter120k_exp_lrfin0.05_refit1_lamramp_tr{i}" for i in range(5)],
+
+    # # Compare noise (lam0.01)
+    # "0.03": [f"sweep16_layer10_lam0.01_iter220k_exp_lrfin0.1_refit1_tr{i}" for i in range(5)],
+    # "0.02": [f"sweep18_layer10_lam0.01_noise0.02_tr{i}" for i in range(5)],
+    # "0.01": [f"sweep18_layer10_lam0.01_noise0.01_tr{i}" for i in range(5)],
+
+    # Compare noise (lam0.1)
+    # "0.03": [f"sweep16_layer10_lam0.1_iter220k_exp_lrfin0.1_refit1_tr{i}" for i in range(5)],
+    # "0.02": [f"sweep18_layer10_lam0.1_noise0.02_tr{i}" for i in range(4)],
+    # "0.01": [f"sweep18_layer10_lam0.1_noise0.01_tr{i}" for i in range(4)],/
+
+    # # Compare rampup
+    # "0k": [f"sweep18_layer10_lam0.1_noise0.01_tr{i}" for i in range(5)],
+    # # "10k": [f"sweep18_layer10_lam0.1_ramp10k_noise0.01_tr{i}" for i in range(5)],
+    # # "20k": [f"sweep18_layer10_lam0.1_ramp20k_noise0.01_tr{i}" for i in range(3)],
+    # "100k": [f"sweep18_layer10_lam0.1_ramp100k_noise0.01_tr{i}" for i in range(5)],
+    # "200k": [f"sweep18_layer10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(5)],
+
+    # # Compare other layers
+    # "layer2":[f"sweep18_layer2_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer4":[f"sweep18_layer4_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer6":[f"sweep18_layer6_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer8":[f"sweep18_layer8_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer10":[f"sweep18_layer10_lam0.01_noise0.01_tr{i}" for i in range(10)],
+
+    # Compare lambda, for 200k rampup
+    "lam0.01":[f"sweep18_layer10_lam0.01_noise0.01_tr{i}" for i in range(7)],
+    "lam0.032": [f"sweep18_layer10_lam0.032_ramp200k_noise0.01_tr{i}" for i in range(5)],
+    "lam0.1": [f"sweep18_layer10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(5)],
+}
+
+#fmt: on
 
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
-PROBE_LAYER = 10  # matches adversarial.penalty_layers in these runs' config.json
+
+# Which layer to probe at, or None to probe at the (single) layer a penalty was applied at.
+PROBE_LAYER = None
 
 # -- curves
 LOSS_LOWPASS_WINDOW = 1  # running mean of loss over the past this-many iters

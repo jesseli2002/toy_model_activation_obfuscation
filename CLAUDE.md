@@ -43,6 +43,7 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
     - If a fix feels hacky, ask: “Knowing everything I know now, implement the elegant solution.”
     - Skip this for simple fixes — don’t over-engineer
 - Keep commits small and self-contained
+- Don't line-break long strings (even if they otherwise violate the max column width) so their contents stay searchable.
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.

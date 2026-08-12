@@ -17,10 +17,6 @@ single glob+regex the way an in-sweep parameter is), so `_groups` below lists
 tags explicitly rather than deriving them from sweep_lib.discovery -- same
 approach as sweep_group_report.py, which covers this exact sweep.
 
-Task success is judged on the training distribution only (data.eval_task_loss
-against LOSS_THRESHOLD): N-hot OOD loss isn't part of what this sweep is
-asking, so BANDS leaves n_hot_values empty.
-
 LOSS_THRESHOLD / AUROC_THRESHOLDS match the other sweep_*_analysis.py
 scripts' provisional values. PROBE_LAYER=2 matches
 adversarial.penalty_layers for every run in this sweep.
@@ -93,7 +89,9 @@ SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
 
 BANDS = BandSpec(
     loss_threshold=LOSS_THRESHOLD,
-    n_hot_values=(),  # training-distribution loss only, see module docstring
+    # n_hot_values=(),  # training-distribution loss only
+    n_hot_values=(1, 2, 4, 8),  # match lambda sweep
+    n_hot_loss_threshold=LOSS_THRESHOLD,
     auroc_thresholds=AUROC_THRESHOLDS,
 )
 
@@ -129,7 +127,9 @@ def _collect_run_stats(
                 print(f"  {tag}: no probe in checkpoint, skipped")
                 continue
             loss = store.task_loss(tag)
-            band = BANDS.classify(loss, {}, auroc)
+            band = BANDS.classify(
+                loss, {n: store.n_hot_loss(tag, n) for n in BANDS.n_hot_values}, auroc
+            )
             counts[band] += 1
             n_ok += 1
             scatter_points.append((loss, auroc, num_x))
