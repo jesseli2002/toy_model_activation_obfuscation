@@ -89,8 +89,8 @@ SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
 
 BANDS = BandSpec(
     loss_threshold=LOSS_THRESHOLD,
-    # n_hot_values=(),  # training-distribution loss only
-    n_hot_values=(1, 2, 4, 8),  # match lambda sweep
+    n_hot_values=(),  # training-distribution loss only
+    # n_hot_values=(1, 2, 4, 8),  # match lambda sweep
     n_hot_loss_threshold=LOSS_THRESHOLD,
     auroc_thresholds=AUROC_THRESHOLDS,
 )
