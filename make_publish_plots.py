@@ -47,8 +47,15 @@ def parse_args():
         help="which checkpoint(s) to plot; 'both' writes to separate "
         "publish/<tag>/<ckpt>/ subdirectories.",
     )
-    p.add_argument("--n-train", type=int, default=20_000, help="per class/set")
-    p.add_argument("--n-test", type=int, default=50_000, help="per class/set")
+    p.add_argument(
+        "--n-train",
+        type=int,
+        default=config.PROBE_EVAL_N_TRAIN,
+        help="per class/set",
+    )
+    p.add_argument(
+        "--n-test", type=int, default=config.PROBE_EVAL_N_TEST, help="per class/set"
+    )
     p.add_argument("--n-err-samples", type=int, default=10_000)
     p.add_argument("--seed", type=int, default=20260718)
     p.add_argument(
@@ -186,10 +193,10 @@ def _run_noise_grid_analysis(
             1.0,
             2.0,
             [NOISE_GRID_LAYER],
-            args.n_train,
-            args.n_test,
             g,
             probe_backend_name,
+            n_train=args.n_train,
+            n_test=args.n_test,
             desc=f"eval={eval_mult:g}",
             train_noise=adv_cfg.resid_noise_std,
             eval_noise=eval_noise,
@@ -227,10 +234,10 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         1.0,
         2.0,
         hidden_layers,
-        args.n_train,
-        args.n_test,
         g,
         probe_backend_name,
+        n_train=args.n_train,
+        n_test=args.n_test,
         desc="probe gap @ {1,2}",
         train_noise=train_noise_std,
         eval_noise=eval_noise_std,

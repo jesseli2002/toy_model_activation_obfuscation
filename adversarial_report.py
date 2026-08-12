@@ -59,8 +59,15 @@ def parse_args():
         help="binary held-out c pairs, comma-separated 'lo-hi'. Kept ASYMMETRIC "
         "about 1.5 on purpose (see module docstring).",
     )
-    p.add_argument("--n-train", type=int, default=20_000, help="per class/set")
-    p.add_argument("--n-test", type=int, default=50_000, help="per class/set")
+    p.add_argument(
+        "--n-train",
+        type=int,
+        default=config.PROBE_EVAL_N_TRAIN,
+        help="per class/set",
+    )
+    p.add_argument(
+        "--n-test", type=int, default=config.PROBE_EVAL_N_TEST, help="per class/set"
+    )
     p.add_argument("--seed", type=int, default=20260718)
     p.add_argument(
         "--probe-backend",
@@ -723,10 +730,10 @@ def _run_analysis(
         1.0,
         2.0,
         hidden_layers,
-        args.n_train,
-        args.n_test,
         g,
         probe_backend_name,
+        n_train=args.n_train,
+        n_test=args.n_test,
         desc="probe gap @ {1,2}",
         train_noise=train_noise_std,
         eval_noise=eval_noise_std,
@@ -740,10 +747,10 @@ def _run_analysis(
                 c_lo,
                 c_hi,
                 hidden_layers,
-                args.n_train,
-                args.n_test,
                 g,
                 probe_backend_name,
+                n_train=args.n_train,
+                n_test=args.n_test,
                 desc=f"held-out {c_lo:g}-{c_hi:g}",
                 train_noise=train_noise_std,
                 eval_noise=eval_noise_std,

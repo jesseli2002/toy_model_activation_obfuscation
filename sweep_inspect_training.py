@@ -15,9 +15,8 @@ CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running mean of loss over the past this-many iters
 TRAIN_NOISE_MULT = 1.0  # see adversarial_report.py's --train-noise-mult
 EVAL_NOISE_MULT = 1.0  # see adversarial_report.py's --eval-noise-mult
-N_TRAIN = 20_000  # per class, fit size for the refit probe
-N_TEST = 50_000  # per class, eval size for the refit probe
 PROBE_BACKEND = "newton"  # see adversarial_report.py's --probe-backend
+# Refit-probe sample sizes come from config.PROBE_EVAL_N_TRAIN/N_TEST.
 LOSS_TYPE = "task"
 
 import matplotlib.pyplot as plt
@@ -43,8 +42,6 @@ def _refit_probe_auroc(
     tag: str,
     ckpt: str,
     device: str,
-    n_train: int,
-    n_test: int,
     probe_backend_name: str,
     train_noise_mult: float,
     eval_noise_mult: float,
@@ -71,8 +68,6 @@ def _refit_probe_auroc(
         C_LOW,
         C_HIGH,
         layers,
-        n_train,
-        n_test,
         g,
         probe_backend_name,
         eval_noise=eval_noise_std,
@@ -107,8 +102,6 @@ def main():
             tag,
             CKPT,
             DEVICE,
-            N_TRAIN,
-            N_TEST,
             probe_backend_name,
             TRAIN_NOISE_MULT,
             EVAL_NOISE_MULT,

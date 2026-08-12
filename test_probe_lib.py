@@ -121,3 +121,70 @@ def test_binary_probe_metrics_all_layers_perfect_separation():
     assert boundary_accuracy(dom_boundary, pi["X_te"], pi["y_te"]) == pytest.approx(
         m["dom"]
     )
+
+
+# ----------------------------------------------------------------------------
+# Analysis-only solver settings must not leak into training
+# ----------------------------------------------------------------------------
+def test_training_pipeline_keeps_stock_cold_steps():
+    """train_adversarial_logreg builds its probe with three positional args.
+    That call must keep NewtonLogisticRegression's own cold-fit budget -- the
+    raised analysis budget is opt-in via newton_cold_steps."""
+    from probe_backend import build_probe_pipeline
+    from probe_newton import NewtonLogisticRegression
+
+    stock = NewtonLogisticRegression().cold_steps
+    training_pipeline = build_probe_pipeline(1.0, 1000, "newton")
+    assert training_pipeline._logreg.cold_steps == stock
+
+
+def test_analysis_refit_uses_raised_cold_steps_and_float64():
+    """The refit path solves in float64 at the analysis step budget: both are
+    what keep the fit converging as n_train grows (see PROBE_EVAL_FIT_DTYPE)."""
+    from probe_backend import PROBE_EVAL_NEWTON_COLD_STEPS, build_probe_pipeline
+    from probe_lib import PROBE_EVAL_FIT_DTYPE
+
+    assert PROBE_EVAL_FIT_DTYPE is torch.float64
+    pipeline = build_probe_pipeline(
+        1.0, 1000, "newton", newton_cold_steps=PROBE_EVAL_NEWTON_COLD_STEPS
+    )
+    assert pipeline._logreg.cold_steps == PROBE_EVAL_NEWTON_COLD_STEPS
+
+    captured = {}
+    model = _make_model()
+    g = torch.Generator().manual_seed(0)
+    real_build = build_probe_pipeline
+
+    import probe_backend
+
+    def spy(*args, **kwargs):
+        p = real_build(*args, **kwargs)
+        real_fit = p.fit
+
+        def fit(X, y):
+            captured["dtype"] = X.dtype
+            captured["cold_steps"] = getattr(
+                getattr(p, "_logreg", None), "cold_steps", None
+            )
+            return real_fit(X, y)
+
+        p.fit = fit
+        return p
+
+    probe_backend.build_probe_pipeline = spy
+    try:
+        binary_probe_metrics_all_layers(
+            model,
+            c_lo=1.0,
+            c_hi=2.0,
+            layers=[1],
+            n_train=256,
+            n_test=64,
+            g=g,
+            probe_backend_name="newton",
+        )
+    finally:
+        probe_backend.build_probe_pipeline = real_build
+
+    assert captured["dtype"] is torch.float64
+    assert captured["cold_steps"] == PROBE_EVAL_NEWTON_COLD_STEPS
