@@ -16,6 +16,15 @@ C_LOW, C_HIGH = 1.0, 2.0  # c ~ U[X_LOW, X_HIGH]
 # Training
 MAX_ITERS = 100_000
 
+# Refit-probe analysis defaults, shared by every reporting entry point so a
+# sweep table and a single-run report measure the same thing. Analysis only --
+# training-time probe settings live in AdversarialConfig and are unaffected.
+# Sizes are per class, and sit inside a measured plateau (see PR for the
+# sensitivity study): the AUROC they produce is within the seed-to-seed noise
+# of the value at 5x the samples.
+PROBE_EVAL_N_TRAIN = 20_000
+PROBE_EVAL_N_TEST = 50_000
+
 
 ACTIVATION_CHOICES = ["leaky_relu", "gelu"]
 PROBE_BACKEND_CHOICES = ["auto", "sklearn", "torch", "newton"]

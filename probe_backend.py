@@ -30,6 +30,13 @@ from torch_logreg import TorchLogisticRegression, TorchStandardScaler
 # visible gap, and beyond 5 buys nothing. See PR #136.
 PROBE_NEWTON_STEPS = 5
 
+# Cold-fit budget for ANALYSIS refits, which never warm-start and run at a far
+# weaker regularization (probe_lib.PROBE_C) than training does. At the stock 25
+# a minority of runs stop short of the minimizer, understating probe strength;
+# 100 leaves none short across the sensitivity study's runs, for ~0.4s a fit.
+# Training is unaffected -- it keeps NewtonLogisticRegression's own default.
+PROBE_EVAL_NEWTON_COLD_STEPS = 100
+
 
 class SklearnProbePipeline:
     """Wraps make_pipeline(StandardScaler(), LogisticRegression(warm_start=True,
@@ -116,7 +123,11 @@ def resolve_probe_backend(backend: str, device: str) -> str:
 
 
 def build_probe_pipeline(
-    C: float, max_iter: int, backend: str, newton_steps: int = PROBE_NEWTON_STEPS
+    C: float,
+    max_iter: int,
+    backend: str,
+    newton_steps: int = PROBE_NEWTON_STEPS,
+    newton_cold_steps: int | None = None,
 ) -> "SklearnProbePipeline | TorchProbePipeline | NewtonProbePipeline":
     if backend == "torch":
         return TorchProbePipeline(C, max_iter)
@@ -125,7 +136,7 @@ def build_probe_pipeline(
     elif backend == "newton":
         # max_iter is deliberately unused: Newton's budget is a fixed step
         # count, not an iteration ceiling (see NewtonLogisticRegression).
-        return NewtonProbePipeline(C, steps=newton_steps)
+        return NewtonProbePipeline(C, steps=newton_steps, cold_steps=newton_cold_steps)
     else:
         raise ValueError(
             f"unknown probe backend {backend!r} -- pass a resolved backend "

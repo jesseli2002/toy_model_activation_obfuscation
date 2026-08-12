@@ -109,11 +109,17 @@ class NewtonLogisticRegression:
 
 class NewtonProbePipeline:
     """TorchStandardScaler + NewtonLogisticRegression, interface-compatible
-    with probe_backend.TorchProbePipeline."""
+    with probe_backend.TorchProbePipeline.
 
-    def __init__(self, C: float, steps: int = 5):
+    `cold_steps` defaults to NewtonLogisticRegression's own budget; analysis
+    callers raise it (see probe_backend.PROBE_EVAL_NEWTON_COLD_STEPS), since
+    they always fit cold and on far more rows than the training loop does.
+    """
+
+    def __init__(self, C: float, steps: int = 5, cold_steps: int | None = None):
         self._scaler = TorchStandardScaler()
-        self._logreg = NewtonLogisticRegression(C=C, steps=steps)
+        kwargs = {} if cold_steps is None else {"cold_steps": cold_steps}
+        self._logreg = NewtonLogisticRegression(C=C, steps=steps, **kwargs)
 
     def set_max_iter(self, max_iter: int) -> None:
         # The training loop calls this with PROBE_STEP_MAX_ITER; Newton's step

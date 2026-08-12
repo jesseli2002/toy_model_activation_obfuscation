@@ -21,7 +21,7 @@ from jaxtyping import Bool, Float
 # load_model/load_model_path/resolve_adv_config re-exported from
 # checkpoint_lib for existing callers; see that module for their definitions.
 from checkpoint_lib import load_model, load_model_path, resolve_adv_config
-from config import C_HIGH, C_LOW
+from config import C_HIGH, C_LOW, PROBE_EVAL_N_TEST, PROBE_EVAL_N_TRAIN
 from data import sample_fixed_c
 from model import Noise, ResidualMLP
 
@@ -213,8 +213,29 @@ class StoredProbeScorer:
 # Refit-probe path: fit a fresh probe against a checkpoint
 # ----------------------------------------------------------------------------
 # Regularization constant for LogisticRegression (see scikit-learn
-# LogisticRegression interface). Larger = less regularization.
+# LogisticRegression interface). Larger = less regularization. Deliberately
+# weak, to give the probe every chance and keep the hiding result conservative.
 PROBE_C = 1000
+
+# Analysis refits solve in float64 regardless of the model's own dtype. `C`
+# multiplies the SUMMED loss, so the Newton Hessian scales as C * n while the
+# regularizer contributes O(1); by n_train ~ 30k that spread exceeds float32's
+# resolution and the solve silently stops converging -- ||w|| runs away and
+# AUROC collapses toward chance, i.e. it understates probe strength exactly
+# where a bigger fit set was supposed to help. float64 removes it for ~0.4s a
+# fit. Training is unaffected: at probe_C=1 on a subsampled batch it sits four
+# orders of magnitude away from this regime.
+PROBE_EVAL_FIT_DTYPE = torch.float64
+
+
+def probe_eval_solver_key() -> str:
+    """Identifies the settings a refit probe was solved under, for callers that
+    cache results keyed by everything a value depends on -- so changing the fit
+    precision or step budget invalidates entries rather than silently reusing
+    them."""
+    from probe_backend import PROBE_EVAL_NEWTON_COLD_STEPS
+
+    return f"{PROBE_EVAL_FIT_DTYPE}/cold{PROBE_EVAL_NEWTON_COLD_STEPS}"
 
 
 def raw_signed_distance(
@@ -251,16 +272,20 @@ def binary_probe_metrics_all_layers(
     c_lo,
     c_hi,
     layers,
-    n_train,
-    n_test,
     g,
     probe_backend_name,
+    *,
+    n_train: int = PROBE_EVAL_N_TRAIN,
+    n_test: int = PROBE_EVAL_N_TEST,
     desc="layers",
     train_noise=0.0,
     eval_noise=0.0,
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
     c_hi) pair, from a single shared forward pass per train/test set.
+
+    `n_train`/`n_test` default to the shared analysis sizes (config) rather
+    than being set per script, so every report measures the same thing.
 
     Fits a fresh probe against the checkpoint, unlike `stored_probe_auroc`
     which scores the one the model was trained against.
@@ -282,7 +307,7 @@ def binary_probe_metrics_all_layers(
     from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from tqdm import tqdm
 
-    from probe_backend import build_probe_pipeline
+    from probe_backend import PROBE_EVAL_NEWTON_COLD_STEPS, build_probe_pipeline
 
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -305,7 +330,7 @@ def binary_probe_metrics_all_layers(
         y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
         lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
 
-        X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0)
+        X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0).to(PROBE_EVAL_FIT_DTYPE)
         y_tr_t = torch.cat(
             [
                 torch.zeros(n_train, dtype=torch.bool, device=device),
@@ -313,7 +338,10 @@ def binary_probe_metrics_all_layers(
             ]
         )
         pipeline = build_probe_pipeline(
-            C=PROBE_C, max_iter=2000, backend=probe_backend_name
+            C=PROBE_C,
+            max_iter=2000,
+            backend=probe_backend_name,
+            newton_cold_steps=PROBE_EVAL_NEWTON_COLD_STEPS,
         )
         pipeline.fit(X_tr_t, y_tr_t)
         w_probe_t, b_probe_t = pipeline.get_affine(device)

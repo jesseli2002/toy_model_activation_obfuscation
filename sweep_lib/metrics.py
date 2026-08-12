@@ -21,10 +21,15 @@ from checkpoint_lib import (
     recompute_task_loss,
     resolve_adv_config,
 )
-from config import C_HIGH, C_LOW
+from config import C_HIGH, C_LOW, PROBE_EVAL_N_TEST, PROBE_EVAL_N_TRAIN
 from paths import ckpt_dir
 from probe_backend import resolve_probe_backend
-from probe_lib import LinearBoundary, binary_probe_metrics_all_layers, boundary_auroc
+from probe_lib import (
+    LinearBoundary,
+    binary_probe_metrics_all_layers,
+    boundary_auroc,
+    probe_eval_solver_key,
+)
 from sweep_lib.cache import MetricCache, cache_key, file_fingerprint
 
 # One cache for the whole sweep*.py family. Keys are exact and cover every
@@ -46,8 +51,10 @@ class MetricSpec:
     task_loss_n_eval: int = 50_000  # fresh examples per run per loss metric
     noise_mult: float = 1.0  # multiplier on the checkpoint's own resid_noise_std
     probe_layer: int | None = None
-    probe_n_train: int = 10_000  # per class; a probe is refit per run
-    probe_n_test: int = 10_000  # per class
+    # Per class; a probe is refit per run. Shared with every other reporting
+    # entry point (see config) so sweep tables and single-run reports agree.
+    probe_n_train: int = PROBE_EVAL_N_TRAIN
+    probe_n_test: int = PROBE_EVAL_N_TEST
     probe_backend: str = "newton"
     # Multipliers on the checkpoint's own resid_noise_std for the refit probe's
     # fit and scoring passes. Both 1.0: runs that trained with probe_noise hid
@@ -171,9 +178,15 @@ class MetricStore:
         backend,
         train_noise_mult,
         eval_noise_mult,
+        solver,
     ):
         """(layer, plot_inputs) for a probe refit against the checkpoint, or
-        (None, None) when there is no adversarial config to probe for."""
+        (None, None) when there is no adversarial config to probe for.
+
+        `solver` is unused here -- the fit takes those settings from probe_lib
+        directly. It is an argument so that it lands in the cache key: changing
+        the fit precision or step budget changes the value, and a cached AUROC
+        from the previous settings must not be served for it."""
         model, ck = load_model(tag, ckpt, self.device)
         layer = resolve_probe_layer(tag, ck, probe_layer)
         if layer is None:
@@ -185,10 +198,10 @@ class MetricStore:
             C_LOW,
             C_HIGH,
             [layer],
-            n_train,
-            n_test,
             g,
             self.probe_backend_name,
+            n_train=n_train,
+            n_test=n_test,
             desc=tag,
             train_noise=adv_cfg.resid_noise_std * train_noise_mult,
             eval_noise=adv_cfg.resid_noise_std * eval_noise_mult,
@@ -214,6 +227,7 @@ class MetricStore:
             "backend": self.spec.probe_backend,
             "train_noise_mult": self.spec.probe_train_noise_mult,
             "eval_noise_mult": self.spec.probe_eval_noise_mult,
+            "solver": probe_eval_solver_key(),
         }
 
     def task_loss(self, tag: str) -> float | None:
