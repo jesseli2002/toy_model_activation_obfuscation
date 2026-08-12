@@ -172,6 +172,11 @@ it/s.
   undispatched-tail isolation, `launched_idx` untouched) — a monitor
   agent may execute rebalancing autonomously, not just recommend it (see
   `monitor_brief.md`).
+- **A relative config path in a queued command resolves against the
+  remote's default cwd (the synced main checkout), not the worktree** —
+  so a config that only exists in a worktree silently fails to be found
+  there. Pin both the config path and the training script path to their
+  absolute location under the synced worktree in remote commands.
 
 ## Script index
 
