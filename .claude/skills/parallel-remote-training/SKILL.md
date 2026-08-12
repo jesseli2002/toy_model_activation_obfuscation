@@ -28,63 +28,51 @@ a small bash pool manager that launches queued commands up to a live-editable
 concurrency target, polled from a plain text file every 5s. Concurrency can be
 retuned by editing that file without killing or restarting already-running jobs.
 
-## Setup
+## Start running on the remote
 
-1. **Queue file**: one training command per line (`python train_adversarial_logreg.py --config ... --tag ...`).
-2. **Concurrency file**: a single integer, read every ~5s. A stopfile at
-   `${CONC}.stop` (e.g. `conc.txt.stop`) tells the manager to finish
-   in-flight jobs and exit cleanly — it does NOT exit on its own when the
-   queue merely drains (see next point), so this is the only way to
-   actually shut one down.
-3. Put both — plus logs and the manager's own log — **outside the repo directory**
-   on the remote (e.g. `~/sweep_scratch/`), not under the synced project dir.
-4. Launch detached so it survives disconnects — via `remote_exec`, launch a
-   `setsid nohup bash vast_pool_manager.sh QUEUE CONC LOGDIR MGRLOG
-   PROJECT_DIR VENV_ACTIVATE < /dev/null > pool_stdout.log 2>&1 & disown`,
-   then poll with further `remote_exec` calls that tail `MGRLOG` (don't rely on
-   `remote_exec`'s own timeout — it can drop the connection without killing the
-   remote process, which is what detaching protects against).
-5. See `vast_pool_manager.sh`'s header comment for exact argument order,
-   the locking contract (`QUEUE.lock`, `QUEUE.launched_idx`), and
-   progress-checking one-liners (`grep -c 'rc=[1-9]' MGRLOG`).
-   **The manager idle-polls instead of exiting when the queue drains** — a
-   dead manager only appending doesn't restart it, so before assuming
-   "topped off and busy," confirm the process is actually still alive
-   (e.g. check `MGRLOG` for a recent `STOPPED`/`ALL DONE` line, which now
-   only appears on an intentional stopfile shutdown — anything else means
-   it's still running, possibly idling).
+Bringing one instance from "box exists" to "running at tuned throughput".
+Track it as a to-do list — one entry per numbered step, per instance.
 
-## Sizing an initial assignment and reporting an ETA
-
-For "spin up N instances, don't dump the whole pool on them yet, tell me
-how long the full sweep will take" (the common ask when compute is coming
-online incrementally):
-
-1. Build/check the pending pool with your sweep's manifest script (e.g.
-   `generate_sweep8.py build`/`status` — sweep-specific) or directly via
-   the generic `.claude/skills/parallel-remote-training/scripts/sweep_pool.py`
-   if the sweep script already delegates to it.
-2. Assign a modest chunk sized by **run count**, not param-count weight —
-   `sweep_pool.py assign --instance NAME --n-runs N`. Weight (params
-   ratio) is a poor proxy for wall-clock cost here (training is
-   overhead-bound, not FLOP-bound — see project memory), so size by a
-   target time horizon and the instance's *measured* rate once you have
-   one, not by weight.
-3. Push the resulting `.delta.txt` onto the remote queue via
-   `queue_append.sh` over `remote_exec` (never a bare `cat >>` — see that
-   script's header for why).
-4. To report an ETA: land each active instance's `manager.log` on the
-   local disk with the broker's `fetch_files` tool — `sweep_pool.py eta`
-   reads *local* files and can't reach a remote itself. Note a redirect
-   inside a `remote_exec` command string (`cat manager.log > copy.log`)
-   writes on the **remote**, so it does not do this. Then run
-   `sweep_pool.py eta --instance-log NAME:local_copy.log[:launched_idx]`
-   once per instance. ETA is `pending_runs / aggregate_jobs_per_hour`
-   (throughput-based — NOT `avg_duration × pending_runs`, which ignores
-   concurrency and overestimates by roughly the concurrency factor).
-5. With no throughput data yet (brand new instance), report an
-   assign-based estimate honestly labeled as a guess, and revisit once
-   `sweep_pool.py eta` has real data.
+1. **Generate the run commands.** Build/check the pending pool with the
+   sweep's manifest script (e.g. `generate_sweep8.py build`/`status` —
+   sweep-specific), or with the generic `scripts/sweep_pool.py build` if
+   there is no such script yet. Then carve out this instance's share:
+   `sweep_pool.py assign --instance NAME --n-runs N`, sized by **run
+   count**, not param-count weight (training is overhead-bound, not
+   FLOP-bound — see project memory — so weight is a poor wall-clock
+   proxy). Assign a modest chunk while compute is still coming online,
+   the whole remaining pool once it isn't.
+2. **Place the operational files** on the remote **outside the repo
+   directory** (e.g. `~/sweep_scratch/`), not under the synced project dir:
+   - *queue file*: one training command per line
+     (`python train_adversarial_logreg.py --config ... --tag ...`). Push
+     the `.delta.txt` that `assign` wrote with `queue_append.sh` over
+     `remote_exec` — never a bare `cat >>`, see that script's header.
+   - *concurrency file*: a single integer, re-read every ~5s; start at 1.
+     A stopfile at `${CONC}.stop` (e.g. `conc.txt.stop`) tells the manager
+     to finish in-flight jobs and exit, and is the only way to shut one
+     down — it does not exit on its own (see step 3).
+   - the job logs and the manager's own log.
+3. **Launch the pool manager**, detached so it survives disconnects — via
+   `remote_exec`, `setsid nohup bash vast_pool_manager.sh QUEUE CONC
+   LOGDIR MGRLOG PROJECT_DIR VENV_ACTIVATE < /dev/null > pool_stdout.log
+   2>&1 & disown`. Poll with further `remote_exec` calls tailing `MGRLOG`
+   (don't rely on `remote_exec`'s own timeout — it can drop the connection
+   without killing the remote process, which is what detaching protects
+   against). Its header comment has the exact argument order, the locking
+   contract (`QUEUE.lock`, `QUEUE.launched_idx`) and progress one-liners
+   (`grep -c 'rc=[1-9]' MGRLOG`). **It idle-polls instead of exiting when
+   the queue drains** — `STOPPED`/`ALL DONE` in `MGRLOG` appears only on an
+   intentional stopfile shutdown, so anything else means it is still
+   running, possibly idling. A dead manager will not notice appended work,
+   so confirm it is alive before concluding "topped off and busy".
+4. **Find the concurrency level** by ramping up from 1 and measuring, per
+   "## Ramping concurrency" below, until throughput stops improving.
+5. **Report an ETA** to the user once there is a measured rate:
+   `sweep_pool.py eta` (throughput-based, `pending_runs /
+   aggregate_jobs_per_hour`). It reads *local* files, so land each
+   instance's `manager.log` with the broker's `fetch_files` first. Before
+   any real data exists, label the estimate as a guess and revisit.
 
 ## Keeping tags unique across instances
 
