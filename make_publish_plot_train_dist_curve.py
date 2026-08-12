@@ -20,7 +20,7 @@ C_VALUES = (1.0, 2.0)
 PUBLISH_DIR = "publish"
 
 LEARNED_COLOR = "tab:blue"
-NOISEFREE_ALPHA = 0.5
+NOISEFREE_ALPHA = 1
 NOISY_ALPHA = 0.15
 ID_SCATTER_ALPHA = 0.05
 
@@ -61,7 +61,9 @@ plt.rcParams["savefig.dpi"] = 200
 
 
 @torch.no_grad()
-def _plot_id_panel(ax, model, c: float, n: int, noise: Noise, g: torch.Generator):
+def _plot_id_panel(
+    ax, model, c: float, n: int, noise: Noise, g: torch.Generator, show_legend
+):
     """Scatter (x, y_pred) pooled over every coordinate, for x sampled on the
     training distribution at fixed c."""
     num_x = model.num_x
@@ -86,7 +88,7 @@ def _plot_id_panel(ax, model, c: float, n: int, noise: Noise, g: torch.Generator
         ls="--",
         lw=1.5,
         zorder=10,
-        label="target\nfunction",
+        label="target\nfunction" if show_legend else None,
     )
     ax.set_title(f"c = {c:g}")
     ax.grid(True, alpha=0.3)
@@ -118,6 +120,7 @@ def _plot_ood_panel(
                 color=LEARNED_COLOR,
                 alpha=alpha,
                 zorder=5,
+                lw=0.5,
             )
     ax.plot(
         xs.cpu().numpy(),
@@ -125,8 +128,7 @@ def _plot_ood_panel(
         color="red",
         ls="--",
         lw=1.5,
-        zorder=10,
-        label="target\nfunction",
+        zorder=1,
     )
     ax.set_title(f"c = {c:g}")
     ax.grid(True, alpha=0.3)
@@ -136,9 +138,10 @@ def _plot_ood_panel(
 def _make_plot(
     model, noise: Noise, n_id: int, g: torch.Generator, show_noisy_ood: bool = True
 ):
-    fig, axes = plt.subplots(2, 2, figsize=(9, 8), sharex=True, sharey="row")
-    for ax, c in zip(axes[0], C_VALUES):
-        _plot_id_panel(ax, model, c, n_id, noise, g)
+    fig, axes = plt.subplots(2, 2, figsize=(9, 8), sharex=True, sharey=True)
+    _plot_id_panel(axes[0][0], model, C_VALUES[0], n_id, noise, g, show_legend=True)
+    _plot_id_panel(axes[0][1], model, C_VALUES[1], n_id, noise, g, show_legend=False)
+
     for ax, c in zip(axes[1], C_VALUES):
         _plot_ood_panel(ax, model, c, noise, g, show_noisy=show_noisy_ood)
 
