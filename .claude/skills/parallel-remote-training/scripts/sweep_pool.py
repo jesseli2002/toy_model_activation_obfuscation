@@ -1,4 +1,4 @@
-"""Sweep-agnostic pool bookkeeping: build/status/assign/requeue/reassign
+"""Sweep-agnostic pool bookkeeping: build/extend/status/assign/requeue/reassign
 over a generic manifest of {tag, command, stage?, weight?} dicts. A sweep-specific
 script (e.g. generate_sweep8.py) builds that manifest and either imports
 this module or shells out to it -- this file has no knowledge of arches,
@@ -19,6 +19,7 @@ you've pushed it.
 
 Usage:
     python sweep_pool.py build --out-dir OUT --manifest manifest.json
+    python sweep_pool.py extend --out-dir OUT --manifest more_runs.json
     python sweep_pool.py status --out-dir OUT
     python sweep_pool.py assign --out-dir OUT --instance i0 --n-runs 20
     python sweep_pool.py requeue --out-dir OUT --instance i0 --resume-tag TAG
@@ -26,7 +27,8 @@ Usage:
 
 assignments.json is meant to be the single registry of which instance owns a
 tag: every command that puts work on a queue (`assign`, `requeue`,
-`reassign`) records it here, which is what makes duplicate tags across
+`reassign`) records it here, and `extend` (the only way to add runs to a
+live pool) collision-checks new tags against it, which is what makes duplicate tags across
 instances impossible by construction rather than merely unlikely. Work that
 reaches a remote queue without going through one of them is invisible to
 that guarantee -- queue_audit.py exists to find it.
@@ -61,6 +63,16 @@ def parse_args():
         "--manifest",
         required=True,
         help="JSON file: list of {tag, command, stage?, weight?}",
+    )
+
+    p_extend = sub.add_parser(
+        "extend", help="add new runs to an existing pool's pending tail"
+    )
+    p_extend.add_argument("--out-dir", default="sweep_pool_scratch")
+    p_extend.add_argument(
+        "--manifest",
+        required=True,
+        help="JSON file of the NEW runs only: list of {tag, command, stage?, weight?}",
     )
 
     p_status = sub.add_parser(
@@ -149,13 +161,23 @@ class _Lock:
         self._f.close()
 
 
-def cmd_build(args):
-    with open(args.manifest) as f:
+def _load_manifest(path):
+    """Validate a manifest file and return its runs in dispatch order."""
+    with open(path) as f:
         runs = json.load(f)
     for r in runs:
         if "tag" not in r or "command" not in r:
             raise SystemExit(f"[error] manifest entry missing tag/command: {r}")
-    runs = sorted(runs, key=lambda r: (r.get("stage", 0), -r.get("weight", 0.0)))
+    seen = set()
+    for r in runs:
+        if r["tag"] in seen:
+            raise SystemExit(f"[error] manifest repeats tag {r['tag']!r}")
+        seen.add(r["tag"])
+    return sorted(runs, key=lambda r: (r.get("stage", 0), -r.get("weight", 0.0)))
+
+
+def cmd_build(args):
+    runs = _load_manifest(args.manifest)
 
     os.makedirs(args.out_dir, exist_ok=True)
     manifest_path = os.path.join(args.out_dir, "manifest.json")
@@ -169,6 +191,48 @@ def cmd_build(args):
     _dump_json(pending_path, runs)
     _dump_json(os.path.join(args.out_dir, "assignments.json"), [])
     print(f"{len(runs)} runs written to {args.out_dir}/")
+
+
+def cmd_extend(args):
+    """Grow a live pool, rather than rebuilding it.
+
+    `build` refuses to touch an existing pool because rebuilding would
+    discard assignments.json, so this is the only way to add runs to a sweep
+    already underway. New tags are appended to the pending tail: by the time
+    a sweep is fully assigned pending is empty anyway, so ordering here
+    decides nothing that the remote queue order doesn't already decide.
+
+    Collision-checks against the manifest *and* the registry, since a tag
+    already assigned somewhere would otherwise be handed to a second
+    instance by the next assign -- the one failure this whole module exists
+    to prevent.
+    """
+    new_runs = _load_manifest(args.manifest)
+    manifest_path = os.path.join(args.out_dir, "manifest.json")
+    pending_path = os.path.join(args.out_dir, "pending.json")
+
+    with _Lock(args.out_dir):
+        manifest = _load_json(manifest_path, None)
+        if manifest is None:
+            raise SystemExit(f"[error] no pool at {manifest_path} -- run `build` first")
+        pending = _load_json(pending_path, [])
+        assignments = _load_json(os.path.join(args.out_dir, "assignments.json"), [])
+
+        known = {r["tag"] for r in manifest} | {a["tag"] for a in assignments}
+        clashes = sorted(r["tag"] for r in new_runs if r["tag"] in known)
+        if clashes:
+            raise SystemExit(
+                f"[error] {len(clashes)} tag(s) already in this pool: "
+                f"{', '.join(clashes[:5])}{' ...' if len(clashes) > 5 else ''}. "
+                "Re-running an existing tag needs `requeue`, not `extend`."
+            )
+
+        _dump_json(manifest_path, manifest + new_runs)
+        _dump_json(pending_path, pending + new_runs)
+
+    print(f"added {len(new_runs)} runs to {args.out_dir}/")
+    print(f"pending pool: {len(pending) + len(new_runs)} runs")
+    print("assign them with `assign --instance NAME --n-runs N` as usual")
 
 
 def cmd_status(args):
@@ -361,6 +425,7 @@ def main():
     args = parse_args()
     {
         "build": cmd_build,
+        "extend": cmd_extend,
         "status": cmd_status,
         "assign": cmd_assign,
         "requeue": cmd_requeue,

@@ -81,7 +81,8 @@ Track it as a to-do list — one entry per numbered step, per instance.
 of which instance owns a tag. Everything that puts work on a queue —
 `assign`, `requeue`, `reassign` — records it there, and `assign` pops from
 one shared pending pool under a lock, so **duplicates are impossible as long
-as every queue mutation goes through one of those commands**. Retries are
+as every queue mutation goes through one of those commands**, and `extend`
+is the matching entry point for growing the pool itself. Retries are
 the path that historically bypassed it: use `sweep_pool.py requeue`
 (`--resume-tag` for a checkpoint resume, which it will only allow on the
 instance holding that checkpoint; `--retry-tag` for a fresh `<tag>_retryN`)
@@ -151,6 +152,13 @@ it/s.
 
 ## Adding additional runs or instances
 - If the user asks to add additional runs or spins up another instance, **use a forked subagent to generate the manifest, update the remote queues, evaluate concurrency, etc.** Let a subagent handle the details of everything, so that your (long-running) context remains clean.
+- To add runs to a sweep already underway, write a manifest of **only the
+  new runs** and `sweep_pool.py extend --manifest more_runs.json`, then
+  `assign`/`queue_append.sh` them as at setup. `extend` appends to the
+  pending tail and rejects any tag the pool already knows, so the registry
+  keeps its duplicate-tag guarantee. Never re-`build` (it refuses anyway,
+  since rebuilding discards `assignments.json`) and never hand-edit
+  `pending.json` — that bypasses the lock and the collision check.
 
 ## Gotchas
 
@@ -197,9 +205,10 @@ order, locking, failure modes — so treat this as a map, not a reference.
 broker's `fetch_files` to bring remote files to them):
 
 - `sweep_pool.py` — the pool's bookkeeping and the registry that keeps
-  tags unique: `build`/`status`/`assign` at setup, `requeue` for retries,
-  `reassign` for moves. Everything that puts work on a queue goes through
-  here. Deliberately estimates no ETAs (see step 5 above).
+  tags unique: `build`/`status`/`assign` at setup, `extend` to add runs to
+  a live sweep, `requeue` for retries, `reassign` for moves. Everything
+  that puts work on a queue goes through here. Deliberately estimates no
+  ETAs (see step 5 above).
 - `pool_health.py` — one instance's stall/failure summary from its
   `manager.log`, plus a job-completion rate used only for top-off sizing
   (not for ETAs — it averages over heterogeneous runs). Pass `--queue`/
