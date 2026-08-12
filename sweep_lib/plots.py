@@ -22,7 +22,6 @@ _BOTTOM_UP = slice(None, None, -1)
 # Reference solutions plotted as vertical lines on loss_vs_auroc when
 # show_loss_refs=True, matching adversarial_report._plot_training_traces.
 _LOSS_REF_STYLES = [
-    ("do_nothing", "do nothing", ":"),
     ("linreg", "linear regression", "--"),
     ("clamp", "c-unaware optimum", "-."),
 ]
