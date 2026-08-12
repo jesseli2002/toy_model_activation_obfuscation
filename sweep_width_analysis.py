@@ -1,7 +1,8 @@
 """Aggregate the model-width sweep spread across runs/sweep17_*, sweep11_* and
 sweep14_* (num_x = 32, 64, 128 respectively, width ratios otherwise held
 constant) into the same two views as the other sweep*_analysis.py scripts,
-one pair per lambda:
+each figure holding one panel per lambda side by side with a single shared
+legend:
 
 - Outcome bars: per-width stacked fractions, x-axis = num_x. A run either
   failed the task (loss) or, having succeeded, is binned by how well it hid
@@ -73,6 +74,7 @@ if __name__ == "__main__":
     args = parse_args()
 
 import os
+import re
 from typing import NamedTuple
 
 import matplotlib.pyplot as plt
@@ -141,32 +143,38 @@ def _collect_run_stats(
     return stats, scatter_points
 
 
-def _plot_by_width(
-    run_stats: dict[int, RunStats], lam: str, n_bands: int
-) -> plt.Figure:
-    """One panel: bars per num_x at `lam`."""
-    widths = [w for w in NUM_X if w in run_stats]
-
-    fig, ax = plt.subplots(figsize=(1.2 * len(widths) + 1.5, 4.2))
-    stacked_bars(
-        ax,
-        range(len(widths)),
-        [run_stats[w].frac for w in widths],
-        BANDS,
-        n_runs=[run_stats[w].n_ok for w in widths],
-        legend=True,
+def _plot_by_width(run_stats_by_lam: dict[str, dict[int, RunStats]]) -> plt.Figure:
+    """One panel per lambda, bars per num_x, sharing a single legend to the
+    right of both panels."""
+    lams = [lam for lam in LAMBDAS if lam in run_stats_by_lam]
+    fig, axes = plt.subplots(
+        1, len(lams), figsize=(1.2 * len(NUM_X) * len(lams) + 1.5, 4.2), sharey=True
     )
+    axes = np.atleast_1d(axes)
 
-    ax.set_xticks(range(len(widths)))
-    ax.set_xticklabels([str(w) for w in widths])
-    ax.set_xlim(-0.6, len(widths) - 0.4)
-    ax.set_ylim(0, 1.08)
-    ax.set_xlabel("num_x")
-    ax.set_ylabel("fraction of runs")
-    ax.grid(True, axis="y", alpha=0.3)
-    ax.set_title(f"Outcome vs. model width, $\\lambda$ = {lam}", fontsize=11, pad=14)
+    for i, (ax, lam) in enumerate(zip(axes, lams)):
+        run_stats = run_stats_by_lam[lam]
+        widths = [w for w in NUM_X if w in run_stats]
+        stacked_bars(
+            ax,
+            range(len(widths)),
+            [run_stats[w].frac for w in widths],
+            BANDS,
+            n_runs=[run_stats[w].n_ok for w in widths],
+            legend=i == 0,
+        )
+        ax.set_xticks(range(len(widths)))
+        ax.set_xticklabels([str(w) for w in widths])
+        ax.set_xlim(-0.6, len(widths) - 0.4)
+        ax.set_xlabel("num_x")
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.set_title(f"$\\lambda$ = {lam}", fontsize=11)
 
-    handles, leg_labels = ax.get_legend_handles_labels()
+    axes[0].set_ylim(0, 1.08)
+    axes[0].set_ylabel("fraction of runs")
+    fig.suptitle("Outcome vs. model width", fontsize=12)
+
+    handles, leg_labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles[::-1],
         leg_labels[::-1],
@@ -178,23 +186,46 @@ def _plot_by_width(
     return fig
 
 
-def _plot_loss_vs_auroc(points: list[tuple[float, float, int]], lam: str) -> plt.Figure:
-    """Scatter of this lambda's runs' (training-distribution task loss, probe
-    AUROC), colored by num_x."""
-    losses, aurocs, widths = (np.array(v) for v in zip(*points))
-    fig, ax = plt.subplots(figsize=(6, 5))
-    loss_vs_auroc(
-        ax,
-        losses,
-        aurocs,
-        Series.categorical([f"num_x={w}" for w in widths]),
-        LOSS_THRESHOLD,
-        all_values=[f"num_x={w}" for w in NUM_X],
+def _plot_loss_vs_auroc(
+    scatter_by_lam: dict[str, list[tuple[float, float, int]]],
+) -> plt.Figure:
+    """One panel per lambda: scatter of (training-distribution task loss,
+    probe AUROC), colored by num_x, sharing a single legend below both
+    panels."""
+    lams = [lam for lam in LAMBDAS if lam in scatter_by_lam]
+    fig, axes = plt.subplots(1, len(lams), figsize=(6 * len(lams), 5), sharey=True)
+    axes = np.atleast_1d(axes)
+
+    for ax, lam in zip(axes, lams):
+        losses, aurocs, widths = (np.array(v) for v in zip(*scatter_by_lam[lam]))
+        loss_vs_auroc(
+            ax,
+            losses,
+            aurocs,
+            Series.categorical([f"num_x={w}" for w in widths]),
+            LOSS_THRESHOLD,
+            all_values=[f"num_x={w}" for w in NUM_X],
+            show_loss_refs=True,
+        )
+        ax.set_xlabel("task loss on training distribution")
+        ax.set_title(f"$\\lambda$ = {lam}")
+
+    axes[0].set_ylabel("probe AUROC")
+    fig.suptitle("Task loss vs. probe AUROC", fontsize=12)
+
+    # One shared legend: per-panel run counts in the scatter labels would be
+    # misleading once merged, so strip them.
+    handles, leg_labels = axes[0].get_legend_handles_labels()
+    leg_labels = [re.sub(r" \(n=\d+\)$", "", label) for label in leg_labels]
+    fig.legend(
+        handles,
+        leg_labels,
+        loc="upper center",
+        bbox_to_anchor=(0.5, 0.02),
+        ncol=4,
+        fontsize=8,
     )
-    ax.set_xlabel("task loss on training distribution")
-    ax.set_title(f"$\\lambda$ = {lam}: task loss vs. probe AUROC")
-    ax.legend()
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0.08, 1, 1))
     return fig
 
 
@@ -206,24 +237,24 @@ def main(clear_cache: bool = False) -> None:
     n_bands = BANDS.n_bands
 
     os.makedirs(PLOT_DIR, exist_ok=True)
-    any_runs = False
+    run_stats_by_lam: dict[str, dict[int, RunStats]] = {}
+    scatter_by_lam: dict[str, list[tuple[float, float, int]]] = {}
     for lam in LAMBDAS:
         run_stats, scatter_points = _collect_run_stats(lam, store, n_bands)
         if not run_stats:
             print(f"  lambda={lam}: no usable runs, skipping its plots")
             continue
-        any_runs = True
+        run_stats_by_lam[lam] = run_stats
+        scatter_by_lam[lam] = scatter_points
 
-        fig = _plot_by_width(run_stats, lam, n_bands)
-        fig.savefig(f"{PLOT_DIR}/by_width_lam{lam}.png", bbox_inches="tight")
-
-        fig = _plot_loss_vs_auroc(scatter_points, lam)
-        fig.savefig(
-            f"{PLOT_DIR}/loss_vs_auroc_scatter_lam{lam}.png", bbox_inches="tight"
-        )
-
-    if not any_runs:
+    if not run_stats_by_lam:
         raise SystemExit("no usable runs found across GROUPS")
+
+    fig = _plot_by_width(run_stats_by_lam)
+    fig.savefig(f"{PLOT_DIR}/by_width.png", bbox_inches="tight")
+
+    fig = _plot_loss_vs_auroc(scatter_by_lam)
+    fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
 
     plt.show()
 
