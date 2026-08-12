@@ -147,7 +147,7 @@ back on and typically nobody is watching live.
    concurrency — comparing two single-snapshot readings at different
    concurrency levels conflates "rate matured" with "concurrency
    changed" and reads as a false improvement. Instead, sample the last
-   `iter <N>` line of every running `job<N>.log`, wait 60s to warm up,
+   `iter <N>` line of every running `job<N>.log`, wait 30s to warm up,
    then measure over a 30s window (sample again 30s later), and sum `(iter_t1 - iter_t0)`
    across jobs, divided by elapsed wall-clock time — that is the
    aggregate instantaneous throughput. Only compare two such windows
@@ -171,7 +171,7 @@ back on and typically nobody is watching live.
    failed increase-experiment as "now testing a decrease back to the
    prior level," not a separate case.
 
-   **Testing a decrease is now also permitted**, via SIGINT + `--resume`
+   **Testing a decrease is also permitted**, via SIGINT + `--resume`
    rather than waiting for natural completions to thin the pool out —
    useful when you suspect the *current* level (inherited from an
    earlier, different job mix) is already past the ceiling:
@@ -205,7 +205,7 @@ back on and typically nobody is watching live.
    5. Confirm the stop actually landed (poll for `logs/job<N>.log`'s
       `[save] ... -> ...` line, or `manager.log`'s `finished pid=...
       rc=...` line for that pid) before measuring the new throughput —
-      same 60s-warmup/30s-measure, iter-delta method as above.
+      same 30s-warmup/30s-measure, iter-delta method as above.
    6. **Record every SIGINT you send in the manual-stop ledger in
       `handoff.md` immediately** (tag, pid, iteration it was stopped at,
       timestamp, `conc.txt` target you were testing) — see "Manual-stop
@@ -218,7 +218,7 @@ back on and typically nobody is watching live.
       once you're done with the experiment, or immediately if you expect
       it to relaunch at the new lower concurrency anyway.
 
-   All polling here (either direction) uses the **60s-warmup/30s-measure**
+   All polling here (either direction) uses the **30s-warmup/30s-measure**
    window per wait step — never one long sleep — both to keep your own
    context from going stale mid-wake and to stay under the ~5min
    prompt-cache TTL. Log

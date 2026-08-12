@@ -139,9 +139,9 @@ unevaluated).
 ## Ramping concurrency
 
 Bump the concurrency file by **one GPU's worth of jobs at a time** — i.e.
-by `N`, the instance's GPU count (1 on a single-GPU box, same as before;
+by `N`, the instance's GPU count (1 on a single-GPU box;
 more on a multi-GPU box, so each step adds one job per GPU rather than
-skewing the count across them). After each bump, wait **60s to warm up**,
+skewing the count across them). After each bump, wait **30s to warm up**,
 then measure over a **30s window** (iter-count delta at the window's
 start and end) — this is plenty to read true instantaneous throughput
 and stays well under the ~5min prompt-cache TTL, so your own context
