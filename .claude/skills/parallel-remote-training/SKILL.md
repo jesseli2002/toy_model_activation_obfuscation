@@ -10,7 +10,7 @@ WARNING: nothing at the transport layer prevents two remotes from running the sa
 
 For implementation details, see the vast_setup/ directory on the local machine.
 
-## Setting up
+## Getting files onto the remote
 Due to sandbox restrictions, it's non-obvious the best way to get key files onto the remote.
 
 Recall that the local machine uses worktree isolation, so your work (including helper scripts) is typically somewhere in ./.claude/worktrees, and won't show up in the main repo-level. However, the syncing daemons should copy those files to the remotes, so you can write files locally and find them on the remote machine.
