@@ -43,9 +43,9 @@ back on and typically nobody is watching live.
 
 1. **Fetch health data.** Get the `fetches` argument from `queue_audit.py
    fetch-request --instances instances.json`, pass it to the broker's
-   `fetch_files` tool, and run `pool_health.py` (or `sweep_pool.py eta`
-   for the aggregate) against the local copies it writes — these tools
-   read local files only, they can't reach the remote themselves. Do this
+   `fetch_files` tool, and run `pool_health.py` against the local copies
+   it writes — these tools read local files only, they can't reach the
+   remote themselves. Do this
    once for all instances at the start of the wake; it also gives you the
    queues that step 8 audits. A `remote_exec` redirect writes on the
    remote, not here, so it is not a substitute.
@@ -138,7 +138,7 @@ back on and typically nobody is watching live.
    different `--max-iters`, different per-job GPU/memory footprints) —
    the concurrency level that was optimal for an earlier mix of running
    jobs can drift as the mix changes, in either direction. Treat this as
-   routine upkeep, same tier as the throughput/ETA read in step 1, not an
+   routine upkeep, same tier as the health read in step 1, not an
    optional experiment you might skip.
 
    **Measure correctly, not off the printed `it/s` field.** Each job's

@@ -6,7 +6,12 @@ high-water mark, how many have failed, whether the manager looks healthy,
 and a *trailing-window* jobs/hour rate -- not a lifetime average, since the
 mix of runs an instance is chewing through shifts across a sweep's stages
 (see project memory: params-ratio weight is a bad throughput proxy, so
-sizing/ETA decisions should use this measured rate instead).
+queue-sizing decisions should use this measured rate instead).
+
+That rate is for coarse top-off sizing only, NOT for an ETA. It averages
+over heterogeneous runs and counts failures as completions, so on a sweep
+whose jobs differ in length it can be off by several-fold. Estimate
+remaining time from the running jobs' iteration throughput instead.
 
 Liveness: manager.log alone cannot answer "is this box still working?".
 The manager only writes on launch/finish/idle, so one long run produces an
@@ -317,9 +322,9 @@ def compute_health(
     default_tag: str = DEFAULT_TAG,
     max_snapshot_age_minutes: float = 30.0,
 ) -> dict:
-    """Importable core of this script -- used directly by sweep_pool.py's ETA
-    calculator (same process, no subprocess/JSON round-trip needed) as well
-    as this module's own CLI."""
+    """Importable core of this script -- for callers that want the health
+    dict in-process (no subprocess/JSON round-trip), as well as this
+    module's own CLI."""
     launches, finishes, last_event_ts = read_log(manager_log)
 
     finished_pids = {pid for _, pid, _ in finishes}
@@ -350,8 +355,8 @@ def compute_health(
     )
 
     # Only resolve the default runs/ when liveness was actually asked for --
-    # callers that just want the rate (sweep_pool.py eta) shouldn't pay for a
-    # git subprocess per instance.
+    # callers that just want the rate shouldn't pay for a git subprocess
+    # per instance.
     if queue and runs_dir is None:
         root = _repo_root()
         runs_dir = os.path.join(root, "runs") if root else None

@@ -68,11 +68,12 @@ Track it as a to-do list — one entry per numbered step, per instance.
    so confirm it is alive before concluding "topped off and busy".
 4. **Find the concurrency level** by ramping up from 1 and measuring, per
    "## Ramping concurrency" below, until throughput stops improving.
-5. **Report an ETA** to the user once there is a measured rate:
-   `sweep_pool.py eta` (throughput-based, `pending_runs /
-   aggregate_jobs_per_hour`). It reads *local* files, so land each
-   instance's `manager.log` with the broker's `fetch_files` first. Before
-   any real data exists, label the estimate as a guess and revisit.
+5. **Report an ETA** to the user, estimated from **iteration throughput**:
+   read the running jobs' it/s and compare against each run's iteration
+   count. No script does this — sweeps are heterogeneous, so a
+   job-completion rate averaged over a queue says nothing reliable about
+   the runs still in it; judge it case by case. Before any run has
+   produced iterations, label the estimate as a guess and revisit.
 
 ## Keeping tags unique across instances
 
@@ -165,7 +166,7 @@ it/s.
   `QUEUE.lock` across its read-decide-write sequence, same as the manager
   does — see `vast_pool_manager.sh`'s header comment. Skipping this can
   desync `launched_idx.txt` from `queue.txt`'s actual contents, which
-  corrupts every downstream decision (trim, ETA, top-off sizing).
+  corrupts every downstream decision (trim, top-off sizing, audit).
 - **Trim/reassign is proven safe against an actively-launching manager**
   (validated live: lock contention against a real 5s poll loop, correct
   undispatched-tail isolation, `launched_idx` untouched) — a monitor
@@ -192,11 +193,11 @@ broker's `fetch_files` to bring remote files to them):
 
 - `sweep_pool.py` — the pool's bookkeeping and the registry that keeps
   tags unique: `build`/`status`/`assign` at setup, `requeue` for retries,
-  `reassign` for moves, `eta` for reporting. Everything that puts work on
-  a queue goes through here.
-- `pool_health.py` — one instance's throughput/stall/failure summary from
-  its `manager.log`. Importable, and what `sweep_pool.py eta` uses
-  underneath; call it directly for a per-instance read. Pass `--queue`/
+  `reassign` for moves. Everything that puts work on a queue goes through
+  here. Deliberately estimates no ETAs (see step 5 above).
+- `pool_health.py` — one instance's stall/failure summary from its
+  `manager.log`, plus a job-completion rate used only for top-off sizing
+  (not for ETAs — it averages over heterogeneous runs). Pass `--queue`/
   `--sync-host` as well for a real three-state stall verdict: `manager.log`
   alone can't distinguish a dead box from one long quiet run, so liveness
   comes from the running jobs' `history.jsonl` mtimes in the local `runs/`

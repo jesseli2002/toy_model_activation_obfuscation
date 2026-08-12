@@ -1,23 +1,26 @@
-"""Sweep-agnostic pool bookkeeping: build/status/assign/eta/requeue/reassign
+"""Sweep-agnostic pool bookkeeping: build/status/assign/requeue/reassign
 over a generic manifest of {tag, command, stage?, weight?} dicts. A sweep-specific
 script (e.g. generate_sweep8.py) builds that manifest and either imports
 this module or shells out to it -- this file has no knowledge of arches,
 lambdas, or any other sweep-specific concept.
 
+Deliberately does not estimate ETAs. Sweeps are heterogeneous, so a
+job-completion rate averaged over a queue says little about the runs still
+in it; estimate remaining time from the running jobs' iteration throughput
+(it/s against each run's iteration count) instead.
+
 Design note: this tool only manages *local* bookkeeping
-(pending.json/assignments.json under --out-dir) and reads *locally-fetched
-copies* of remote manager.log/launched_idx files for the `eta` command --
-it cannot itself reach a remote instance (that needs remote_exec, an
-agent-only capability). Actually mutating a remote queue.txt is the
-caller's job, via queue_append.sh/queue_trim.sh over remote_exec; `assign`
-and `reassign` here only prepare the delta file to push and update the
-local audit trail once you've pushed it.
+(pending.json/assignments.json under --out-dir) -- it cannot itself reach a
+remote instance (that needs remote_exec, an agent-only capability). Actually
+mutating a remote queue.txt is the caller's job, via
+queue_append.sh/queue_trim.sh over remote_exec; `assign` and `reassign` here
+only prepare the delta file to push and update the local audit trail once
+you've pushed it.
 
 Usage:
     python sweep_pool.py build --out-dir OUT --manifest manifest.json
     python sweep_pool.py status --out-dir OUT
     python sweep_pool.py assign --out-dir OUT --instance i0 --n-runs 20
-    python sweep_pool.py eta --out-dir OUT --instance-log i0:manager.log:idx.txt [...]
     python sweep_pool.py requeue --out-dir OUT --instance i0 --resume-tag TAG
     python sweep_pool.py reassign --out-dir OUT --from-instance i0 --to-instance i1 --lines-file trimmed.txt
 
@@ -41,11 +44,7 @@ import argparse
 import json
 import os
 import shlex
-import sys
 import time
-
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from pool_health import compute_health  # noqa: E402
 
 
 def parse_args():
@@ -75,18 +74,6 @@ def parse_args():
     p_assign.add_argument("--out-dir", default="sweep_pool_scratch")
     p_assign.add_argument("--instance", required=True)
     p_assign.add_argument("--n-runs", type=int, required=True)
-
-    p_eta = sub.add_parser("eta", help="estimate hours to drain the whole pending pool")
-    p_eta.add_argument("--out-dir", default="sweep_pool_scratch")
-    p_eta.add_argument(
-        "--instance-log",
-        action="append",
-        default=[],
-        metavar="NAME:MANAGER_LOG[:LAUNCHED_IDX]",
-        help="one per instance to include in the aggregate rate; repeatable. "
-        "LAUNCHED_IDX is optional.",
-    )
-    p_eta.add_argument("--window-minutes", type=float, default=60.0)
 
     p_requeue = sub.add_parser(
         "requeue",
@@ -246,49 +233,6 @@ def cmd_assign(args):
     print(f"pending pool: {len(pending)} runs remain")
 
 
-def cmd_eta(args):
-    pending = _load_json(os.path.join(args.out_dir, "pending.json"), [])
-    if not pending:
-        print("pending pool is empty -- nothing left to estimate")
-        return
-
-    total_rate = 0.0
-    have_rate = False
-    for spec in args.instance_log:
-        parts = spec.split(":")
-        if len(parts) not in (2, 3):
-            raise SystemExit(
-                f"[error] --instance-log must be NAME:MANAGER_LOG[:LAUNCHED_IDX], got: {spec}"
-            )
-        name, manager_log = parts[0], parts[1]
-        launched_idx = parts[2] if len(parts) == 3 else None
-        health = compute_health(
-            manager_log, launched_idx=launched_idx, window_minutes=args.window_minutes
-        )
-        rate = health["jobs_per_hour_trailing"]
-        print(
-            f"  {name}: {rate:.2f} jobs/hr"
-            if rate is not None
-            else f"  {name}: no recent data"
-        )
-        if rate is not None:
-            total_rate += rate
-            have_rate = True
-
-    if not have_rate or total_rate <= 0:
-        print(
-            f"pending: {len(pending)} runs -- ETA unknown (no instance has recent throughput data)"
-        )
-        return
-
-    # ETA is pending / aggregate throughput, NOT avg-duration * pending --
-    # the latter ignores concurrency (100 pending * 2h/run is 50h wall-clock
-    # at conc=4, not 200h). See plan doc for why this was corrected.
-    eta_hours = len(pending) / total_rate
-    print(f"pending: {len(pending)} runs, aggregate rate {total_rate:.2f} jobs/hr")
-    print(f"ETA: {eta_hours:.1f} hours ({eta_hours / 24:.1f} days)")
-
-
 def _retag(command, new_tag):
     """Rewrite a queued command's --tag, appending one if it had none."""
     argv = shlex.split(command)
@@ -419,7 +363,6 @@ def main():
         "build": cmd_build,
         "status": cmd_status,
         "assign": cmd_assign,
-        "eta": cmd_eta,
         "requeue": cmd_requeue,
         "reassign": cmd_reassign,
     }[args.cmd](args)

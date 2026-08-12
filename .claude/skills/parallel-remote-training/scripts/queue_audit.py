@@ -52,7 +52,7 @@ DEFAULT_TAG = "adv-logreg"
 
 # Which instances.json fields name a remote file worth pulling. manager_log
 # isn't used by this audit, but the monitor needs it locally anyway (for
-# pool_health.py/sweep_pool.py eta) and one fetch serving both beats two.
+# pool_health.py) and one fetch serving both beats two.
 FETCH_FIELDS = ("queue", "launched_idx", "manager_log")
 
 
