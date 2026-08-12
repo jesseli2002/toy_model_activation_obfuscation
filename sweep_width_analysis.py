@@ -147,9 +147,7 @@ def _plot_by_width(run_stats_by_lam: dict[str, dict[int, RunStats]]) -> plt.Figu
     """One panel per lambda, bars per num_x, sharing a single legend to the
     right of both panels."""
     lams = [lam for lam in LAMBDAS if lam in run_stats_by_lam]
-    fig, axes = plt.subplots(
-        1, len(lams), figsize=(1.2 * len(NUM_X) * len(lams) + 1.5, 4.2), sharey=True
-    )
+    fig, axes = plt.subplots(1, len(lams), figsize=(9, 4.2), sharey=True)
     axes = np.atleast_1d(axes)
 
     for i, (ax, lam) in enumerate(zip(axes, lams)):
@@ -193,7 +191,7 @@ def _plot_loss_vs_auroc(
     probe AUROC), colored by num_x, sharing a single legend below both
     panels."""
     lams = [lam for lam in LAMBDAS if lam in scatter_by_lam]
-    fig, axes = plt.subplots(1, len(lams), figsize=(6 * len(lams), 5), sharey=True)
+    fig, axes = plt.subplots(1, len(lams), figsize=(9, 5), sharey=True)
     axes = np.atleast_1d(axes)
 
     for ax, lam in zip(axes, lams):
