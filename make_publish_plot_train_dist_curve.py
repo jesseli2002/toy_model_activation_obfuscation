@@ -6,9 +6,10 @@ X_HIGH]^num_x, c pinned) and scatters (x, y_pred) pooled over every
 coordinate -- see plot_train_dist_curves.tmp.py, which this supersedes.
 Bottom row is adversarial_report.plot_learned_curves' OOD sweep: one
 coordinate swept at a time with the rest held at 0 (a corner no training
-example actually occupies), shown noise-free and at the checkpoint's own
-noise level superimposed so the noise's effect on the OOD extrapolation is
-visible directly. Titles/legend are quieted for a writeup (no tag, no
+example actually occupies). Two versions are written: one with the OOD sweep
+shown noise-free and at the checkpoint's own noise level superimposed (so the
+noise's effect on the OOD extrapolation is visible directly), and a
+noise-free-only variant. Titles are quieted for a writeup (no tag, no
 per-panel MSE) -- see make_publish_plots.py for the same convention.
 """
 
@@ -37,7 +38,7 @@ def parse_args():
         help="in-distribution samples per c panel (x num_x coords/sample)",
     )
     p.add_argument("--seed", type=int, default=0)
-    p.add_argument("--show", action="store_true")
+    p.add_argument("--show", action=argparse.BooleanOptionalAction, default=True)
     return p.parse_args()
 
 
@@ -76,7 +77,6 @@ def _plot_id_panel(ax, model, c: float, n: int, noise: Noise, g: torch.Generator
         linewidths=0,
         rasterized=True,
         zorder=5,
-        label="learned function",
     )
     xs = torch.linspace(X_LOW, X_HIGH, 400, device=device)
     ax.plot(
@@ -86,23 +86,27 @@ def _plot_id_panel(ax, model, c: float, n: int, noise: Noise, g: torch.Generator
         ls="--",
         lw=1.5,
         zorder=10,
-        label="target function",
+        label="target\nfunction",
     )
     ax.set_title(f"c = {c:g}")
     ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", fontsize=8, frameon=False)
 
 
 @torch.no_grad()
-def _plot_ood_panel(ax, model, c: float, noise: Noise, g: torch.Generator):
-    """One coordinate swept at a time, others held at 0 -- noise-free and at
-    the checkpoint's own noise level, superimposed in the same color."""
+def _plot_ood_panel(
+    ax, model, c: float, noise: Noise, g: torch.Generator, show_noisy: bool = True
+):
+    """One coordinate swept at a time, others held at 0. If `show_noisy`, both
+    the noise-free and the checkpoint's own noise level are superimposed in
+    the same color; otherwise only the noise-free curve is shown."""
     num_x = model.num_x
     device = next(model.parameters()).device
     xs = torch.linspace(X_LOW, X_HIGH, 400, device=device)
-    for noise_level, alpha, label in (
-        (0.0, NOISEFREE_ALPHA, "learned function (noise-free)"),
-        (noise, NOISY_ALPHA, "learned function (noisy)"),
-    ):
+    levels = [(0.0, NOISEFREE_ALPHA)]
+    if show_noisy:
+        levels.append((noise, NOISY_ALPHA))
+    for noise_level, alpha in levels:
         for j in range(num_x):
             x = torch.zeros(len(xs), num_x, device=device)
             x[:, j] = xs
@@ -114,7 +118,6 @@ def _plot_ood_panel(ax, model, c: float, noise: Noise, g: torch.Generator):
                 color=LEARNED_COLOR,
                 alpha=alpha,
                 zorder=5,
-                label=label if j == 0 else None,
             )
     ax.plot(
         xs.cpu().numpy(),
@@ -123,38 +126,28 @@ def _plot_ood_panel(ax, model, c: float, noise: Noise, g: torch.Generator):
         ls="--",
         lw=1.5,
         zorder=10,
-        label="target function",
+        label="target\nfunction",
     )
     ax.set_title(f"c = {c:g}")
     ax.grid(True, alpha=0.3)
+    ax.legend(loc="upper left", fontsize=8, frameon=False)
 
 
-def _make_plot(model, noise: Noise, n_id: int, g: torch.Generator, show: bool):
-    fig, axes = plt.subplots(2, 2, figsize=(12, 8), sharex=True, sharey="row")
+def _make_plot(
+    model, noise: Noise, n_id: int, g: torch.Generator, show_noisy_ood: bool = True
+):
+    fig, axes = plt.subplots(2, 2, figsize=(9, 8), sharex=True, sharey="row")
     for ax, c in zip(axes[0], C_VALUES):
         _plot_id_panel(ax, model, c, n_id, noise, g)
     for ax, c in zip(axes[1], C_VALUES):
-        _plot_ood_panel(ax, model, c, noise, g)
+        _plot_ood_panel(ax, model, c, noise, g, show_noisy=show_noisy_ood)
 
     for ax in axes[-1]:
         ax.set_xlabel("x")
     axes[0, 0].set_ylabel("y\n(in-distribution)")
     axes[1, 0].set_ylabel("y\n(out-of-distribution)")
 
-    handles, labels = {}, []
-    for ax in axes.flat:
-        for h, l in zip(*ax.get_legend_handles_labels()):
-            if l not in handles:
-                handles[l] = h
-                labels.append(l)
-    fig.tight_layout(rect=(0, 0, 0.72, 1))
-    fig.legend(
-        [handles[l] for l in labels],
-        labels,
-        loc="center left",
-        bbox_to_anchor=(0.73, 0.5),
-        frameon=False,
-    )
+    fig.tight_layout()
     return fig
 
 
@@ -166,8 +159,14 @@ def _run_one(args, ckpt, device):
     os.makedirs(plot_dir, exist_ok=True)
 
     g = torch.Generator(device=device).manual_seed(args.seed)
-    fig = _make_plot(model, adv_cfg.resid_noise_std, args.n_id, g, args.show)
+    fig = _make_plot(model, adv_cfg.resid_noise_std, args.n_id, g, show_noisy_ood=True)
     save_plot(fig, plot_dir, f"{TAG}_train_dist_curve.png", close=not args.show)
+
+    g = torch.Generator(device=device).manual_seed(args.seed)
+    fig = _make_plot(model, adv_cfg.resid_noise_std, args.n_id, g, show_noisy_ood=False)
+    save_plot(
+        fig, plot_dir, f"{TAG}_train_dist_curve_noisefree.png", close=not args.show
+    )
 
 
 def main(args):
