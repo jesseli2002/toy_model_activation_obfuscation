@@ -59,6 +59,10 @@ MIN_RUNS = 1  # drop (num_x, lambda) points with fewer usable runs than this
 LOSS_THRESHOLD = 0.01
 AUROC_THRESHOLDS = (0.6, 0.75, 0.9)  # ascending; splits survivors into len+1 bins
 
+FIG_WIDTH = (
+    9  # inches; both multi-panel figures share this so they display consistently
+)
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -147,7 +151,7 @@ def _plot_by_width(run_stats_by_lam: dict[str, dict[int, RunStats]]) -> plt.Figu
     """One panel per lambda, bars per num_x, sharing a single legend to the
     right of both panels."""
     lams = [lam for lam in LAMBDAS if lam in run_stats_by_lam]
-    fig, axes = plt.subplots(1, len(lams), figsize=(9, 4.2), sharey=True)
+    fig, axes = plt.subplots(1, len(lams), figsize=(FIG_WIDTH, 4.2), sharey=True)
     axes = np.atleast_1d(axes)
 
     for i, (ax, lam) in enumerate(zip(axes, lams)):
@@ -191,7 +195,7 @@ def _plot_loss_vs_auroc(
     probe AUROC), colored by num_x, sharing a single legend below both
     panels."""
     lams = [lam for lam in LAMBDAS if lam in scatter_by_lam]
-    fig, axes = plt.subplots(1, len(lams), figsize=(9, 5), sharey=True)
+    fig, axes = plt.subplots(1, len(lams), figsize=(FIG_WIDTH, 5), sharey=True)
     axes = np.atleast_1d(axes)
 
     for ax, lam in zip(axes, lams):
@@ -219,11 +223,11 @@ def _plot_loss_vs_auroc(
         handles,
         leg_labels,
         loc="upper center",
-        bbox_to_anchor=(0.5, 0.02),
+        bbox_to_anchor=(0.5, 0.04),
         ncol=4,
         fontsize=8,
     )
-    fig.tight_layout(rect=(0, 0.08, 1, 1))
+    fig.tight_layout(rect=(0, 0.04, 1, 1))
     return fig
 
 
