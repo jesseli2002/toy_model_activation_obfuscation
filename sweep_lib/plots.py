@@ -12,10 +12,20 @@ import matplotlib.pyplot as plt
 import numpy as np
 from jaxtyping import Float
 
+import config
+from analytic import reference_task_losses
 from sweep_lib.outcomes import BandSpec
 
 # Bands are drawn most-hidden at the bottom up to failed on top.
 _BOTTOM_UP = slice(None, None, -1)
+
+# Reference solutions plotted as vertical lines on loss_vs_auroc when
+# show_loss_refs=True, matching adversarial_report._plot_training_traces.
+_LOSS_REF_STYLES = [
+    ("do_nothing", "do nothing", ":"),
+    ("linreg", "linear regression", "--"),
+    ("clamp", "c-unaware optimum", "-."),
+]
 
 
 def stacked_bars(
@@ -124,11 +134,17 @@ def loss_vs_auroc(
     series: Series,
     loss_threshold: float | None = None,
     all_values=None,
+    show_loss_refs: bool = False,
 ) -> None:
     """Scatter of per-run (task loss, probe AUROC), colored by `series`.
 
     `all_values` fixes the color scale across several figures drawn from
     different subsets, so a given series value keeps its color between them.
+
+    `show_loss_refs` adds vertical lines at the analytic reference losses
+    (do-nothing, linear regression, c-unaware optimum) from
+    analytic.reference_task_losses, for scale against the training-loss
+    thresholds a run has to clear.
     """
     losses, aurocs = np.asarray(losses), np.asarray(aurocs)
     fig = ax.get_figure()
@@ -199,6 +215,15 @@ def loss_vs_auroc(
             label="loss threshold",
             alpha=0.5,
         )
+
+    if show_loss_refs:
+        ref_losses = reference_task_losses(
+            config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH
+        )
+        for key, label, style in _LOSS_REF_STYLES:
+            ax.axvline(
+                ref_losses[key], color="gray", ls=style, lw=1, label=label, zorder=0
+            )
 
 
 def _unique(values) -> list:
