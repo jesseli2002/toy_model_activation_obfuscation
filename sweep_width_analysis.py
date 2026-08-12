@@ -176,15 +176,18 @@ def _plot_by_width(run_stats_by_lam: dict[str, dict[int, RunStats]]) -> plt.Figu
     axes[0].set_ylabel("fraction of runs")
     fig.suptitle("Outcome vs. model width", fontsize=12)
 
+    # Reserve the legend's own space inside FIG_WIDTH, rather than placing it
+    # outside the axes -- otherwise bbox_inches="tight" pads the saved PNG
+    # past FIG_WIDTH, and the two plots' saved widths stop matching.
     handles, leg_labels = axes[0].get_legend_handles_labels()
     fig.legend(
         handles[::-1],
         leg_labels[::-1],
         loc="center left",
-        bbox_to_anchor=(1.0, 0.5),
+        bbox_to_anchor=(0.79, 0.5),
         fontsize=8,
     )
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 0.79, 1))
     return fig
 
 
