@@ -31,14 +31,21 @@ instance's own already-finished jobs (last --eta-window of them) minus each
 running job's elapsed time -- a rough same-instance rate, not a per-job
 prediction, so treat it as an ordering hint more than a precise ETA.
 
+Bucket flags (--running etc.) and --tag-regex narrow what gets printed;
+they're applied after the report is built, so the ETA average still reflects
+every finished job rather than only the visible ones.
+
 Usage:
     python sweep_status.py --instances instances.json
+    python sweep_status.py --instances instances.json --running --failed
+    python sweep_status.py --instances instances.json --tag-regex 'sweep18_.*lr3'
     python sweep_status.py --instances instances.json --source local --fetch-root /tmp/vast-remote-broker-fetch
 """
 
 import argparse
 import json
 import os
+import re
 import shlex
 import subprocess
 import sys
@@ -55,6 +62,18 @@ from queue_audit import (  # noqa: E402
 )
 
 FETCH_FIELDS = ("queue", "launched_idx", "manager_log")
+
+# Display order; also the set of per-bucket --flags parse_args() generates.
+BUCKETS = ("running", "failed", "complete", "queued", "unknown")
+
+
+def _regex(pattern):
+    # re.PatternError isn't a ValueError, so argparse won't turn it into a
+    # usage error on its own.
+    try:
+        return re.compile(pattern)
+    except re.error as e:
+        raise argparse.ArgumentTypeError(f"bad regex {pattern!r}: {e}") from e
 
 
 def parse_args():
@@ -86,7 +105,22 @@ def parse_args():
     p.add_argument(
         "--no-color", action="store_true", help="disable ANSI color even on a tty"
     )
+    g = p.add_argument_group(
+        "filters", "narrow what is shown; with none of these, everything is shown"
+    )
+    for bucket in BUCKETS:
+        g.add_argument(f"--{bucket}", action="store_true", help=f"show {bucket} runs")
+    g.add_argument(
+        "--tag-regex",
+        type=_regex,
+        help="only show tags matching this regex (unanchored search)",
+    )
     return p.parse_args()
+
+
+def selected_buckets(args):
+    chosen = tuple(b for b in BUCKETS if getattr(args, b))
+    return chosen or BUCKETS
 
 
 # ---- fetching: both backends return {field: text_or_None} per instance ----
@@ -226,6 +260,23 @@ def instance_report(alias, cfg, fetched, default_tag, eta_window, now):
     }
 
 
+def filter_report(report, buckets, tag_re):
+    """Drop buckets and tags the caller didn't ask for.
+
+    Applied to a finished report rather than folded into instance_report so
+    the ETA average keeps averaging over every finished job.
+    """
+    if "running" not in report:  # error-only report, nothing to filter
+        return report
+    out = dict(report)
+    for bucket in BUCKETS:
+        entries = report[bucket] if bucket in buckets else []
+        if tag_re is not None:
+            entries = [e for e in entries if tag_re.search(e["tag"])]
+        out[bucket] = entries
+    return out
+
+
 CYAN = "\033[36m"
 RESET = "\033[0m"
 
@@ -236,27 +287,31 @@ def _fmt_dur(seconds):
     return f"{seconds / 3600:.1f}h"
 
 
-def print_human(reports, show, color):
+def _fmt_running(e):
+    eta = f", eta ~{_fmt_dur(e['eta_s'])}" if e["eta_s"] is not None else ""
+    return f"{e['tag']} (up {_fmt_dur(e['running_s'])}{eta})"
+
+
+BUCKET_FMT = {
+    "running": _fmt_running,
+    "failed": lambda e: f"{e['tag']} (rc={e['rc']})",
+    "complete": lambda e: e["tag"],
+    "queued": lambda e: e["tag"],
+    "unknown": lambda e: e["tag"],
+}
+
+
+def print_human(reports, show, color, buckets):
     heading = (lambda s: f"{CYAN}{s}{RESET}") if color else (lambda s: s)
-    totals = {"running": 0, "queued": 0, "complete": 0, "failed": 0, "unknown": 0}
+    totals = {b: 0 for b in buckets}
     for r in reports:
         print(heading(f"=== {r['instance']} ==="))
         for err in r.get("errors") or ():
             print(f"  [error] {err}")
         if "running" not in r:
             continue
-
-        def fmt_running(e):
-            eta = f", eta ~{_fmt_dur(e['eta_s'])}" if e["eta_s"] is not None else ""
-            return f"{e['tag']} (up {_fmt_dur(e['running_s'])}{eta})"
-
-        for bucket, fmt in (
-            ("running", fmt_running),
-            ("failed", lambda e: f"{e['tag']} (rc={e['rc']})"),
-            ("complete", lambda e: e["tag"]),
-            ("queued", lambda e: e["tag"]),
-            ("unknown", lambda e: e["tag"]),
-        ):
+        for bucket in buckets:
+            fmt = BUCKET_FMT[bucket]
             entries = r[bucket]
             totals[bucket] += len(entries)
             if not entries:
@@ -273,6 +328,7 @@ def print_human(reports, show, color):
 def main():
     args = parse_args()
     instances = load_instances(args.instances)
+    buckets = selected_buckets(args)
     now = time.time()
 
     reports = []
@@ -281,15 +337,16 @@ def main():
             fetched = fetch_ssh(alias, cfg, args.ssh_timeout)
         else:
             fetched = fetch_local(alias, cfg, args.fetch_root)
-        reports.append(
-            instance_report(alias, cfg, fetched, args.default_tag, args.eta_window, now)
+        report = instance_report(
+            alias, cfg, fetched, args.default_tag, args.eta_window, now
         )
+        reports.append(filter_report(report, buckets, args.tag_regex))
 
     if args.json:
         print(json.dumps(reports, indent=2))
     else:
         color = sys.stdout.isatty() and not args.no_color
-        print_human(reports, args.show, color)
+        print_human(reports, args.show, color, buckets)
 
 
 if __name__ == "__main__":

@@ -224,4 +224,7 @@ broker's `fetch_files` to bring remote files to them):
   at a terminal (no agent, no token cost) via `--instances instances.json`.
   Unlike the others above, its default `--source ssh` fetches over plain
   `ssh ALIAS cat PATH` itself rather than needing `fetch_files` first
-  (`--source local` still works from inside an agent session).
+  (`--source local` still works from inside an agent session). Per-bucket
+  flags (`--running`/`--queued`/`--complete`/`--failed`/`--unknown`, any
+  combination) and `--tag-regex` narrow the output without perturbing the
+  ETA estimate.
