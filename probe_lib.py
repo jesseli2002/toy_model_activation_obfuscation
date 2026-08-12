@@ -224,7 +224,7 @@ PROBE_C = 1000
 # AUROC collapses toward chance, i.e. it understates probe strength exactly
 # where a bigger fit set was supposed to help. float64 removes it for ~0.4s a
 # fit. Training is unaffected: at probe_C=1 on a subsampled batch it sits four
-# orders of magnitude away from this regime.
+# orders of magnitude away from this regime. Measurements in PR #239.
 PROBE_EVAL_FIT_DTYPE = torch.float64
 
 

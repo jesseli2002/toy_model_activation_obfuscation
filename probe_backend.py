@@ -33,7 +33,7 @@ PROBE_NEWTON_STEPS = 5
 # Cold-fit budget for ANALYSIS refits, which never warm-start and run at a far
 # weaker regularization (probe_lib.PROBE_C) than training does. At the stock 25
 # a minority of runs stop short of the minimizer, understating probe strength;
-# 100 leaves none short across the sensitivity study's runs, for ~0.4s a fit.
+# 100 leaves none short across the sensitivity study's runs (PR #239).
 # Training is unaffected -- it keeps NewtonLogisticRegression's own default.
 PROBE_EVAL_NEWTON_COLD_STEPS = 100
 
