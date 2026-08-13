@@ -1,6 +1,5 @@
 """Aggregate the probed-layer sweep spread across runs/sweep18_layer{2,4,6,8,10}_*
-into the same two views as the other sweep*_analysis.py scripts, one figure
-pair per group in GROUPS:
+into the same two views as the other sweep*_analysis.py scripts:
 
 - Outcome bars: per-layer stacked fractions, x-axis = probed layer. A run
   either failed the task (loss) or, having succeeded, is binned by how well
@@ -10,10 +9,16 @@ pair per group in GROUPS:
   is ordered, so a ramp (rather than loss_vs_auroc's categorical color cycle)
   is the more legible choice.
 
-Each group is a separate sweep18 config (lambda / rampup) swept over the
-penalized layer, so its runs aren't discoverable by a single glob+regex the
-way an in-sweep parameter is; `GROUPS` below lists tags explicitly, same
-approach as sweep_group_report.py and sweep_width_analysis.py.
+Each view is one 2x2 figure, one panel per lambda in GRID_ORDER plus a
+shared legend in the fourth (otherwise empty) panel -- meant for
+publication, so panels carry only the lambda value, not run tags or other
+sweep configuration (recorded in the surrounding text instead).
+
+Each lambda's runs come from a different sweep18 config (only the penalized
+layer varies within one), so they aren't discoverable by a single
+glob+regex the way an in-sweep parameter is; `GROUPS` below lists tags
+explicitly, same approach as sweep_group_report.py and
+sweep_width_analysis.py.
 
 LOSS_THRESHOLD / AUROC_THRESHOLDS match the other sweep_*_analysis.py
 scripts' provisional values.
@@ -54,6 +59,16 @@ GROUPS: dict[str, dict[int, list[str]]] = {
 }
 # fmt: on
 
+# Grid position (row-major, left-to-right/top-to-bottom) -> group, display
+# label. Fourth slot is left as None: its panel is cleared and holds the
+# shared legend instead.
+GRID_ORDER: list[tuple[str, str] | None] = [
+    ("lam0.01", "0.01"),
+    ("lam0.032_ramp200k", "0.032"),
+    ("lam0.1_ramp200k", "0.1"),
+    None,
+]
+
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 
 MIN_RUNS = 1  # drop (group, layer) points with fewer usable runs than this
@@ -61,7 +76,7 @@ MIN_RUNS = 1  # drop (group, layer) points with fewer usable runs than this
 LOSS_THRESHOLD = 0.01
 AUROC_THRESHOLDS = (0.6, 0.75, 0.9)  # ascending; splits survivors into len+1 bins
 
-FIG_WIDTH = 6  # inches; both figures share this so they display consistently
+FIG_WIDTH = 8  # inches; both figures share this so they display consistently
 
 
 def parse_args() -> argparse.Namespace:
@@ -80,6 +95,7 @@ if __name__ == "__main__":
 import os
 from typing import NamedTuple
 
+import matplotlib.patches as mpatches
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -149,47 +165,107 @@ def _collect_run_stats(
     return stats, scatter_points
 
 
-def _plot_by_layer(group_name: str, run_stats: dict[int, RunStats]) -> plt.Figure:
-    layers = [l for l in LAYERS if l in run_stats]
-    fig, ax = plt.subplots(figsize=(FIG_WIDTH, 4.2))
-    stacked_bars(
-        ax,
-        range(len(layers)),
-        [run_stats[l].frac for l in layers],
-        BANDS,
-        n_runs=[run_stats[l].n_ok for l in layers],
-        legend=True,
-    )
-    ax.set_xticks(range(len(layers)))
-    ax.set_xticklabels([str(l) for l in layers])
-    ax.set_xlim(-0.6, len(layers) - 0.4)
-    ax.set_xlabel("probed layer")
-    ax.set_ylim(0, 1.08)
-    ax.set_ylabel("fraction of runs")
-    ax.grid(True, axis="y", alpha=0.3)
-    ax.set_title(f"Outcome vs. probed layer ({group_name})", fontsize=11)
-    ax.legend(loc="center left", bbox_to_anchor=(1.02, 0.5), fontsize=9)
+def _grid_axes(fig, axes) -> tuple[dict[str, plt.Axes], plt.Axes]:
+    """Flatten a 2x2 `axes` array against GRID_ORDER: {group -> its axes},
+    plus the empty slot's axes for the shared legend."""
+    flat = axes.flatten()
+    group_axes = {}
+    legend_ax = None
+    for ax, slot in zip(flat, GRID_ORDER):
+        if slot is None:
+            legend_ax = ax
+        else:
+            group, _label = slot
+            group_axes[group] = ax
+    return group_axes, legend_ax
+
+
+def _plot_by_layer(run_stats_by_group: dict[str, dict[int, RunStats]]) -> plt.Figure:
+    fig, axes = plt.subplots(2, 2, figsize=(FIG_WIDTH, FIG_WIDTH * 0.85), sharey=True)
+    group_axes, legend_ax = _grid_axes(fig, axes)
+
+    handles, labels = None, None
+    for group, label in (slot for slot in GRID_ORDER if slot is not None):
+        ax = group_axes[group]
+        run_stats = run_stats_by_group.get(group, {})
+        layers = [l for l in LAYERS if l in run_stats]
+        stacked_bars(
+            ax,
+            range(len(layers)),
+            [run_stats[l].frac for l in layers],
+            BANDS,
+            n_runs=[run_stats[l].n_ok for l in layers],
+            legend=handles is None,
+        )
+        if handles is None:
+            handles, labels = ax.get_legend_handles_labels()
+        ax.set_xticks(range(len(layers)))
+        ax.set_xticklabels([str(l) for l in layers])
+        ax.set_xlim(-0.6, len(layers) - 0.4)
+        ax.set_xlabel("probed layer")
+        ax.grid(True, axis="y", alpha=0.3)
+        ax.set_title(f"$\\lambda$ = {label}", fontsize=11)
+
+    for ax in group_axes.values():
+        ax.set_ylim(0, 1.08)
+    axes[0, 0].set_ylabel("fraction of runs")
+    axes[1, 0].set_ylabel("fraction of runs")
+
+    legend_ax.axis("off")
+    if handles is not None:
+        legend_ax.legend(
+            handles[::-1], labels[::-1], loc="center", fontsize=10, frameon=False
+        )
+
     fig.tight_layout()
     return fig
 
 
 def _plot_loss_vs_auroc(
-    group_name: str, scatter_points: list[tuple[float, float, int]]
+    scatter_by_group: dict[str, list[tuple[float, float, int]]],
 ) -> plt.Figure:
-    losses, aurocs, layers = (np.array(v) for v in zip(*scatter_points))
-    fig, ax = plt.subplots(figsize=(FIG_WIDTH, 5))
-    loss_vs_auroc(
-        ax,
-        losses,
-        aurocs,
-        Series.ordinal(layers, "probed layer"),
-        LOSS_THRESHOLD,
-        all_values=LAYERS,
-        show_loss_refs=True,
+    fig, axes = plt.subplots(2, 2, figsize=(FIG_WIDTH, FIG_WIDTH * 0.85), sharey=True)
+    group_axes, legend_ax = _grid_axes(fig, axes)
+    cmap = plt.get_cmap("viridis", len(LAYERS))
+
+    ref_handles, ref_labels = [], []
+    for group, label in (slot for slot in GRID_ORDER if slot is not None):
+        ax = group_axes[group]
+        points = scatter_by_group.get(group, [])
+        if not points:
+            ax.axis("off")
+            continue
+        losses, aurocs, layers = (np.array(v) for v in zip(*points))
+        loss_vs_auroc(
+            ax,
+            losses,
+            aurocs,
+            Series.ordinal(layers, "probed layer"),
+            LOSS_THRESHOLD,
+            all_values=LAYERS,
+            show_loss_refs=True,
+            show_colorbar=False,
+        )
+        if not ref_handles:
+            ref_handles, ref_labels = ax.get_legend_handles_labels()
+        ax.set_xlabel("task loss on training distribution")
+        ax.set_title(f"$\\lambda$ = {label}", fontsize=11)
+
+    axes[0, 0].set_ylabel("probe AUROC")
+    axes[1, 0].set_ylabel("probe AUROC")
+
+    legend_ax.axis("off")
+    layer_handles = [
+        mpatches.Patch(facecolor=cmap(i), edgecolor="black", label=f"layer {l}")
+        for i, l in enumerate(LAYERS)
+    ]
+    legend_ax.legend(
+        handles=layer_handles + ref_handles,
+        loc="center",
+        fontsize=10,
+        frameon=False,
     )
-    ax.set_xlabel("task loss on training distribution")
-    ax.set_title(f"Task loss vs. probe AUROC ({group_name})", fontsize=11)
-    ax.legend(fontsize=8)
+
     fig.tight_layout()
     return fig
 
@@ -202,25 +278,27 @@ def main(clear_cache: bool = False) -> None:
     n_bands = BANDS.n_bands
 
     os.makedirs(PLOT_DIR, exist_ok=True)
-    any_usable = False
-    for group_name, group_tags in GROUPS.items():
-        print(f"group={group_name}")
+    run_stats_by_group: dict[str, dict[int, RunStats]] = {}
+    scatter_by_group: dict[str, list[tuple[float, float, int]]] = {}
+    for group, group_tags in GROUPS.items():
+        print(f"group={group}")
         run_stats, scatter_points = _collect_run_stats(group_tags, store, n_bands)
         if not run_stats:
-            print(f"  group={group_name}: no usable runs, skipping its plots")
+            print(f"  group={group}: no usable runs, skipping")
             continue
-        any_usable = True
+        run_stats_by_group[group] = run_stats
+        scatter_by_group[group] = scatter_points
 
-        fig = _plot_by_layer(group_name, run_stats)
-        fig.savefig(f"{PLOT_DIR}/{group_name}_by_layer.png", bbox_inches="tight")
-        fig.savefig(f"{PLOT_DIR}/{group_name}_by_layer.svg", bbox_inches="tight")
-
-        fig = _plot_loss_vs_auroc(group_name, scatter_points)
-        fig.savefig(f"{PLOT_DIR}/{group_name}_loss_vs_auroc.png", bbox_inches="tight")
-        fig.savefig(f"{PLOT_DIR}/{group_name}_loss_vs_auroc.svg", bbox_inches="tight")
-
-    if not any_usable:
+    if not run_stats_by_group:
         raise SystemExit("no usable runs found across GROUPS")
+
+    fig = _plot_by_layer(run_stats_by_group)
+    fig.savefig(f"{PLOT_DIR}/by_layer.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/by_layer.svg", bbox_inches="tight")
+
+    fig = _plot_loss_vs_auroc(scatter_by_group)
+    fig.savefig(f"{PLOT_DIR}/loss_vs_auroc.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/loss_vs_auroc.svg", bbox_inches="tight")
 
     plt.show()
 

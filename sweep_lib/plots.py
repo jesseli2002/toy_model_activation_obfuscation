@@ -134,6 +134,7 @@ def loss_vs_auroc(
     loss_threshold: float | None = None,
     all_values=None,
     show_loss_refs: bool = False,
+    show_colorbar: bool = True,
 ) -> None:
     """Scatter of per-run (task loss, probe AUROC), colored by `series`.
 
@@ -144,6 +145,10 @@ def loss_vs_auroc(
     (do-nothing, linear regression, c-unaware optimum) from
     analytic.reference_task_losses, for scale against the training-loss
     thresholds a run has to clear.
+
+    `show_colorbar=False` skips drawing the per-axes colorbar (continuous/
+    ordinal series only -- categorical never draws one), for callers that
+    build a single shared legend/colorbar across several panels instead.
     """
     losses, aurocs = np.asarray(losses), np.asarray(aurocs)
     fig = ax.get_figure()
@@ -179,8 +184,9 @@ def loss_vs_auroc(
             edgecolor="black",
             linewidth=0.5,
         )
-        cbar = fig.colorbar(sc, ax=ax, ticks=range(len(uniq)), label=series.label)
-        cbar.set_ticklabels([str(v) for v in uniq])
+        if show_colorbar:
+            cbar = fig.colorbar(sc, ax=ax, ticks=range(len(uniq)), label=series.label)
+            cbar.set_ticklabels([str(v) for v in uniq])
     else:
         positive = scale_values[scale_values > 0]
         norm = mcolors.SymLogNorm(
@@ -197,7 +203,8 @@ def loss_vs_auroc(
             edgecolor="black",
             linewidth=0.5,
         )
-        fig.colorbar(sc, ax=ax, label=series.label)
+        if show_colorbar:
+            fig.colorbar(sc, ax=ax, label=series.label)
 
     ax.set_ylabel("probe AUROC")
     ax.set_xscale("log")
