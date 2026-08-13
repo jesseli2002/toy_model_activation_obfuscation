@@ -111,7 +111,8 @@ GROUPS = {
 
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 
-# Which layer to probe at, or None to probe at the (single) layer a penalty was applied at.
+# Which layers to probe at, or None for each run's own penalized layers (concatenated).
+# None means groups penalized at different widths get differently-sized probes -- their AUROCs aren't equal-capacity comparisons.
 PROBE_LAYER = None
 
 # -- curves

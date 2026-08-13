@@ -207,15 +207,15 @@ def _make_probe_plots(
     os.makedirs(out_dir, exist_ok=True)
     for idx in _select_rank_indices(n):
         tag = tags_by_auroc[idx]
-        layer, pi = store.probe_fit(tag)
+        layers, pi = store.probe_fit(tag)
         title = f"rank{idx:03d}_{tag}_auroc{aurocs[idx]:.4f}"
         file_tag = f"rank{idx:03d}_auroc{aurocs[idx]:.4f}"
         probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
         _plot_probe_hist_auroc(
-            title, [layer], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
+            title, layers, probe, pi["X_te"], pi["y_te"], out_dir, file_tag
         )
         _plot_probe_pca_resid(
-            title, [layer], probe, pi["X_te"], pi["y_te"], out_dir, file_tag
+            title, layers, probe, pi["X_te"], pi["y_te"], out_dir, file_tag
         )
 
 

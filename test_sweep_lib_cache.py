@@ -226,17 +226,14 @@ def _ck(layers):
 
 def test_probe_layers_defaults_to_the_penalized_layers():
     assert resolve_probe_layers("t", _ck([7]), None) == [7]
+    assert resolve_probe_layers("t", _ck([4, 2]), None) == [2, 4]
 
 
 def test_probe_layers_override_must_agree_with_config():
     assert resolve_probe_layers("t", _ck([2]), (2,)) == [2]
+    assert resolve_probe_layers("t", _ck([2, 4]), (4, 2)) == [2, 4]
     with pytest.raises(ValueError, match="penalty_layers"):
         resolve_probe_layers("t", _ck([2]), (10,))
-
-
-def test_probe_layers_ambiguous_without_override():
-    with pytest.raises(ValueError, match="set MetricSpec.probe_layers"):
-        resolve_probe_layers("t", _ck([2, 4]), None)
 
 
 def test_probe_layers_none_without_adversarial_config():

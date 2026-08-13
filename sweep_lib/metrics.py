@@ -26,7 +26,7 @@ from paths import ckpt_dir
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
-    binary_probe_metrics_all_layers,
+    binary_probe_metrics_concat_layers,
     boundary_auroc,
     probe_eval_solver_key,
 )
@@ -67,9 +67,9 @@ class MetricSpec:
 def resolve_probe_layers(
     tag: str, ck, override: tuple[int, ...] | None
 ) -> list[int] | None:
-    """The layers to probe `tag` at: `override` when given, else the layer
-    the run was penalized at. None for a checkpoint with no adversarial
-    config -- e.g. a train_no_c.py c-blind run, which has no probe to refit.
+    """The layers to probe `tag` at: `override` when given, else the layers
+    the run was penalized at. None for a checkpoint with no adversarial config
+    -- e.g. a train_no_c.py c-blind run, which has no probe to refit.
 
     A run whose config disagrees with `override` raises: comparing a run
     against a probe at layers it was never penalized at answers a different
@@ -78,15 +78,10 @@ def resolve_probe_layers(
     adv_cfg = resolve_adv_config(ck)
     if adv_cfg is None:
         return None
-    layers = list(adv_cfg.penalty_layers)
+    layers = sorted(adv_cfg.penalty_layers)
     if override is None:
-        if len(layers) != 1:
-            raise ValueError(
-                f"{tag}: trained with penalty_layers={layers}; "
-                "set MetricSpec.probe_layers to pick one"
-            )
         return layers
-    if layers != list(override):
+    if layers != sorted(override):
         raise ValueError(
             f"{tag}: probe_layers={list(override)} but the checkpoint was trained "
             f"with penalty_layers={layers}"
@@ -195,7 +190,7 @@ class MetricStore:
             return None, None
         adv_cfg = resolve_adv_config(ck)
         g = torch.Generator(device=self.device).manual_seed(seed)
-        _metrics, plot_inputs = binary_probe_metrics_all_layers(
+        _metrics, plot_inputs = binary_probe_metrics_concat_layers(
             model,
             C_LOW,
             C_HIGH,
@@ -204,11 +199,10 @@ class MetricStore:
             self.probe_backend_name,
             n_train=n_train,
             n_test=n_test,
-            desc=tag,
             train_noise=adv_cfg.resid_noise_std * train_noise_mult,
             eval_noise=adv_cfg.resid_noise_std * eval_noise_mult,
         )
-        return layers, plot_inputs[layers[0]]
+        return layers, plot_inputs
 
     def _auroc(self, **kwargs):
         layers, pi = self._fit_probe(**kwargs)
@@ -261,8 +255,8 @@ class MetricStore:
         return None if any(v is None for v in losses.values()) else losses
 
     def auroc(self, tag: str) -> float | None:
-        """AUROC of a probe refit against the checkpoint, at the run's probe
-        layers. None for a checkpoint with no adversarial config."""
+        """AUROC of a probe refit against the checkpoint, over the run's probe
+        layers concatenated. None for a checkpoint with no adversarial config."""
         if not self.has_checkpoint(tag):
             return None
         return self.cache.get_or_compute(self._auroc, **self._auroc_kwargs(tag))

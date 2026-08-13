@@ -99,7 +99,7 @@ from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# probe_layers=None: each run is probed at its own penalized layer
+# probe_layers=None: each run is probed at its own penalized layer(s)
 SPEC = MetricSpec(ckpt=CKPT)
 
 RunKey = tuple[int, float]  # (penalized layer, lam)
