@@ -78,5 +78,5 @@ This environment is in a sandbox. Writes, sensitive reads, and network access ar
 - If you run into permissions issues, prefer trying to solve the cause (and ask the user to help debug permissions), rather than working around the symptoms and trying a bunch of techniques to get past them.
 - Use the Github MCP server to push features, instead of Bash git/gh commands.
     - For git push, a custom git-push-broker MCP is used; the GitHub one doesn't preserve commit history properly.
-- If you get this error or something like it on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs occasionally when the machine is updated. Stop what you're doing and tell the user; there's a known fix which needs user intervention
+- If you get something like this error on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs after machine reboot. Stop what you're doing and tell the user; there's a known fix which needs user intervention
 - If asking user to rm files - give a trash command instead since user disabled rm in bashrc.

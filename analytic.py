@@ -407,5 +407,8 @@ if __name__ == "__main__":
     import config
 
     bounds = (config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH)
+    print("reference task losses:")
+    print(reference_task_losses(*bounds))
+    print()
     print(f"[analytic] c-blind minimum L_task = {no_c_task_loss(*bounds):.6f}")
     print(f"[analytic] wrote {plot_no_c_predictor(*bounds)}")

@@ -210,7 +210,7 @@ def loss_vs_auroc(
         ax.axvline(
             loss_threshold,
             linestyle="--",
-            color="black",
+            color="red",
             label="loss threshold",
             alpha=0.5,
         )
@@ -220,9 +220,7 @@ def loss_vs_auroc(
             config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH
         )
         for key, label, style in _LOSS_REF_STYLES:
-            ax.axvline(
-                ref_losses[key], color="gray", ls=style, lw=1, label=label, zorder=0
-            )
+            ax.axvline(ref_losses[key], color="gray", ls=style, label=label, zorder=0)
 
 
 def _unique(values) -> list:

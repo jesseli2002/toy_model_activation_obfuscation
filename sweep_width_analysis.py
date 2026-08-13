@@ -38,7 +38,7 @@ import argparse
 
 PLOT_DIR = "plot/sweep_width"
 
-LAMBDAS = ["0.1", "0.01"]  # one bar plot and one scatter each
+LAMBDAS = ["0.01", "0.1"]  # one bar plot and one scatter each
 
 # fmt: off
 def _groups(lam: str) -> dict[int, list[str]]:
@@ -184,10 +184,10 @@ def _plot_by_width(run_stats_by_lam: dict[str, dict[int, RunStats]]) -> plt.Figu
         handles[::-1],
         leg_labels[::-1],
         loc="center left",
-        bbox_to_anchor=(0.79, 0.5),
-        fontsize=8,
+        bbox_to_anchor=(0.72, 0.5),
+        fontsize=10,
     )
-    fig.tight_layout(rect=(0, 0, 0.79, 1))
+    fig.tight_layout(rect=(0, 0, 0.72, 1))
     return fig
 
 
@@ -228,7 +228,7 @@ def _plot_loss_vs_auroc(
         loc="upper center",
         bbox_to_anchor=(0.5, 0.04),
         ncol=4,
-        fontsize=8,
+        fontsize=10,
     )
     fig.tight_layout(rect=(0, 0.04, 1, 1))
     return fig
@@ -257,9 +257,11 @@ def main(clear_cache: bool = False) -> None:
 
     fig = _plot_by_width(run_stats_by_lam)
     fig.savefig(f"{PLOT_DIR}/by_width.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/by_width.svg", bbox_inches="tight")
 
     fig = _plot_loss_vs_auroc(scatter_by_lam)
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.svg", bbox_inches="tight")
 
     plt.show()
 
