@@ -200,7 +200,7 @@ def _collect_metrics() -> dict[str, dict]:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     store = MetricStore(
-        MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER), CACHE_PATH, device
+        MetricSpec(ckpt=CKPT, probe_layers=PROBE_LAYER), CACHE_PATH, device
     )
 
     metrics: dict[str, dict] = {}

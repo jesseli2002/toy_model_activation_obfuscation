@@ -11,7 +11,7 @@ import os
 import pytest
 
 from sweep_lib.cache import MetricCache, cache_key, file_fingerprint, key_seed
-from sweep_lib.metrics import MetricSpec, resolve_probe_layer
+from sweep_lib.metrics import MetricSpec, resolve_probe_layers
 
 
 @pytest.fixture
@@ -50,7 +50,7 @@ def test_auroc_key_ignores_loss_settings():
     the loss eval size does not invalidate a cached AUROC."""
     a = MetricSpec(task_loss_n_eval=50_000)
     b = MetricSpec(task_loss_n_eval=10_000)
-    common = dict(probe_layer=None, n_train=10_000, n_test=10_000)
+    common = dict(probe_layers=None, n_train=10_000, n_test=10_000)
     ka = cache_key("_auroc", {"tag": "t", "ckpt": a.ckpt, **common})
     kb = cache_key("_auroc", {"tag": "t", "ckpt": b.ckpt, **common})
     assert ka == kb
@@ -211,7 +211,7 @@ def test_fingerprint_missing_file_raises(tmp_path):
 
 
 # ----------------------------------------------------------------------------
-# resolve_probe_layer
+# resolve_probe_layers
 # ----------------------------------------------------------------------------
 class FakeAdvCfg:
     def __init__(self, layers):
@@ -224,20 +224,20 @@ def _ck(layers):
     return {"adv_config": _make_adv_config(penalty_layers=layers).to_dict()}
 
 
-def test_probe_layer_defaults_to_the_penalized_layer():
-    assert resolve_probe_layer("t", _ck([7]), None) == 7
+def test_probe_layers_defaults_to_the_penalized_layers():
+    assert resolve_probe_layers("t", _ck([7]), None) == [7]
 
 
-def test_probe_layer_override_must_agree_with_config():
-    assert resolve_probe_layer("t", _ck([2]), 2) == 2
+def test_probe_layers_override_must_agree_with_config():
+    assert resolve_probe_layers("t", _ck([2]), (2,)) == [2]
     with pytest.raises(ValueError, match="penalty_layers"):
-        resolve_probe_layer("t", _ck([2]), 10)
+        resolve_probe_layers("t", _ck([2]), (10,))
 
 
-def test_probe_layer_ambiguous_without_override():
-    with pytest.raises(ValueError, match="set MetricSpec.probe_layer"):
-        resolve_probe_layer("t", _ck([2, 4]), None)
+def test_probe_layers_ambiguous_without_override():
+    with pytest.raises(ValueError, match="set MetricSpec.probe_layers"):
+        resolve_probe_layers("t", _ck([2, 4]), None)
 
 
-def test_probe_layer_none_without_adversarial_config():
-    assert resolve_probe_layer("t", {}, None) is None
+def test_probe_layers_none_without_adversarial_config():
+    assert resolve_probe_layers("t", {}, None) is None

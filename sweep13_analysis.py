@@ -99,7 +99,7 @@ from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# probe_layer=None: each run is probed at its own penalized layer
+# probe_layers=None: each run is probed at its own penalized layer
 SPEC = MetricSpec(ckpt=CKPT)
 
 RunKey = tuple[int, float]  # (penalized layer, lam)
@@ -147,7 +147,7 @@ def _collect_run_stats(
         # The tag's layer sets this run's x position, so pin it: a checkpoint
         # trained at a different layer raises rather than landing in the
         # wrong column with an AUROC measured somewhere else.
-        layer_store = store.with_probe_layer(layer)
+        layer_store = store.with_probe_layers(layer)
         counts = np.zeros(n_bands)
         n_ok = 0
         for tag in tags:

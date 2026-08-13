@@ -55,7 +55,7 @@ from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
+SPEC = MetricSpec(ckpt=CKPT, probe_layers=(PROBE_LAYER,))
 
 
 def _discover_tags() -> list[str]:
