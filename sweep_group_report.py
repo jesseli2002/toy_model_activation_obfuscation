@@ -111,7 +111,8 @@ GROUPS = {
 
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 
-# Which layer to probe at, or None to probe at the (single) layer a penalty was applied at.
+# Which layers to probe at, or None for each run's own penalized layers (concatenated).
+# None means groups penalized at different widths get differently-sized probes -- their AUROCs aren't equal-capacity comparisons.
 PROBE_LAYER = None
 
 # -- curves
@@ -200,7 +201,7 @@ def _collect_metrics() -> dict[str, dict]:
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     store = MetricStore(
-        MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER), CACHE_PATH, device
+        MetricSpec(ckpt=CKPT, probe_layers=PROBE_LAYER), CACHE_PATH, device
     )
 
     metrics: dict[str, dict] = {}

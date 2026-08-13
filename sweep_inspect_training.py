@@ -27,7 +27,7 @@ from probe_backend import resolve_probe_backend
 from sweep_lib.history import causal_lowpass, load_history
 from probe_lib import (
     LinearBoundary,
-    binary_probe_metrics_all_layers,
+    binary_probe_metrics_concat_layers,
     boundary_auroc,
     load_model,
     resolve_adv_config,
@@ -48,8 +48,8 @@ def _refit_probe_auroc(
     g: torch.Generator,
 ) -> float | None:
     """AUROC of a probe freshly fit against `tag`'s checkpoint (over the same
-    probed layer as its stored probe), or None if it carries no stored probe
-    (and hence no `probe_layers` to fit against).
+    probed layers as its stored probe, concatenated), or None if it carries no
+    stored probe (and hence no `probe_layers` to fit against).
 
     Contrast the stored probe's own AUROC, which reflects the specific probe
     the model was trained against -- this instead asks how visible c is to a
@@ -59,11 +59,10 @@ def _refit_probe_auroc(
     if stored is None:
         return None
     _, layers = stored
-    assert len(layers) == 1, "refit AUROC doesn't handle multi-layer stored probes yet"
     adv_cfg = resolve_adv_config(ck)
     eval_noise_std = adv_cfg.resid_noise_std * eval_noise_mult
     train_noise_std = adv_cfg.resid_noise_std * train_noise_mult
-    _, plot_inputs = binary_probe_metrics_all_layers(
+    _, pi = binary_probe_metrics_concat_layers(
         model,
         C_LOW,
         C_HIGH,
@@ -73,7 +72,6 @@ def _refit_probe_auroc(
         eval_noise=eval_noise_std,
         train_noise=train_noise_std,
     )
-    pi = plot_inputs[layers[0]]
     boundary = LinearBoundary(pi["w_probe"], pi["b_probe"])
     return boundary_auroc(boundary, pi["X_te"], pi["y_te"])
 
