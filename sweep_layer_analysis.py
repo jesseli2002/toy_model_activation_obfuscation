@@ -108,6 +108,7 @@ PARETO_COMPARISONS: dict[str, list[tuple[int, ...]]] = {
 FRONTIER_ALPHA = 1.0
 OFF_FRONTIER_ALPHA = 0.25
 MARKER_SIZE = 55
+PARETO_XLIM_MAX = 0.4  # ~ the do-nothing task loss
 
 # --pareto-bootstrap: shades each frontier with a trial-to-trial uncertainty
 # band (see _bootstrap_frontier_band), quantifying how much the staircase
@@ -505,6 +506,10 @@ def _plot_pareto_frontier(
     # to the right edge (it's the best AUROC achieved from there on) --
     # rather than stopping at the extreme data points.
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    xlim = (
+        xlim[0],
+        PARETO_XLIM_MAX,
+    )  # ~ the do-nothing task loss; nothing informative past it
     ylim = (ylim[0], 1.0)  # AUROC is bounded above by 1.0; don't pad past it
 
     if bootstrap:
