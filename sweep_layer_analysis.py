@@ -12,17 +12,21 @@ and runs/sweep19_layers{L1}-{L2}_* into three views:
   -- for a chosen set of "layer sets" (a layer set is the tuple of layers a
   run's probe penalty, and the refit probe scoring it, is concatenated over,
   e.g. (2,) or (2, 4)), pooling all of a layer set's lambdas and trials onto
-  one figure. One color per layer set, one marker shape per lambda; points
+  one panel. One color per layer set, one marker shape per lambda; points
   dominated in both loss and AUROC by another point in the same layer set are
   drawn translucent, frontier points opaque. Extending to a new comparison:
   add an entry to PARETO_COMPARISONS naming the layer sets (as tuples) to
-  plot together; --comparison restricts a run to one entry. Layer sets not
-  already covered by sweep18/19's naming need a `_pareto_tags` case added.
+  plot together; --comparison restricts a run to one entry (its own figure,
+  legend alongside it) instead of the default all-of-them 2x2 grid. Layer
+  sets not already covered by sweep18/19's naming need a `_pareto_tags` case
+  added.
 
-The first two views are each one 2x2 figure, one panel per lambda in
-GRID_ORDER plus a shared legend in the fourth (otherwise empty) panel --
-meant for publication, so panels carry only the lambda value, not run tags or
-other sweep configuration (recorded in the surrounding text instead).
+Each view is one 2x2 figure, one panel per lambda (bars/scatter) or
+PARETO_COMPARISONS entry (pareto, absent --comparison), plus a shared legend
+-- in the fourth (otherwise empty) panel for bars/scatter, in one row below
+all four panels for pareto -- meant for publication, so panels carry only
+the lambda value or layer sets being compared, not run tags or other sweep
+configuration (recorded in the surrounding text instead).
 
 Each lambda's runs come from a different sweep18/19 config (only the
 penalized layer(s) vary within one), so they aren't discoverable by a single
@@ -443,12 +447,38 @@ def _collect_pareto_points(
     return points
 
 
-def _plot_pareto_frontier(
+def _pareto_role_letters(layer_sets: list[tuple[int, ...]]) -> dict[int, str]:
+    """Layer -> "A"/"B"/... in the order each first appears as a singleton in
+    layer_sets (a multi-layer entry like (2, 4) contributes no new letter,
+    just reuses its layers'). Lets the legend/title name roles ("layer A")
+    rather than actual layer numbers, which repeat across PARETO_COMPARISONS
+    entries (e.g. every entry's first layer set is (2,)) but don't mean the
+    same thing panel to panel."""
+    letters: dict[int, str] = {}
+    for ls in layer_sets:
+        if len(ls) == 1 and ls[0] not in letters:
+            letters[ls[0]] = chr(ord("A") + len(letters))
+    return letters
+
+
+def _pareto_role_label(layers: tuple[int, ...], letters: dict[int, str]) -> str:
+    return "layer " + ",".join(letters[l] for l in layers)
+
+
+def _plot_pareto_panel(
+    ax: plt.Axes,
     layer_sets: list[tuple[int, ...]],
     points: dict[tuple[int, ...], list[tuple[float, float, str]]],
     bootstrap: bool = False,
-) -> plt.Figure:
-    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+) -> tuple[list[Line2D], list[Line2D]]:
+    """Draw one comparison's frontier onto `ax`. Returns (layer-set handles,
+    lambda handles) rather than drawing a legend itself, so callers can place
+    it per-axes (single-comparison figure) or pool it into one shared legend
+    (grid figure)."""
+    if not any(points.get(layers) for layers in layer_sets):
+        ax.axis("off")
+        return [], []
+
     ax.set_xscale(
         "log"
     )  # before any autoscaling, so the captured xlim below is in log space
@@ -537,6 +567,7 @@ def _plot_pareto_frontier(
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
 
+    letters = _pareto_role_letters(layer_sets)
     layer_handles = [
         Line2D(
             [0],
@@ -545,7 +576,7 @@ def _plot_pareto_frontier(
             color="w",
             markerfacecolor=c,
             markersize=8,
-            label=f"layer {_layer_set_label(layers)}",
+            label=_pareto_role_label(layers, letters),
         )
         for c, layers in zip(colors, layer_sets)
     ]
@@ -561,6 +592,28 @@ def _plot_pareto_frontier(
         )
         for lam, m in _LAMBDA_MARKER.items()
     ]
+    ax.grid(True, alpha=0.3)
+    return layer_handles, lam_handles
+
+
+def _pareto_comparison_title(layer_sets: list[tuple[int, ...]]) -> str:
+    letters = _pareto_role_letters(layer_sets)
+    return (
+        "("
+        + " vs ".join(f"{letter}={layer}" for layer, letter in letters.items())
+        + ")"
+    )
+
+
+def _plot_pareto_frontier(
+    layer_sets: list[tuple[int, ...]],
+    points: dict[tuple[int, ...], list[tuple[float, float, str]]],
+    bootstrap: bool = False,
+) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    layer_handles, lam_handles = _plot_pareto_panel(
+        ax, layer_sets, points, bootstrap=bootstrap
+    )
     # Both legends sit outside the axes, stacked to the right, so they never
     # overlap a data point -- unlike loc="lower left"/"lower right", nothing
     # about the frontier's shape is guaranteed to leave a corner free.
@@ -582,7 +635,6 @@ def _plot_pareto_frontier(
 
     ax.set_xlabel("task loss on training distribution")
     ax.set_ylabel("probe AUROC")
-    ax.grid(True, alpha=0.3)
     title = "Pareto frontier: task loss vs. probe AUROC"
     if bootstrap:
         title += (
@@ -591,6 +643,70 @@ def _plot_pareto_frontier(
         )
     ax.set_title(title, fontsize=11 if bootstrap else 12)
     fig.tight_layout(rect=(0, 0, 0.8, 1))
+    return fig
+
+
+def _plot_pareto_grid(
+    points_by_name: dict[str, dict[tuple[int, ...], list[tuple[float, float, str]]]],
+    bootstrap: bool = False,
+) -> plt.Figure:
+    """All of PARETO_COMPARISONS as one 2x2 figure, one panel per comparison,
+    with a single legend (layer-set and lambda handles pooled and
+    deduplicated by label) shared across panels in one row at the bottom."""
+    fig, axes = plt.subplots(2, 2, figsize=(FIG_WIDTH * 1.3, FIG_WIDTH * 1.15))
+    handles_by_label: dict[str, Line2D] = {}
+    active_axes: list[plt.Axes] = []
+    for ax, (name, layer_sets) in zip(axes.flat, PARETO_COMPARISONS.items()):
+        layer_handles, lam_handles = _plot_pareto_panel(
+            ax, layer_sets, points_by_name[name], bootstrap=bootstrap
+        )
+        if not layer_handles:
+            continue
+        active_axes.append(ax)
+        ax.set_title(_pareto_comparison_title(layer_sets), fontsize=10)
+        for h in layer_handles + lam_handles:
+            handles_by_label.setdefault(h.get_label(), h)
+
+    # Union each panel's (independently autoscaled) x/ylim across panels, so
+    # frontiers are visually comparable by position rather than needing to
+    # check each panel's axis range -- plt.subplots(sharex=True, sharey=True)
+    # would do this too, but also hides interior tick labels, which panels
+    # this wide apart still want each carrying its own.
+    if active_axes:
+        xlim = (
+            min(ax.get_xlim()[0] for ax in active_axes),
+            max(ax.get_xlim()[1] for ax in active_axes),
+        )
+        ylim = (
+            min(ax.get_ylim()[0] for ax in active_axes),
+            max(ax.get_ylim()[1] for ax in active_axes),
+        )
+        for ax in active_axes:
+            ax.set_xlim(xlim)
+            ax.set_ylim(ylim)
+
+    for ax in axes[:, 0]:
+        ax.set_ylabel("probe AUROC")
+    for ax in axes[1, :]:
+        ax.set_xlabel("task loss on training distribution")
+
+    title = "Pareto frontier: task loss vs. probe AUROC"
+    if bootstrap:
+        title += (
+            f"\n(shaded: {BOOTSTRAP_PERCENTILES[0]}-{BOOTSTRAP_PERCENTILES[1]}th "
+            "pctile over trial bootstrap)"
+        )
+    fig.suptitle(title, fontsize=12)
+
+    fig.legend(
+        handles=list(handles_by_label.values()),
+        loc="lower center",
+        bbox_to_anchor=(0.5, 0.0),
+        ncol=len(handles_by_label),
+        fontsize=plt.rcParams["axes.labelsize"],  # match the panels' x/y labels
+        frameon=False,
+    )
+    fig.tight_layout(rect=(0, 0.05, 1, 0.95))
     return fig
 
 
@@ -622,18 +738,33 @@ def plot_bars_and_scatter(store: MetricStore, plot: str) -> None:
 
 
 def plot_pareto(store: MetricStore, comparison: str | None, bootstrap: bool) -> None:
-    names = [comparison] if comparison else list(PARETO_COMPARISONS)
     suffix = "_bootstrap" if bootstrap else ""
-    for name in names:
-        layer_sets = PARETO_COMPARISONS[name]
-        print(f"comparison={name}")
+
+    if comparison:
+        layer_sets = PARETO_COMPARISONS[comparison]
+        print(f"comparison={comparison}")
         points = _collect_pareto_points(layer_sets, store)
         if not any(points.values()):
-            print(f"  no usable runs found, skipping {name}")
-            continue
+            print(f"  no usable runs found, skipping {comparison}")
+            return
         fig = _plot_pareto_frontier(layer_sets, points, bootstrap=bootstrap)
-        fig.savefig(f"{PLOT_DIR}/{name}{suffix}.png", bbox_inches="tight")
-        fig.savefig(f"{PLOT_DIR}/{name}{suffix}.svg", bbox_inches="tight")
+        fig.savefig(f"{PLOT_DIR}/{comparison}{suffix}.png", bbox_inches="tight")
+        fig.savefig(f"{PLOT_DIR}/{comparison}{suffix}.svg", bbox_inches="tight")
+        return
+
+    # No --comparison: all of PARETO_COMPARISONS, as one 2x2 grid figure.
+    points_by_name = {}
+    for name, layer_sets in PARETO_COMPARISONS.items():
+        print(f"comparison={name}")
+        points_by_name[name] = _collect_pareto_points(layer_sets, store)
+
+    if not any(any(pts) for pts in points_by_name.values()):
+        print("  no usable runs found across PARETO_COMPARISONS, skipping")
+        return
+
+    fig = _plot_pareto_grid(points_by_name, bootstrap=bootstrap)
+    fig.savefig(f"{PLOT_DIR}/pareto_grid{suffix}.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/pareto_grid{suffix}.svg", bbox_inches="tight")
 
 
 def main(
