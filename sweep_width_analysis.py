@@ -91,7 +91,7 @@ from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-SPEC = MetricSpec(ckpt=CKPT, probe_layer=PROBE_LAYER)
+SPEC = MetricSpec(ckpt=CKPT, probe_layers=(PROBE_LAYER,))
 
 BANDS = BandSpec(
     loss_threshold=LOSS_THRESHOLD,

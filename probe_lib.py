@@ -267,6 +267,118 @@ def binary_dataset_all_layers(
     return {layer: (r_lo[layer], r_hi[layer]) for layer in layers}
 
 
+def _probe_metrics_one_featureset(
+    r_lo_tr: torch.Tensor,
+    r_hi_tr: torch.Tensor,
+    r_lo_te: torch.Tensor,
+    r_hi_te: torch.Tensor,
+    probe_backend_name: str,
+) -> tuple[dict, dict]:
+    """`(metrics, plot_inputs)` for one feature set -- a single layer's
+    activations, or several layers' concatenated. Contents as documented on
+    `binary_probe_metrics_all_layers`, minus the per-layer keying."""
+    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
+
+    from probe_backend import PROBE_EVAL_NEWTON_COLD_STEPS, build_probe_pipeline
+
+    device = r_lo_tr.device
+    n_train, n_test = r_lo_tr.shape[0], r_lo_te.shape[0]
+
+    X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
+    y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
+    X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
+    y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
+    lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
+
+    X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0).to(PROBE_EVAL_FIT_DTYPE)
+    y_tr_t = torch.cat(
+        [
+            torch.zeros(n_train, dtype=torch.bool, device=device),
+            torch.ones(n_train, dtype=torch.bool, device=device),
+        ]
+    )
+    pipeline = build_probe_pipeline(
+        C=PROBE_C,
+        max_iter=2000,
+        backend=probe_backend_name,
+        newton_cold_steps=PROBE_EVAL_NEWTON_COLD_STEPS,
+    )
+    pipeline.fit(X_tr_t, y_tr_t)
+    w_probe_t, b_probe_t = pipeline.get_affine(device)
+    w_probe = w_probe_t.cpu().numpy()
+    b_probe = float(b_probe_t.cpu())
+
+    mu_lo = r_lo_tr.mean(dim=0)
+    mu_hi = r_hi_tr.mean(dim=0)
+    w_dom = (mu_hi - mu_lo).cpu().numpy()
+    midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
+    dom_boundary = LinearBoundary(w_dom, -midpoint)
+    probe_boundary = LinearBoundary(w_probe, b_probe)
+
+    metrics = {
+        "dom": boundary_accuracy(dom_boundary, X_te, y_te),
+        "delta_norm": float(np.linalg.norm(w_dom)),
+        "logreg": boundary_accuracy(probe_boundary, X_te, y_te),
+        "lda": float(lda.score(X_te, y_te)),
+    }
+    plot_inputs = {
+        "w_dom": w_dom,
+        "midpoint": midpoint,
+        "w_probe": w_probe,
+        "b_probe": b_probe,
+        "X_te": X_te,
+        "y_te": y_te,
+        "dist_lo": raw_signed_distance(w_probe, b_probe, r_lo_te.cpu().numpy()),
+        "dist_hi": raw_signed_distance(w_probe, b_probe, r_hi_te.cpu().numpy()),
+    }
+    return metrics, plot_inputs
+
+
+def binary_probe_metrics_concat_layers(
+    model,
+    c_lo,
+    c_hi,
+    layers,
+    g,
+    probe_backend_name,
+    *,
+    n_train: int = PROBE_EVAL_N_TRAIN,
+    n_test: int = PROBE_EVAL_N_TEST,
+    train_noise=0.0,
+    eval_noise=0.0,
+) -> tuple[dict, dict]:
+    """One probe fit over the concatenated activations of every layer in
+    `layers` -- the feature set the training-time adversary sees (see
+    train_adversarial_logreg's concat_caches_torch), so this is what "refit
+    the run's own probe" means for a run penalized at several layers.
+
+    Arguments and returns follow `binary_probe_metrics_all_layers`, except
+    that `metrics` and `plot_inputs` describe the single concatenated feature
+    set rather than being keyed by layer. For one layer the two agree; beyond
+    that this probe sees sum(d_model) features and is strictly stronger, so
+    its AUROC is not comparable with a per-layer one.
+    """
+    device = next(model.parameters()).device
+    layers = sorted(layers)
+    train_ds = binary_dataset_all_layers(
+        model, model.num_x, n_train, c_lo, c_hi, layers, g, device, noise=train_noise
+    )
+    test_ds = binary_dataset_all_layers(
+        model, model.num_x, n_test, c_lo, c_hi, layers, g, device, noise=eval_noise
+    )
+
+    def cat(ds, i):
+        return torch.cat([ds[layer][i] for layer in layers], dim=-1)
+
+    return _probe_metrics_one_featureset(
+        cat(train_ds, 0),
+        cat(train_ds, 1),
+        cat(test_ds, 0),
+        cat(test_ds, 1),
+        probe_backend_name,
+    )
+
+
 def binary_probe_metrics_all_layers(
     model,
     c_lo,
@@ -282,7 +394,10 @@ def binary_probe_metrics_all_layers(
     eval_noise=0.0,
 ):
     """DoM / logreg / LDA accuracy for every layer in `layers`, one (c_lo,
-    c_hi) pair, from a single shared forward pass per train/test set.
+    c_hi) pair, from a single shared forward pass per train/test set. One
+    independent probe per layer -- contrast
+    `binary_probe_metrics_concat_layers`, which fits a single probe across
+    all of them.
 
     `n_train`/`n_test` default to the shared analysis sizes (config) rather
     than being set per script, so every report measures the same thing.
@@ -304,10 +419,7 @@ def binary_probe_metrics_all_layers(
     whether a probe fit under noise generalizes differently than one fit
     clean.
     """
-    from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
     from tqdm import tqdm
-
-    from probe_backend import PROBE_EVAL_NEWTON_COLD_STEPS, build_probe_pipeline
 
     num_x = model.num_x
     device = next(model.parameters()).device
@@ -321,59 +433,9 @@ def binary_probe_metrics_all_layers(
     metrics = {}
     plot_inputs = {}
     for layer in tqdm(layers, desc=desc, leave=False):
-        r_lo_tr, r_hi_tr = train_ds[layer]
-        r_lo_te, r_hi_te = test_ds[layer]
-
-        X_tr = np.concatenate([r_lo_tr.cpu().numpy(), r_hi_tr.cpu().numpy()], axis=0)
-        y_tr = np.concatenate([np.zeros(n_train), np.ones(n_train)])
-        X_te = np.concatenate([r_lo_te.cpu().numpy(), r_hi_te.cpu().numpy()], axis=0)
-        y_te = np.concatenate([np.zeros(n_test), np.ones(n_test)])
-        lda = LinearDiscriminantAnalysis().fit(X_tr, y_tr)
-
-        X_tr_t = torch.cat([r_lo_tr, r_hi_tr], dim=0).to(PROBE_EVAL_FIT_DTYPE)
-        y_tr_t = torch.cat(
-            [
-                torch.zeros(n_train, dtype=torch.bool, device=device),
-                torch.ones(n_train, dtype=torch.bool, device=device),
-            ]
+        metrics[layer], plot_inputs[layer] = _probe_metrics_one_featureset(
+            *train_ds[layer], *test_ds[layer], probe_backend_name
         )
-        pipeline = build_probe_pipeline(
-            C=PROBE_C,
-            max_iter=2000,
-            backend=probe_backend_name,
-            newton_cold_steps=PROBE_EVAL_NEWTON_COLD_STEPS,
-        )
-        pipeline.fit(X_tr_t, y_tr_t)
-        w_probe_t, b_probe_t = pipeline.get_affine(device)
-        w_probe = w_probe_t.cpu().numpy()
-        b_probe = float(b_probe_t.cpu())
-
-        mu_lo = r_lo_tr.mean(dim=0)
-        mu_hi = r_hi_tr.mean(dim=0)
-        w_dom = (mu_hi - mu_lo).cpu().numpy()
-        midpoint = float(((mu_hi + mu_lo) / 2).cpu().numpy() @ w_dom)
-        dom_boundary = LinearBoundary(w_dom, -midpoint)
-        probe_boundary = LinearBoundary(w_probe, b_probe)
-        dom_acc = boundary_accuracy(dom_boundary, X_te, y_te)
-        logreg_acc = boundary_accuracy(probe_boundary, X_te, y_te)
-        delta_norm = float(np.linalg.norm(w_dom))
-
-        metrics[layer] = {
-            "dom": dom_acc,
-            "delta_norm": delta_norm,
-            "logreg": logreg_acc,
-            "lda": float(lda.score(X_te, y_te)),
-        }
-        plot_inputs[layer] = {
-            "w_dom": w_dom,
-            "midpoint": midpoint,
-            "w_probe": w_probe,
-            "b_probe": b_probe,
-            "X_te": X_te,
-            "y_te": y_te,
-            "dist_lo": raw_signed_distance(w_probe, b_probe, r_lo_te.cpu().numpy()),
-            "dist_hi": raw_signed_distance(w_probe, b_probe, r_hi_te.cpu().numpy()),
-        }
     return metrics, plot_inputs
 
 
