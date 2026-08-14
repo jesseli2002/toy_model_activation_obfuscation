@@ -1,5 +1,5 @@
 """Aggregate the probed-layer sweep spread across runs/sweep18_layer{2,4,6,8,10}_*
-and runs/sweep19_layers{L1}-{L2}_* into three views:
+and runs/sweep19_layers{L1}-{L2}_* into four views:
 
 - Outcome bars: per-layer stacked fractions, x-axis = probed layer. A run
   either failed the task (loss) or, having succeeded, is binned by how well
@@ -20,8 +20,17 @@ and runs/sweep19_layers{L1}-{L2}_* into three views:
   legend alongside it) instead of the default all-of-them 2x2 grid. Layer
   sets not already covered by sweep18/19's naming need a `_pareto_tags` case
   added.
+- Linear-y reconstruction: per qualifying run (task loss < LOSS_THRESHOLD,
+  probe AUROC < LINEAR_Y_AUROC_MAX -- solves the task and at least partially
+  hides), the same per-layer R² curve adversarial_report._plot_linear_y_reconstruction
+  draws for one run, overlaid for every qualifying run in GROUPS (pooled
+  across lambda -- how to aggregate across runs is still open, so this starts
+  by just showing all of them), one color per probed layer via a discrete
+  viridis colormap matching the scatter view. Opt-in only (not part of --plot
+  all): pass --plot linear_y explicitly, since it recomputes a fresh forward
+  pass per run rather than just loss/AUROC.
 
-Each view is one 2x2 figure, one panel per lambda (bars/scatter) or
+Each of the first three views is one 2x2 figure, one panel per lambda (bars/scatter) or
 PARETO_COMPARISONS entry (pareto, absent --comparison), plus a shared legend
 -- in the fourth (otherwise empty) panel for bars/scatter, in one row below
 all four panels for pareto -- meant for publication, so panels carry only
@@ -90,6 +99,11 @@ MIN_RUNS = 1  # drop (group, layer) points with fewer usable runs than this
 LOSS_THRESHOLD = 0.01
 AUROC_THRESHOLDS = (0.6, 0.75, 0.9)  # ascending; splits survivors into len+1 bins
 
+# linear_y view: a run qualifies when it both solves the task (loss below
+# LOSS_THRESHOLD) and at least partially hides from the probe (AUROC below
+# this) -- reuses AUROC_THRESHOLDS' middle bin edge rather than a fresh value.
+LINEAR_Y_AUROC_MAX = AUROC_THRESHOLDS[1]
+
 FIG_WIDTH = 8  # inches; all three figures share this so they display consistently
 
 # -- Pareto-frontier view. LAMBDAS/its suffixes duplicate the lambda values
@@ -134,7 +148,7 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--plot",
-        choices=["bars", "scatter", "pareto", "all"],
+        choices=["bars", "scatter", "pareto", "linear_y", "all"],
         default="all",
         help="which view(s) to draw (default: all)",
     )
@@ -343,6 +357,83 @@ def _plot_loss_vs_auroc(
         fontsize=10,
         frameon=False,
     )
+
+    fig.tight_layout()
+    return fig
+
+
+def _collect_linear_y_curves(
+    store: MetricStore,
+) -> dict[int, list[tuple[list[int], list[float]]]]:
+    """Per probed layer, every qualifying run's (x=layers, y=R² relative to
+    the L0/embedding baseline) curve -- a run qualifies when it both solves
+    the task (loss < LOSS_THRESHOLD) and at least partially hides from a
+    refit probe (AUROC < LINEAR_Y_AUROC_MAX). Pools every GROUPS entry (i.e.
+    every lambda) onto the same per-layer bucket, since how to aggregate
+    across lambda is still open (see module docstring)."""
+    curves: dict[int, list[tuple[list[int], list[float]]]] = {l: [] for l in LAYERS}
+    for group, group_tags in GROUPS.items():
+        print(f"group={group}")
+        for layer in LAYERS:
+            layer_store = store.with_probe_layers(layer)
+            n_ok = 0
+            for tag in group_tags[layer]:
+                if not layer_store.has_checkpoint(tag):
+                    continue
+                auroc = layer_store.auroc(tag)
+                if auroc is None or auroc >= LINEAR_Y_AUROC_MAX:
+                    continue
+                loss = layer_store.task_loss(tag)
+                if loss is None or loss >= LOSS_THRESHOLD:
+                    continue
+                r2 = layer_store.linear_y_r2(tag)
+                xs = sorted(r2)
+                baseline = r2[xs[0]]
+                rel = [(r2[x] - baseline) / (1 - baseline + 1e-9) for x in xs]
+                curves[layer].append((xs, rel))
+                n_ok += 1
+            print(f"  layer={layer}: {n_ok}/{len(group_tags[layer])} qualifying")
+    return curves
+
+
+def _plot_linear_y(
+    curves: dict[int, list[tuple[list[int], list[float]]]],
+) -> plt.Figure:
+    fig, ax = plt.subplots(figsize=(FIG_WIDTH, FIG_WIDTH * 0.7))
+    cmap = plt.get_cmap("viridis", len(LAYERS))
+    n_runs = 0
+    for i, layer in enumerate(LAYERS):
+        color = cmap(i)
+        for xs, rel in curves[layer]:
+            ax.plot(xs, rel, color=color, alpha=0.4, lw=1.1, zorder=2)
+            # Mark each curve at its own probed layer, the point the run's
+            # adversarial penalty was actually applied at.
+            idx = xs.index(layer)
+            ax.scatter(
+                xs[idx], rel[idx], color=color, edgecolor="black", s=18, zorder=3
+            )
+            n_runs += 1
+
+    ax.axhline(1.0, color="k", ls="--", lw=1, zorder=1)
+    ax.axhline(0.0, color="k", lw=0.8, zorder=1)
+    ax.set_xlabel("layer")
+    ax.set_ylabel("R² relative to L0 (embedding) baseline")
+    ax.xaxis.set_major_locator(plt.MaxNLocator(integer=True))
+    ax.grid(True, alpha=0.3)
+    ax.set_title(
+        "Linear reconstruction of true y, per layer\n"
+        f"(task loss < {LOSS_THRESHOLD}, probe AUROC < {LINEAR_Y_AUROC_MAX}, n={n_runs} runs)",
+        fontsize=11,
+    )
+
+    layer_handles = [
+        mpatches.Patch(facecolor=cmap(i), edgecolor="black", label=f"probed layer {l}")
+        for i, l in enumerate(LAYERS)
+    ]
+    ref_handle = Line2D(
+        [0], [0], color="k", ls="--", lw=1, label="exact reconstruction of true y"
+    )
+    ax.legend(handles=layer_handles + [ref_handle], fontsize=8, loc="lower right")
 
     fig.tight_layout()
     return fig
@@ -751,6 +842,15 @@ def plot_bars_and_scatter(store: MetricStore, plot: str) -> None:
         fig.savefig(f"{PLOT_DIR}/loss_vs_auroc.svg", bbox_inches="tight")
 
 
+def plot_linear_y(store: MetricStore) -> None:
+    curves = _collect_linear_y_curves(store)
+    if not any(curves.values()):
+        raise SystemExit("no qualifying runs found across GROUPS")
+    fig = _plot_linear_y(curves)
+    fig.savefig(f"{PLOT_DIR}/linear_y.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/linear_y.svg", bbox_inches="tight")
+
+
 def plot_pareto(store: MetricStore, comparison: str | None, bootstrap: bool) -> None:
     suffix = "_bootstrap" if bootstrap else ""
 
@@ -797,6 +897,10 @@ def main(
         plot_bars_and_scatter(store, plot)
     if plot in ("pareto", "all"):
         plot_pareto(store, comparison, pareto_bootstrap)
+    if (
+        plot == "linear_y"
+    ):  # opt-in only, not part of --plot all -- see module docstring
+        plot_linear_y(store)
 
     plt.show()
 

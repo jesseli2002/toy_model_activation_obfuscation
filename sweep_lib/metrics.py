@@ -28,6 +28,7 @@ from probe_lib import (
     LinearBoundary,
     binary_probe_metrics_concat_layers,
     boundary_auroc,
+    linear_y_reconstruction,
     probe_eval_solver_key,
 )
 from sweep_lib.cache import MetricCache, cache_key, file_fingerprint
@@ -211,6 +212,24 @@ class MetricStore:
         probe = LinearBoundary(pi["w_probe"], pi["b_probe"])
         return boundary_auroc(probe, pi["X_te"], pi["y_te"])
 
+    def _linear_y_r2(
+        self, *, seed, tag, ckpt, ckpt_fingerprint, noise_mult, n_train, n_test
+    ):
+        """{str(layer): R^2} for a linear reconstruction of the true target at
+        every residual-stream layer (see probe_lib.linear_y_reconstruction).
+        Keys are stringified since the cache round-trips values through JSON.
+
+        `noise_mult` is unused -- the reconstruction is always noise-free --
+        but stays in the signature so it lands in the cache key alongside
+        every other metric's, keeping one MetricStore.spec able to key all of
+        them uniformly."""
+        model, _ck = load_model(tag, ckpt, self.device)
+        g = torch.Generator(device=self.device).manual_seed(seed)
+        r2 = linear_y_reconstruction(
+            model, model.num_x, model.num_blocks, n_train, n_test, g, self.device
+        )
+        return {str(layer): v for layer, v in r2.items()}
+
     # -- Public API. The cache key holds the *requested* probe_layers, not the
     # -- resolved ones, so a cache hit needs no checkpoint load: the fingerprint
     # -- already guarantees the value came from this exact checkpoint.
@@ -275,3 +294,18 @@ class MetricStore:
         """
         kwargs = self._auroc_kwargs(tag)
         return self._fit_probe(seed=self.cache.seed_for("_auroc", kwargs), **kwargs)
+
+    def linear_y_r2(self, tag: str) -> dict[int, float] | None:
+        """{layer: R^2} of a linear reconstruction of the true target y at
+        every residual-stream layer 0..num_blocks (see
+        probe_lib.linear_y_reconstruction). None for a run with no checkpoint
+        on disk yet."""
+        if not self.has_checkpoint(tag):
+            return None
+        kwargs = {
+            **self._base_kwargs(tag),
+            "n_train": self.spec.probe_n_train,
+            "n_test": self.spec.probe_n_test,
+        }
+        r2 = self.cache.get_or_compute(self._linear_y_r2, **kwargs)
+        return {int(layer): v for layer, v in r2.items()}
