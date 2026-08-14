@@ -505,6 +505,7 @@ def _plot_pareto_frontier(
     # to the right edge (it's the best AUROC achieved from there on) --
     # rather than stopping at the extreme data points.
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
+    ylim = (ylim[0], 1.0)  # AUROC is bounded above by 1.0; don't pad past it
 
     if bootstrap:
         rng = np.random.default_rng(BOOTSTRAP_SEED)
