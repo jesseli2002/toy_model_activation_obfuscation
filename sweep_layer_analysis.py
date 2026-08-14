@@ -377,8 +377,14 @@ def _plot_pareto_frontier(
     points: dict[tuple[int, ...], list[tuple[float, float, str]]],
 ) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
+    ax.set_xscale(
+        "log"
+    )  # before any autoscaling, so the captured xlim below is in log space
     colors = plt.cm.tab10.colors
 
+    # (color, sorted frontier losses, sorted frontier aurocs) per layer set,
+    # for the step lines drawn once every scatter is in and xlim is settled.
+    frontiers: list[tuple[tuple, np.ndarray, np.ndarray]] = []
     for color, layers in zip(colors, layer_sets):
         pts = points.get(layers, [])
         if not pts:
@@ -392,20 +398,9 @@ def _plot_pareto_frontier(
             f"{on_frontier.sum()}/{len(pts)} points on frontier"
         )
 
-        # The frontier itself: sorted by ascending loss, a non-dominated
-        # point's AUROC is never worse than the previous one's (else it
-        # would be dominated by it), so connecting them in that order with a
-        # step function draws exactly the horizontal/vertical staircase that
-        # defines the frontier.
         order = np.argsort(losses[on_frontier])
-        ax.step(
-            losses[on_frontier][order],
-            aurocs[on_frontier][order],
-            where="post",
-            color=color,
-            alpha=0.8,
-            lw=1.5,
-            zorder=1,
+        frontiers.append(
+            (color, losses[on_frontier][order], aurocs[on_frontier][order])
         )
 
         for lam in LAMBDAS:
@@ -429,6 +424,22 @@ def _plot_pareto_frontier(
                     edgecolor="black" if frontier else "none",
                     linewidth=0.7,
                 )
+
+    # The frontier itself: sorted by ascending loss, a non-dominated point's
+    # AUROC is never worse than the previous one's (else it would be
+    # dominated by it), so connecting them in that order with a step
+    # function draws exactly the horizontal/vertical staircase that defines
+    # the frontier. Drawn only after every scatter call so xlim reflects the
+    # full data range; each frontier is then extended flat out to both edges
+    # of that range, rather than stopping at its extreme points.
+    xlim = ax.get_xlim()
+    for color, fx, fy in frontiers:
+        if len(fx) == 0:
+            continue
+        x_ext = np.concatenate([[xlim[0]], fx, [xlim[1]]])
+        y_ext = np.concatenate([[fy[0]], fy, [fy[-1]]])
+        ax.step(x_ext, y_ext, where="post", color=color, alpha=0.8, lw=1.5, zorder=1)
+    ax.set_xlim(xlim)
 
     layer_handles = [
         Line2D(
@@ -475,7 +486,6 @@ def _plot_pareto_frontier(
 
     ax.set_xlabel("task loss on training distribution")
     ax.set_ylabel("probe AUROC")
-    ax.set_xscale("log")
     ax.grid(True, alpha=0.3)
     ax.set_title("Pareto frontier: task loss vs. probe AUROC")
     fig.tight_layout(rect=(0, 0, 0.8, 1))
