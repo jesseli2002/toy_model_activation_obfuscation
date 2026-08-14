@@ -109,6 +109,13 @@ FRONTIER_ALPHA = 1.0
 OFF_FRONTIER_ALPHA = 0.25
 MARKER_SIZE = 55
 
+# --pareto-bootstrap: shades each frontier with a trial-to-trial uncertainty
+# band (see _bootstrap_frontier_band), quantifying how much the staircase
+# would move under a different draw of trial seeds.
+N_BOOTSTRAP = 200
+BOOTSTRAP_PERCENTILES = (10, 90)
+BOOTSTRAP_SEED = 0
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -128,6 +135,11 @@ def parse_args() -> argparse.Namespace:
         choices=list(PARETO_COMPARISONS),
         default=None,
         help="pareto view only: restrict to one entry of PARETO_COMPARISONS (default: all of them)",
+    )
+    p.add_argument(
+        "--pareto-bootstrap",
+        action="store_true",
+        help="pareto view only: shade each frontier with a trial-bootstrap uncertainty band",
     )
     return p.parse_args()
 
@@ -345,6 +357,52 @@ def pareto_frontier_mask(losses: np.ndarray, aurocs: np.ndarray) -> np.ndarray:
     return mask
 
 
+def _bootstrap_frontier_band(
+    pts: list[tuple[float, float, str]],
+    xlim: tuple[float, float],
+    rng: np.random.Generator,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """(grid, lo, hi): a BOOTSTRAP_PERCENTILES band over N_BOOTSTRAP
+    frontiers, each built by resampling every lambda's trials with
+    replacement independently (preserving each lambda's trial count) and
+    recomputing the Pareto frontier from the resampled points. `grid` is
+    log-spaced over xlim; lo/hi are that band's AUROC at each grid loss, NaN
+    where no resampled frontier reaches that low a loss (so the shaded
+    region only covers what a resample could actually claim)."""
+    by_lam: dict[str, list[tuple[float, float]]] = {}
+    for loss, auroc, lam in pts:
+        by_lam.setdefault(lam, []).append((loss, auroc))
+
+    grid = np.geomspace(xlim[0], xlim[1], 200)
+    ys = np.full((N_BOOTSTRAP, len(grid)), np.nan)
+    for b in range(N_BOOTSTRAP):
+        resampled = [
+            lam_pts[i]
+            for lam_pts in by_lam.values()
+            for i in rng.integers(0, len(lam_pts), size=len(lam_pts))
+        ]
+        losses = np.array([p[0] for p in resampled])
+        aurocs = np.array([p[1] for p in resampled])
+        mask = pareto_frontier_mask(losses, aurocs)
+        order = np.argsort(losses[mask])
+        fx, fy = losses[mask][order], aurocs[mask][order]
+        # Step lookup matching the "post" staircase: at each grid loss, the
+        # best AUROC achieved by any resampled point with loss no higher.
+        idx = np.searchsorted(fx, grid, side="right") - 1
+        valid = idx >= 0
+        ys[b, valid] = fy[idx[valid]]
+
+    # Grid columns left of this layer set's own lowest observed loss are
+    # NaN in every resample (nothing to look up); skip them explicitly
+    # rather than let nanpercentile warn about an all-NaN slice.
+    lo, hi = np.full(len(grid), np.nan), np.full(len(grid), np.nan)
+    has_data = ~np.all(np.isnan(ys), axis=0)
+    lo[has_data], hi[has_data] = np.nanpercentile(
+        ys[:, has_data], BOOTSTRAP_PERCENTILES, axis=0
+    )
+    return grid, lo, hi
+
+
 def _collect_pareto_points(
     layer_sets: list[tuple[int, ...]], store: MetricStore
 ) -> dict[tuple[int, ...], list[tuple[float, float, str]]]:
@@ -375,6 +433,7 @@ def _collect_pareto_points(
 def _plot_pareto_frontier(
     layer_sets: list[tuple[int, ...]],
     points: dict[tuple[int, ...], list[tuple[float, float, str]]],
+    bootstrap: bool = False,
 ) -> plt.Figure:
     fig, ax = plt.subplots(figsize=(7.5, 5.5))
     ax.set_xscale(
@@ -382,9 +441,10 @@ def _plot_pareto_frontier(
     )  # before any autoscaling, so the captured xlim below is in log space
     colors = plt.cm.tab10.colors
 
-    # (color, sorted frontier losses, sorted frontier aurocs) per layer set,
-    # for the step lines drawn once every scatter is in and xlim is settled.
-    frontiers: list[tuple[tuple, np.ndarray, np.ndarray]] = []
+    # (color, sorted frontier losses, sorted frontier aurocs, its raw points)
+    # per layer set, for the step lines (and, with --pareto-bootstrap, the
+    # uncertainty band) drawn once every scatter is in and xlim is settled.
+    frontiers: list[tuple[tuple, np.ndarray, np.ndarray, list]] = []
     for color, layers in zip(colors, layer_sets):
         pts = points.get(layers, [])
         if not pts:
@@ -400,7 +460,7 @@ def _plot_pareto_frontier(
 
         order = np.argsort(losses[on_frontier])
         frontiers.append(
-            (color, losses[on_frontier][order], aurocs[on_frontier][order])
+            (color, losses[on_frontier][order], aurocs[on_frontier][order], pts)
         )
 
         for lam in LAMBDAS:
@@ -436,7 +496,18 @@ def _plot_pareto_frontier(
     # to the right edge (it's the best AUROC achieved from there on) --
     # rather than stopping at the extreme data points.
     xlim, ylim = ax.get_xlim(), ax.get_ylim()
-    for color, fx, fy in frontiers:
+
+    if bootstrap:
+        rng = np.random.default_rng(BOOTSTRAP_SEED)
+        for color, fx, _fy, pts in frontiers:
+            if len(fx) == 0:
+                continue
+            grid, lo, hi = _bootstrap_frontier_band(pts, xlim, rng)
+            ax.fill_between(
+                grid, lo, hi, step="post", color=color, alpha=0.15, zorder=0
+            )
+
+    for color, fx, fy, _pts in frontiers:
         if len(fx) == 0:
             continue
         ax.plot(
@@ -494,7 +565,13 @@ def _plot_pareto_frontier(
     ax.set_xlabel("task loss on training distribution")
     ax.set_ylabel("probe AUROC")
     ax.grid(True, alpha=0.3)
-    ax.set_title("Pareto frontier: task loss vs. probe AUROC")
+    title = "Pareto frontier: task loss vs. probe AUROC"
+    if bootstrap:
+        title += (
+            f"\n(shaded: {BOOTSTRAP_PERCENTILES[0]}-{BOOTSTRAP_PERCENTILES[1]}th "
+            "pctile over trial bootstrap)"
+        )
+    ax.set_title(title, fontsize=11 if bootstrap else 12)
     fig.tight_layout(rect=(0, 0, 0.8, 1))
     return fig
 
@@ -526,8 +603,9 @@ def plot_bars_and_scatter(store: MetricStore, plot: str) -> None:
         fig.savefig(f"{PLOT_DIR}/loss_vs_auroc.svg", bbox_inches="tight")
 
 
-def plot_pareto(store: MetricStore, comparison: str | None) -> None:
+def plot_pareto(store: MetricStore, comparison: str | None, bootstrap: bool) -> None:
     names = [comparison] if comparison else list(PARETO_COMPARISONS)
+    suffix = "_bootstrap" if bootstrap else ""
     for name in names:
         layer_sets = PARETO_COMPARISONS[name]
         print(f"comparison={name}")
@@ -535,13 +613,16 @@ def plot_pareto(store: MetricStore, comparison: str | None) -> None:
         if not any(points.values()):
             print(f"  no usable runs found, skipping {name}")
             continue
-        fig = _plot_pareto_frontier(layer_sets, points)
-        fig.savefig(f"{PLOT_DIR}/{name}.png", bbox_inches="tight")
-        fig.savefig(f"{PLOT_DIR}/{name}.svg", bbox_inches="tight")
+        fig = _plot_pareto_frontier(layer_sets, points, bootstrap=bootstrap)
+        fig.savefig(f"{PLOT_DIR}/{name}{suffix}.png", bbox_inches="tight")
+        fig.savefig(f"{PLOT_DIR}/{name}{suffix}.svg", bbox_inches="tight")
 
 
 def main(
-    clear_cache: bool = False, plot: str = "all", comparison: str | None = None
+    clear_cache: bool = False,
+    plot: str = "all",
+    comparison: str | None = None,
+    pareto_bootstrap: bool = False,
 ) -> None:
     if clear_cache and os.path.exists(CACHE_PATH):
         os.remove(CACHE_PATH)
@@ -552,10 +633,15 @@ def main(
     if plot in ("bars", "scatter", "all"):
         plot_bars_and_scatter(store, plot)
     if plot in ("pareto", "all"):
-        plot_pareto(store, comparison)
+        plot_pareto(store, comparison, pareto_bootstrap)
 
     plt.show()
 
 
 if __name__ == "__main__":
-    main(clear_cache=args.clear_cache, plot=args.plot, comparison=args.comparison)
+    main(
+        clear_cache=args.clear_cache,
+        plot=args.plot,
+        comparison=args.comparison,
+        pareto_bootstrap=args.pareto_bootstrap,
+    )
