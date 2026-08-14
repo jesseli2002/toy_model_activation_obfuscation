@@ -366,15 +366,27 @@ def _bootstrap_frontier_band(
     frontiers, each built by resampling every lambda's trials with
     replacement independently (preserving each lambda's trial count) and
     recomputing the Pareto frontier from the resampled points. `grid` is
-    log-spaced over xlim; lo/hi are that band's AUROC at each grid loss, NaN
-    where no resampled frontier reaches that low a loss (so the shaded
-    region only covers what a resample could actually claim)."""
+    log-spaced over xlim.
+
+    A resample's own achieved-AUROC-by-loss curve only improves (or holds)
+    as loss increases -- more budget can only unlock more points, never
+    fewer -- so lo/hi, as percentiles of curves that are each individually
+    monotonic, are themselves guaranteed non-increasing in loss. That
+    guarantee depends on every resample contributing a value at every grid
+    column: a resample with no point at all below a given loss is filled
+    with AUROC 1.0 (no hiding whatsoever), the true worst case, rather than
+    excluded as missing -- excluding it would let each column's percentile
+    silently run over a different, inconsistently-sized subset of resamples,
+    which is what broke monotonicity before this fix. Below this layer set's
+    true (non-resampled) minimum loss, no resample could ever claim a point
+    even in principle, so that stretch is left NaN (no shading) instead."""
     by_lam: dict[str, list[tuple[float, float]]] = {}
     for loss, auroc, lam in pts:
         by_lam.setdefault(lam, []).append((loss, auroc))
+    real_min_loss = min(p[0] for p in pts)
 
     grid = np.geomspace(xlim[0], xlim[1], 200)
-    ys = np.full((N_BOOTSTRAP, len(grid)), np.nan)
+    ys = np.full((N_BOOTSTRAP, len(grid)), 1.0)
     for b in range(N_BOOTSTRAP):
         resampled = [
             lam_pts[i]
@@ -391,15 +403,12 @@ def _bootstrap_frontier_band(
         idx = np.searchsorted(fx, grid, side="right") - 1
         valid = idx >= 0
         ys[b, valid] = fy[idx[valid]]
+        # idx < 0 (no resampled point that cheap) keeps the worst-case fill.
 
-    # Grid columns left of this layer set's own lowest observed loss are
-    # NaN in every resample (nothing to look up); skip them explicitly
-    # rather than let nanpercentile warn about an all-NaN slice.
-    lo, hi = np.full(len(grid), np.nan), np.full(len(grid), np.nan)
-    has_data = ~np.all(np.isnan(ys), axis=0)
-    lo[has_data], hi[has_data] = np.nanpercentile(
-        ys[:, has_data], BOOTSTRAP_PERCENTILES, axis=0
-    )
+    lo, hi = np.percentile(ys, BOOTSTRAP_PERCENTILES, axis=0)
+    in_range = grid >= real_min_loss
+    lo = np.where(in_range, lo, np.nan)
+    hi = np.where(in_range, hi, np.nan)
     return grid, lo, hi
 
 
