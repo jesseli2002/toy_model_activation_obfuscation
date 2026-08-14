@@ -68,15 +68,7 @@ Each Bash call runs in its own PID namespace, so a sandboxed `ps` sees only its 
 - Above all, be cautious - there's still quirks in the sandbox environment setup. If a process (especially a resource-intensive one) should be running but you can't find it, don't assume it died unexpectedly; check if your harnesses can tell the difference between a dead and invisible process, and don't be afraid to ask the user for help diagnosing issues.
 
 ## Notes on sandbox environment
-This environment is in a sandbox. Writes, sensitive reads, and network access are highly restricted at the OS level. Moreover, shell commands which don't match the deterministic allowlist pass through a classifier which will raise permission prompts for complex commands. To reduce the number of permission prompts:
-- Commands with shell variable expansion that can't be statically verified (e.g. `$VAR`, `$$`, `for i in "$@"; do ...$i...; done`) raise a permission prompt even when the command is safe, because the sandbox can't confirm what the expansion will resolve to. Solutions:
-    - Substitute the known value directly instead of using a variable or loop.
-    - To find environment variables, use `printenv ENV_VAR` instead of `echo $ENV_VAR`
-- The safety classifier favors simple, single-purpose calls over multi-command bundles. Avoid needing the classifier by construction:
-    - For read tasks use native tools (Read/Grep/Glob). Write-capable tools like `sed` are not automatically approved, even if individual calls are read-only.
-    - `black` is automatically run as a hook; no need to manually run it. `black --check <file>` doubles as a read-only syntax check.
-- For non-trivial Python, write it to a temporary file and run `python tmp.py` rather than `python -c "…"`. Inline `-c` trips the command-safety classifier and forces a permission prompt — specifically a newline-then-`#` comment inside the quoted arg, or an embedded deny-listed path. Reserve `-c` for short, comment-free, single-line snippets.
-- If you run into permissions issues, prefer trying to solve the cause (and ask the user to help debug permissions), rather than working around the symptoms and trying a bunch of techniques to get past them.
+This environment is in a sandbox. Writes, sensitive reads, and network access are highly restricted at the OS level. As a result, the following processes are preferred:
 - Use the Github MCP server to push features, instead of Bash git/gh commands.
     - For git push, a custom git-push-broker MCP is used; the GitHub one doesn't preserve commit history properly.
 - If you get something like this error on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs after machine reboot. Stop what you're doing and tell the user; there's a known fix which needs user intervention
