@@ -612,11 +612,7 @@ def _plot_pareto_panel(
 
 def _pareto_comparison_title(layer_sets: list[tuple[int, ...]]) -> str:
     letters = _pareto_role_letters(layer_sets)
-    return (
-        "("
-        + " vs ".join(f"{letter}={layer}" for layer, letter in letters.items())
-        + ")"
-    )
+    return ", ".join(f"{letter}={layer}" for layer, letter in letters.items())
 
 
 def _plot_pareto_frontier(
