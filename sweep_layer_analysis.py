@@ -136,6 +136,8 @@ N_BOOTSTRAP = 200
 BOOTSTRAP_PERCENTILES = (10, 90)
 BOOTSTRAP_SEED = 0
 
+PLOT_CHOICES = ["bars", "scatter", "pareto", "linear_y"]
+
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description=__doc__)
@@ -146,9 +148,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--plot",
-        choices=["bars", "scatter", "pareto", "linear_y", "all"],
-        default="all",
-        help="which view(s) to draw (default: all)",
+        nargs="+",
+        choices=PLOT_CHOICES,
+        default=PLOT_CHOICES,
+        help="which view(s) to draw, space-separated (default: all of them)",
     )
     p.add_argument(
         "--comparison",
@@ -813,7 +816,7 @@ def _plot_pareto_grid(
     return fig
 
 
-def plot_bars_and_scatter(store: MetricStore, plot: str) -> None:
+def plot_bars_and_scatter(store: MetricStore, plot: list[str]) -> None:
     n_bands = BANDS.n_bands
     run_stats_by_group: dict[str, dict[int, RunStats]] = {}
     scatter_by_group: dict[str, list[tuple[float, float, int]]] = {}
@@ -829,12 +832,12 @@ def plot_bars_and_scatter(store: MetricStore, plot: str) -> None:
     if not run_stats_by_group:
         raise SystemExit("no usable runs found across GROUPS")
 
-    if plot in ("bars", "all"):
+    if "bars" in plot:
         fig = _plot_by_layer(run_stats_by_group)
         fig.savefig(f"{PLOT_DIR}/by_layer.png", bbox_inches="tight")
         fig.savefig(f"{PLOT_DIR}/by_layer.svg", bbox_inches="tight")
 
-    if plot in ("scatter", "all"):
+    if "scatter" in plot:
         fig = _plot_loss_vs_auroc(scatter_by_group)
         fig.savefig(f"{PLOT_DIR}/loss_vs_auroc.png", bbox_inches="tight")
         fig.savefig(f"{PLOT_DIR}/loss_vs_auroc.svg", bbox_inches="tight")
@@ -881,7 +884,7 @@ def plot_pareto(store: MetricStore, comparison: str | None, bootstrap: bool) -> 
 
 def main(
     clear_cache: bool = False,
-    plot: str = "all",
+    plot: list[str] = PLOT_CHOICES,
     comparison: str | None = None,
     pareto_bootstrap: bool = False,
 ) -> None:
@@ -891,11 +894,11 @@ def main(
     store = MetricStore(SPEC, CACHE_PATH, DEVICE)
     os.makedirs(PLOT_DIR, exist_ok=True)
 
-    if plot in ("bars", "scatter", "all"):
+    if "bars" in plot or "scatter" in plot:
         plot_bars_and_scatter(store, plot)
-    if plot in ("pareto", "all"):
+    if "pareto" in plot:
         plot_pareto(store, comparison, pareto_bootstrap)
-    if plot in ("linear_y", "all"):
+    if "linear_y" in plot:
         plot_linear_y(store)
 
     plt.show()
