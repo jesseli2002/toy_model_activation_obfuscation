@@ -164,11 +164,15 @@ def _run_one(args, ckpt, device):
     g = torch.Generator(device=device).manual_seed(args.seed)
     fig = _make_plot(model, adv_cfg.resid_noise_std, args.n_id, g, show_noisy_ood=True)
     save_plot(fig, plot_dir, f"{TAG}_train_dist_curve.png", close=not args.show)
+    save_plot(fig, plot_dir, f"{TAG}_train_dist_curve.svg", close=not args.show)
 
     g = torch.Generator(device=device).manual_seed(args.seed)
     fig = _make_plot(model, adv_cfg.resid_noise_std, args.n_id, g, show_noisy_ood=False)
     save_plot(
         fig, plot_dir, f"{TAG}_train_dist_curve_noisefree.png", close=not args.show
+    )
+    save_plot(
+        fig, plot_dir, f"{TAG}_train_dist_curve_noisefree.svg", close=not args.show
     )
 
 

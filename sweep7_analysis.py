@@ -123,6 +123,7 @@ def _plot_loss_vs_auroc(points: list[tuple[float, float, float]]) -> None:
     ax.set_title(r"Task loss vs. probe AUROC, colored by $\lambda$")
     ax.legend()
     fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/loss_vs_auroc_scatter.svg", bbox_inches="tight")
 
 
 def _lambda_counts(
@@ -194,6 +195,7 @@ def _plot_stacked_fractions(ratios: list[float], fractions: list[np.ndarray]) ->
     ax.grid(True, alpha=0.3)
 
     fig.savefig(f"{PLOT_DIR}/lam_sweep_task{LOSS_THRESHOLD}.png", bbox_inches="tight")
+    fig.savefig(f"{PLOT_DIR}/lam_sweep_task{LOSS_THRESHOLD}.svg", bbox_inches="tight")
     plt.tight_layout()
 
 

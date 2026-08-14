@@ -42,7 +42,8 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
     - For non-trivial changes, ask: “Is there a more elegant solution?”
     - If a fix feels hacky, ask: “Knowing everything I know now, implement the elegant solution.”
     - Skip this for simple fixes — don’t over-engineer
-- Keep commits small and self-contained
+- Keep commits small and self-contained.
+    - The size of the diff for a single commit should be inversely proportional to its logical complexity. A simple rename of a method might touch a bunch of files for every place it's used - that's fine since it's not complex. Meanwhile, a refactoring of a god function might involve moving a lot of code around - that's also fine. But both shouldn't happen in the same commit.
 - Don't line-break long strings (even if they otherwise violate the max column width) so their contents stay searchable.
 
 ## Workflow
@@ -80,3 +81,5 @@ This environment is in a sandbox. Writes, sensitive reads, and network access ar
     - For git push, a custom git-push-broker MCP is used; the GitHub one doesn't preserve commit history properly.
 - If you get something like this error on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs after machine reboot. Stop what you're doing and tell the user; there's a known fix which needs user intervention
 - If asking user to rm files - give a trash command instead since user disabled rm in bashrc.
+- GPU access is not available in sandbox. Never run a script that does non-trivial calculation locally — training, checkpoint loading/inference, probe refits, torch/numpy-heavy metric recomputation — not even once "just to check it runs." --help/argparse-only invocations are fine.Anything past that: hand the script to the user to run/validate.
+    - The current exception is `pytest`; unit tests are still reasonably fast on CPU.
