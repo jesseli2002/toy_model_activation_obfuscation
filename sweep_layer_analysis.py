@@ -397,6 +397,26 @@ def _collect_linear_y_curves(
     return curves
 
 
+def _median_curve(
+    layer_curves: list[tuple[list[int], list[float]]], layer: int
+) -> tuple[list[int], np.ndarray] | None:
+    """The pointwise median rel-R² curve over `layer_curves`, or None if there
+    are none. Runs are expected to share one common layer grid (same model
+    architecture throughout a sweep); a run whose grid disagrees is excluded
+    from the median (with a warning) rather than silently misaligning it
+    against the rest."""
+    if not layer_curves:
+        return None
+    grid = layer_curves[0][0]
+    aligned = [rel for xs, rel in layer_curves if xs == grid]
+    if len(aligned) < len(layer_curves):
+        print(
+            f"  layer={layer}: {len(layer_curves) - len(aligned)} run(s) on a "
+            "different layer grid, excluded from the median"
+        )
+    return grid, np.median(np.array(aligned), axis=0)
+
+
 def _plot_linear_y(
     curves: dict[int, list[tuple[list[int], list[float]]]],
 ) -> plt.Figure:
@@ -406,14 +426,26 @@ def _plot_linear_y(
     for i, layer in enumerate(LAYERS):
         color = cmap(i)
         for xs, rel in curves[layer]:
-            ax.plot(xs, rel, color=color, alpha=0.4, lw=1.1, zorder=2)
+            ax.plot(xs, rel, color=color, alpha=0.25, lw=1.0, zorder=2)
             # Mark each curve at its own probed layer, the point the run's
             # adversarial penalty was actually applied at.
             idx = xs.index(layer)
             ax.scatter(
-                xs[idx], rel[idx], color=color, edgecolor="black", s=18, zorder=3
+                xs[idx],
+                rel[idx],
+                color=color,
+                edgecolor="black",
+                linewidth=0.5,
+                s=14,
+                alpha=0.4,
+                zorder=3,
             )
             n_runs += 1
+
+        median = _median_curve(curves[layer], layer)
+        if median is not None:
+            grid, med_rel = median
+            ax.plot(grid, med_rel, color=color, lw=3, zorder=4, solid_capstyle="round")
 
     ax.axhline(1.0, color="k", ls="--", lw=1, zorder=1)
     ax.axhline(0.0, color="k", lw=0.8, zorder=1)
@@ -431,10 +463,16 @@ def _plot_linear_y(
         mpatches.Patch(facecolor=cmap(i), edgecolor="black", label=f"probed layer {l}")
         for i, l in enumerate(LAYERS)
     ]
-    ref_handle = Line2D(
-        [0], [0], color="k", ls="--", lw=1, label="exact reconstruction of true y"
+    style_handles = [
+        Line2D([0], [0], color="gray", lw=1.0, alpha=0.4, label="individual run"),
+        Line2D([0], [0], color="gray", lw=3, label="per-layer median"),
+        Line2D(
+            [0], [0], color="k", ls="--", lw=1, label="exact reconstruction of true y"
+        ),
+    ]
+    ax.legend(
+        handles=layer_handles + style_handles, fontsize=8, loc="lower right", ncol=2
     )
-    ax.legend(handles=layer_handles + [ref_handle], fontsize=8, loc="lower right")
 
     fig.tight_layout()
     return fig
