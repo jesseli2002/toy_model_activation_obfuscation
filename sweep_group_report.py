@@ -94,17 +94,50 @@ GROUPS = {
     # "100k": [f"sweep18_layer10_lam0.1_ramp100k_noise0.01_tr{i}" for i in range(5)],
     # "200k": [f"sweep18_layer10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(5)],
 
-    # Compare other layers
-    "layer2":[f"sweep18_layer2_lam0.01_noise0.01_tr{i}" for i in range(10)],
-    "layer4":[f"sweep18_layer4_lam0.01_noise0.01_tr{i}" for i in range(10)],
-    "layer6":[f"sweep18_layer6_lam0.01_noise0.01_tr{i}" for i in range(10)],
-    "layer8":[f"sweep18_layer8_lam0.01_noise0.01_tr{i}" for i in range(10)],
-    "layer10":[f"sweep18_layer10_lam0.01_noise0.01_tr{i}" for i in range(10)],
-
     # # Compare lambda, for 200k rampup
     # "lam0.01":[f"sweep18_layer10_lam0.01_noise0.01_tr{i}" for i in range(7)],
     # "lam0.032": [f"sweep18_layer10_lam0.032_ramp200k_noise0.01_tr{i}" for i in range(5)],
     # "lam0.1": [f"sweep18_layer10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(5)],
+
+    # Final results for sweep 18 ========================
+    # # Compare other layers
+    # "layer2":[f"sweep18_layer2_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer4":[f"sweep18_layer4_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer6":[f"sweep18_layer6_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer8":[f"sweep18_layer8_lam0.01_noise0.01_tr{i}" for i in range(10)],
+    # "layer10":[f"sweep18_layer10_lam0.01_noise0.01_tr{i}" for i in range(10)],
+
+    # # # Compare layers at higher lambda (0.032)
+    # "layer2":[f"sweep18_layer2_lam0.032_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer4":[f"sweep18_layer4_lam0.032_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer6":[f"sweep18_layer6_lam0.032_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer8":[f"sweep18_layer8_lam0.032_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer10":[f"sweep18_layer10_lam0.032_ramp200k_noise0.01_tr{i}" for i in range(10)],
+
+    # # Compare layers at higher lambda (0.1)
+    # "layer2":[f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer4":[f"sweep18_layer4_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer6":[f"sweep18_layer6_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer8":[f"sweep18_layer8_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "layer10":[f"sweep18_layer10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+
+    # Results for sweep 19 ================
+    # Compare pairs --------------
+    # "2":[f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "4":[f"sweep18_layer4_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "2,4":[f"sweep19_layers2-4_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+
+    # "2":[f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "6":[f"sweep18_layer6_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "2,6":[f"sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+
+    "2":[f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    "8":[f"sweep18_layer8_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    "2,8":[f"sweep19_layers2-8_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+
+    # "2":[f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "10":[f"sweep18_layer10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
+    # "2,10":[f"sweep19_layers2-10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
 }
 
 #fmt: on
