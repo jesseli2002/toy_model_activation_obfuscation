@@ -106,8 +106,8 @@ from sweep_lib.plots import Series, loss_vs_auroc, stacked_bars
 
 DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 
-# probe_layer is left unset on the base spec: each layer's tags are queried
-# through a MetricStore.with_probe_layer(layer) below, so every run is
+# probe_layers is left unset on the base spec: each layer's tags are queried
+# through a MetricStore.with_probe_layers(layer) below, so every run is
 # probed at the layer it was actually penalized at.
 SPEC = MetricSpec(ckpt=CKPT)
 
@@ -137,7 +137,7 @@ def _collect_run_stats(
     print(f"{'layer':>6s} {'n_ok':>5s} {'n_total':>7s}")
     for layer in LAYERS:
         tags = group_tags[layer]
-        layer_store = store.with_probe_layer(layer)
+        layer_store = store.with_probe_layers(layer)
         counts = np.zeros(n_bands)
         n_ok = 0
         for tag in tags:
