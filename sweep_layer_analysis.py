@@ -387,6 +387,26 @@ def _plot_pareto_frontier(
         aurocs = np.array([p[1] for p in pts])
         lams = np.array([p[2] for p in pts])
         on_frontier = pareto_frontier_mask(losses, aurocs)
+        print(
+            f"  layers={_layer_set_label(layers)}: "
+            f"{on_frontier.sum()}/{len(pts)} points on frontier"
+        )
+
+        # The frontier itself: sorted by ascending loss, a non-dominated
+        # point's AUROC is never worse than the previous one's (else it
+        # would be dominated by it), so connecting them in that order with a
+        # step function draws exactly the horizontal/vertical staircase that
+        # defines the frontier.
+        order = np.argsort(losses[on_frontier])
+        ax.step(
+            losses[on_frontier][order],
+            aurocs[on_frontier][order],
+            where="post",
+            color=color,
+            alpha=0.8,
+            lw=1.5,
+            zorder=1,
+        )
 
         for lam in LAMBDAS:
             lam_sel = lams == lam
@@ -434,18 +454,31 @@ def _plot_pareto_frontier(
         )
         for lam, m in _LAMBDA_MARKER.items()
     ]
+    # Both legends sit outside the axes, stacked to the right, so they never
+    # overlap a data point -- unlike loc="lower left"/"lower right", nothing
+    # about the frontier's shape is guaranteed to leave a corner free.
     layer_legend = ax.legend(
-        handles=layer_handles, title="layer set", loc="lower left", fontsize=9
+        handles=layer_handles,
+        title="layer set",
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0),
+        fontsize=9,
     )
     ax.add_artist(layer_legend)
-    ax.legend(handles=lam_handles, title="$\\lambda$", loc="lower right", fontsize=9)
+    ax.legend(
+        handles=lam_handles,
+        title="$\\lambda$",
+        loc="upper left",
+        bbox_to_anchor=(1.02, 1.0 - 0.09 * (len(layer_handles) + 1.5)),
+        fontsize=9,
+    )
 
     ax.set_xlabel("task loss on training distribution")
     ax.set_ylabel("probe AUROC")
     ax.set_xscale("log")
     ax.grid(True, alpha=0.3)
     ax.set_title("Pareto frontier: task loss vs. probe AUROC")
-    fig.tight_layout()
+    fig.tight_layout(rect=(0, 0, 0.8, 1))
     return fig
 
 
