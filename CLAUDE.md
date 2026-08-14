@@ -48,7 +48,7 @@ This is not a hard rule; if argument parsing necessarily relies on some heavy li
 
 ## Workflow
 - Multiple agents and the user may be coding simultaneously - use git worktrees to isolate your changes.
-- Make undrafted GitHub PRs, not draft ones.
+- By default, make a PR for changes to tracked files. Undrafted GitHub PRs, not draft ones.
 - *.tmp.py files are throwaway scripts - don't worry about code quality when reading/writing them, and when the user asks for a throwaway script, use a .tmp.py suffix.
 - Runs tagged `debug_*` are throwaway: they are excluded from every sync and backup, so use that prefix for scratch/debugging runs and treat them as disposable.
 - Commits should ideally be small and self-contained to help with reviewing.
@@ -81,5 +81,6 @@ This environment is in a sandbox. Writes, sensitive reads, and network access ar
     - For git push, a custom git-push-broker MCP is used; the GitHub one doesn't preserve commit history properly.
 - If you get something like this error on all Bash calls: `apply-seccomp: write /proc/self/setgroups (nested userns is capability-restricted; caller must provide CAP_SYS_ADMIN): Permission denied` - it's a known issue that occurs after machine reboot. Stop what you're doing and tell the user; there's a known fix which needs user intervention
 - If asking user to rm files - give a trash command instead since user disabled rm in bashrc.
-- GPU access is not available in sandbox. Never run a script that does non-trivial calculation locally — training, checkpoint loading/inference, probe refits, torch/numpy-heavy metric recomputation — not even once "just to check it runs." --help/argparse-only invocations are fine.Anything past that: hand the script to the user to run/validate.
-    - The current exception is `pytest`; unit tests are still reasonably fast on CPU.
+- GPU access is not available in sandbox. Never run a script that does non-trivial calculation locally — training, checkpoint loading/inference, probe refits, torch/numpy-heavy metric recomputation — not even once "just to check it runs." --help/argparse-only invocations are fine.Anything past that: hand the script to the user to run/validate. Exceptions include:
+    - `pytest`; unit tests are still reasonably fast on CPU.
+    - Scripts where heavy computations are cached. If you're unsure if the results are cached for the specific arguments you're using, set a timeout of ~20s.

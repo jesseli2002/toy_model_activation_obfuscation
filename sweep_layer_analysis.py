@@ -103,6 +103,9 @@ _LAMBDA_MARKER = {"0.01": "o", "0.032": "s", "0.1": "^"}
 # together on one Pareto-frontier figure.
 PARETO_COMPARISONS: dict[str, list[tuple[int, ...]]] = {
     "layer2_4_24": [(2,), (4,), (2, 4)],
+    "layer2_6_26": [(2,), (6,), (2, 6)],
+    "layer2_8_28": [(2,), (8,), (2, 8)],
+    "layer2_10_210": [(2,), (10,), (2, 10)],
 }
 
 FRONTIER_ALPHA = 1.0
