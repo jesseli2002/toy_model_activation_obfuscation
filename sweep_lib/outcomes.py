@@ -77,7 +77,10 @@ class BandSpec:
 
     def labels(self) -> list[str]:
         """Legend label per band, in band order."""
-        labels = ["failed task"]
+        if self.n_hot_values == tuple():
+            labels = [f"failed task\n(loss $\\geq$ {self.loss_threshold})"]
+        else:
+            labels = [f"failed task"]
         prev = None
         for t in reversed(self.auroc_thresholds):
             if prev is None:
