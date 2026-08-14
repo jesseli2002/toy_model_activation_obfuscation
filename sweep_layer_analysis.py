@@ -427,19 +427,6 @@ def _plot_linear_y(
         color = cmap(i)
         for xs, rel in curves[layer]:
             ax.plot(xs, rel, color=color, alpha=0.25, lw=1.0, zorder=2)
-            # Mark each curve at its own probed layer, the point the run's
-            # adversarial penalty was actually applied at.
-            idx = xs.index(layer)
-            ax.scatter(
-                xs[idx],
-                rel[idx],
-                color=color,
-                edgecolor="black",
-                linewidth=0.5,
-                s=14,
-                alpha=0.4,
-                zorder=3,
-            )
             n_runs += 1
 
         median = _median_curve(curves[layer], layer)
@@ -463,16 +450,10 @@ def _plot_linear_y(
         mpatches.Patch(facecolor=cmap(i), edgecolor="black", label=f"probed layer {l}")
         for i, l in enumerate(LAYERS)
     ]
-    style_handles = [
-        Line2D([0], [0], color="gray", lw=1.0, alpha=0.4, label="individual run"),
-        Line2D([0], [0], color="gray", lw=3, label="per-layer median"),
-        Line2D(
-            [0], [0], color="k", ls="--", lw=1, label="exact reconstruction of true y"
-        ),
-    ]
-    ax.legend(
-        handles=layer_handles + style_handles, fontsize=8, loc="lower right", ncol=2
+    ref_handle = Line2D(
+        [0], [0], color="k", ls="--", lw=1, label="exact reconstruction of true y"
     )
+    ax.legend(handles=layer_handles + [ref_handle], fontsize=8, loc="upper left")
 
     fig.tight_layout()
     return fig
