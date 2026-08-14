@@ -429,17 +429,24 @@ def _plot_pareto_frontier(
     # AUROC is never worse than the previous one's (else it would be
     # dominated by it), so connecting them in that order with a step
     # function draws exactly the horizontal/vertical staircase that defines
-    # the frontier. Drawn only after every scatter call so xlim reflects the
-    # full data range; each frontier is then extended flat out to both edges
-    # of that range, rather than stopping at its extreme points.
-    xlim = ax.get_xlim()
+    # the frontier. Drawn only after every scatter call so xlim/ylim reflect
+    # the full data range. Extended to the plot edges on both ends -- up from
+    # the lowest-loss point to the top (nothing beats it on loss, so nothing
+    # to its left is excluded by it), and right from the highest-loss point
+    # to the right edge (it's the best AUROC achieved from there on) --
+    # rather than stopping at the extreme data points.
+    xlim, ylim = ax.get_xlim(), ax.get_ylim()
     for color, fx, fy in frontiers:
         if len(fx) == 0:
             continue
-        x_ext = np.concatenate([[xlim[0]], fx, [xlim[1]]])
-        y_ext = np.concatenate([[fy[0]], fy, [fy[-1]]])
+        ax.plot(
+            [fx[0], fx[0]], [ylim[1], fy[0]], color=color, alpha=0.8, lw=1.5, zorder=1
+        )
+        x_ext = np.concatenate([fx, [xlim[1]]])
+        y_ext = np.concatenate([fy, [fy[-1]]])
         ax.step(x_ext, y_ext, where="post", color=color, alpha=0.8, lw=1.5, zorder=1)
     ax.set_xlim(xlim)
+    ax.set_ylim(ylim)
 
     layer_handles = [
         Line2D(
