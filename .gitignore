@@ -15,3 +15,6 @@ publish
 # Per-run checkpoints & logs (ephemeral)
 runs
 runs_tmp*
+
+# Local files
+CLAUDE.local.md
