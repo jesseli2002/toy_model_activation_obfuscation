@@ -26,9 +26,7 @@ and runs/sweep19_layers{L1}-{L2}_* into four views:
   draws for one run, overlaid for every qualifying run in GROUPS (pooled
   across lambda -- how to aggregate across runs is still open, so this starts
   by just showing all of them), one color per probed layer via a discrete
-  viridis colormap matching the scatter view. Opt-in only (not part of --plot
-  all): pass --plot linear_y explicitly, since it recomputes a fresh forward
-  pass per run rather than just loss/AUROC.
+  viridis colormap matching the scatter view.
 
 Each of the first three views is one 2x2 figure, one panel per lambda (bars/scatter) or
 PARETO_COMPARISONS entry (pareto, absent --comparison), plus a shared legend
@@ -897,9 +895,7 @@ def main(
         plot_bars_and_scatter(store, plot)
     if plot in ("pareto", "all"):
         plot_pareto(store, comparison, pareto_bootstrap)
-    if (
-        plot == "linear_y"
-    ):  # opt-in only, not part of --plot all -- see module docstring
+    if plot in ("linear_y", "all"):
         plot_linear_y(store)
 
     plt.show()
