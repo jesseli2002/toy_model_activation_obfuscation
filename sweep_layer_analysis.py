@@ -288,11 +288,15 @@ def _plot_by_layer(run_stats_by_group: dict[str, dict[int, RunStats]]) -> plt.Fi
 def _plot_loss_vs_auroc(
     scatter_by_group: dict[str, list[tuple[float, float, int]]],
 ) -> plt.Figure:
-    fig, axes = plt.subplots(2, 2, figsize=(FIG_WIDTH, FIG_WIDTH * 0.85), sharey=True)
+    # Not sharex/sharey=True: that auto-hides tick labels on interior panels,
+    # but each panel should keep its own labels even though all three share
+    # the same limits (set manually below).
+    fig, axes = plt.subplots(2, 2, figsize=(FIG_WIDTH, FIG_WIDTH * 0.85))
     group_axes, legend_ax = _grid_axes(fig, axes)
     cmap = plt.get_cmap("viridis", len(LAYERS))
 
     ref_handles, ref_labels = [], []
+    plotted_axes = []
     for group, label in (slot for slot in GRID_ORDER if slot is not None):
         ax = group_axes[group]
         points = scatter_by_group.get(group, [])
@@ -314,9 +318,19 @@ def _plot_loss_vs_auroc(
             ref_handles, ref_labels = ax.get_legend_handles_labels()
         ax.set_xlabel("task loss on training distribution")
         ax.set_title(f"$\\lambda$ = {label}", fontsize=11)
+        plotted_axes.append(ax)
 
-    axes[0, 0].set_ylabel("probe AUROC")
-    axes[1, 0].set_ylabel("probe AUROC")
+    xlim = (
+        min(ax.get_xlim()[0] for ax in plotted_axes),
+        max(ax.get_xlim()[1] for ax in plotted_axes),
+    )
+    ylim = (
+        min(ax.get_ylim()[0] for ax in plotted_axes),
+        max(ax.get_ylim()[1] for ax in plotted_axes),
+    )
+    for ax in plotted_axes:
+        ax.set_xlim(xlim)
+        ax.set_ylim(ylim)
 
     legend_ax.axis("off")
     layer_handles = [
