@@ -134,12 +134,9 @@ import pandas as pd
 import seaborn as sns
 import torch
 from matplotlib.collections import PolyCollection
-from sklearn.linear_model import LinearRegression
-from sklearn.metrics import r2_score
 from tqdm import tqdm
 
 from analytic import reference_task_losses
-from data import sample_batch
 from paths import ckpt_dir, log_dir
 from paths import plot_dir as get_plot_dir
 from model import Noise
@@ -148,6 +145,7 @@ from probe_lib import (
     LinearBoundary,
     binary_probe_metrics_all_layers,
     forward_steered,
+    linear_y_reconstruction,
     load_model,
     load_model_path,
     make_binary_eval_set,
@@ -542,45 +540,6 @@ def _plot_steer_comparison(
     save_plot(fig, plot_dir, f"{tag}_L{steer_layer}_steer_cmp.png")
 
 
-@torch.no_grad()
-def _linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, device):
-    """Fit a linear map residual[layer] -> the TRUE target sat(x, c), for
-    every residual-stream layer 0..num_blocks, with c ~ U[1,2] (the training
-    distribution, not pinned pairs).
-
-    The target is the true label, not the model's own output: the model's
-    output is exactly `residual[num_blocks] @ W_U`, so regressing onto it
-    scores a trivial R²=1 at the last layer no matter how badly the model
-    solves the task (see PR #223). Against the true target the last layer
-    instead tops out near the model's own task fidelity.
-
-    Always fit and evaluate noise-free (unlike the binary probe metrics
-    above, which do inject eval-time noise): this analysis asks whether c's
-    contribution to y is linearly decodable at a given layer, which OLS
-    answers on its own (a genuinely nonlinear map just gets a low R²). Eval
-    noise the fit never saw at train time instead measures how much a
-    layer's fitted coefficients amplify an unrelated perturbation -- a
-    layer whose fit happens to need large coefficients (e.g. because its
-    encoding is scaled down) can swing to wildly negative R² for reasons
-    having nothing to do with linearity."""
-    layers = list(range(0, num_blocks + 1))
-
-    def _sample(n):
-        x_full, y = sample_batch(n, num_x, generator=g, device=device)
-        _, caches = model.forward(x_full, return_cache=True, generator=g)
-        return {lyr: caches[lyr].cpu().numpy() for lyr in layers}, y.cpu().numpy()
-
-    train_caches, y_train = _sample(n_train)
-    test_caches, y_test = _sample(n_test)
-
-    r2 = {}
-    for lyr in tqdm(layers, desc="linear-y per layer", leave=False):
-        reg = LinearRegression().fit(train_caches[lyr], y_train)
-        pred_te = reg.predict(test_caches[lyr])
-        r2[lyr] = float(r2_score(y_test, pred_te))
-    return r2
-
-
 def _plot_linear_y_reconstruction(tag, r2, penalty_layers, plot_dir):
     """Plots R² relative to the L0 (embedding) baseline, not raw R² -- sat(x,c)
     is already close to linear (identity off-saturation), so even a linear map
@@ -760,7 +719,7 @@ def _run_analysis(
 
     linear_y_r2 = None
     if args.detailed:
-        linear_y_r2 = _linear_y_reconstruction(
+        linear_y_r2 = linear_y_reconstruction(
             model,
             model.num_x,
             model.num_blocks,
