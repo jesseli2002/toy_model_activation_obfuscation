@@ -17,12 +17,15 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from jaxtyping import Bool, Float
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import r2_score
+from tqdm import tqdm
 
 # load_model/load_model_path/resolve_adv_config re-exported from
 # checkpoint_lib for existing callers; see that module for their definitions.
 from checkpoint_lib import load_model, load_model_path, resolve_adv_config
 from config import C_HIGH, C_LOW, PROBE_EVAL_N_TEST, PROBE_EVAL_N_TRAIN
-from data import sample_fixed_c
+from data import sample_batch, sample_fixed_c
 from model import Noise, ResidualMLP
 
 
@@ -265,6 +268,45 @@ def binary_dataset_all_layers(
     r_lo = capture_layers_dict(model, xf_lo, layers, noise=noise, generator=generator)
     r_hi = capture_layers_dict(model, xf_hi, layers, noise=noise, generator=generator)
     return {layer: (r_lo[layer], r_hi[layer]) for layer in layers}
+
+
+@torch.no_grad()
+def linear_y_reconstruction(model, num_x, num_blocks, n_train, n_test, g, device):
+    """Fit a linear map residual[layer] -> the TRUE target sat(x, c), for
+    every residual-stream layer 0..num_blocks, with c ~ U[1,2] (the training
+    distribution, not pinned pairs).
+
+    The target is the true label, not the model's own output: the model's
+    output is exactly `residual[num_blocks] @ W_U`, so regressing onto it
+    scores a trivial R²=1 at the last layer no matter how badly the model
+    solves the task (see PR #223). Against the true target the last layer
+    instead tops out near the model's own task fidelity.
+
+    Always fit and evaluate noise-free (unlike the binary probe metrics
+    above, which do inject eval-time noise): this analysis asks whether c's
+    contribution to y is linearly decodable at a given layer, which OLS
+    answers on its own (a genuinely nonlinear map just gets a low R²). Eval
+    noise the fit never saw at train time instead measures how much a
+    layer's fitted coefficients amplify an unrelated perturbation -- a
+    layer whose fit happens to need large coefficients (e.g. because its
+    encoding is scaled down) can swing to wildly negative R² for reasons
+    having nothing to do with linearity."""
+    layers = list(range(0, num_blocks + 1))
+
+    def _sample(n):
+        x_full, y = sample_batch(n, num_x, generator=g, device=device)
+        _, caches = model.forward(x_full, return_cache=True, generator=g)
+        return {lyr: caches[lyr].cpu().numpy() for lyr in layers}, y.cpu().numpy()
+
+    train_caches, y_train = _sample(n_train)
+    test_caches, y_test = _sample(n_test)
+
+    r2 = {}
+    for lyr in tqdm(layers, desc="linear-y per layer", leave=False):
+        reg = LinearRegression().fit(train_caches[lyr], y_train)
+        pred_te = reg.predict(test_caches[lyr])
+        r2[lyr] = float(r2_score(y_test, pred_te))
+    return r2
 
 
 def _probe_metrics_one_featureset(
