@@ -252,32 +252,11 @@ points have zero inbound refs by definition — neither is evidence of dead code
   is the certificate the whole experiment leans on ("a model scoring below it
   must be reading c"), so it belongs in the reproducible set.
 
-### Print the c-blind baseline loss
-
-**New work item.** The baseline's achieved loss is currently only recoverable
-by reading raw artifacts — the last line of
-`runs/baseline_no_c/logs/history.jsonl` (`l_task = 5.563e-2` at iter 49999), or
-by re-running the 50k-iteration training and watching its final
-`[done]` line scroll past. `adversarial_report.py --tag baseline_no_c` prints a
-max-abs-error and then explicitly skips everything else as a c-blind run, so it
-doesn't surface the number either.
-
-A reproducer needs to see, in one command, **the achieved baseline loss next to
-the analytic floor it's testing** (`analytic.no_c_task_loss`), since the whole
-point is the comparison. Options, cheapest first:
-
-1. Teach `train_no_c.py` a `--report` flag that loads the existing run's
-   history/checkpoint and prints achieved-vs-bound without training. It already
-   computes `bound` and prints `eval/bound` during training, so the formatting
-   logic exists — this is mostly a matter of not requiring a training loop to
-   reach it.
-2. Have `adversarial_report.py` print the achieved-vs-bound comparison in its
-   §1 for c-blind runs, instead of only noting that probe analysis is skipped.
-
-Prefer (1): it keeps the c-blind logic in the c-blind script and leaves
-`adversarial_report.py` alone. Either way `CLAUDE.md` documents the command.
-This runs a checkpoint load, so **the user or the remote box runs it, not the
-agent locally.**
+  No new tooling is needed to read its result: `adversarial_report.py --tag
+  baseline_no_c` plots it, and `logs/history.jsonl`'s last line carries the
+  achieved `l_task` (5.563e-2 at iter 49999) to read off directly. `CLAUDE.md`
+  just needs to point at both, and at `analytic.no_c_task_loss` for the floor
+  being compared against.
 - `sweep_group_report.py` — **keep, but clean up.** See below.
 
 **Untrack:**
@@ -349,8 +328,9 @@ happening, which is squarely in scope for the guided-reproduction goal.
      - *Part 1 — analytic construction*: `analytic.py`, and the
        `analytic_feasibility/` material to the extent it survives §4's deferral.
        No run data needed. Alongside it, the **c-blind floor**: what
-       `analytic.no_c_task_loss` certifies, and the command that prints
-       `baseline_no_c`'s achieved loss against it (§4).
+       `analytic.no_c_task_loss` certifies, and how to check `baseline_no_c`
+       against it (`adversarial_report.py --tag baseline_no_c`, or the final
+       `l_task` in its `history.jsonl`).
      - *Part 2 — single-run empirical result*: `make_publish_plots.py`, run
        against `sweep7_lam0.1_tr0` at `best` (the AUROC / curves / PCA / probe /
        steering / ROC-grid figures) and against `sweep3_lam0_tr0` at `best` for
@@ -472,8 +452,7 @@ Each step ends with a check-in. Nothing is pushed anywhere.
 2. §6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
    orphaned tests). Confirm `pytest` green. Small local commits.
 3. §4 script decisions — untrack the agreed set, clean up
-   `sweep_group_report.py`, add the c-blind baseline-loss report (user or
-   remote box runs the verification).
+   `sweep_group_report.py`.
 4. §6 `plans/*` reference rewrites.
 5. §2 build and review `runs_publish/`.
 6. §0 decide the destination (HF vs LFS vs Release), then wire up tracking.
