@@ -59,7 +59,7 @@ class TestLogregAdversarialConfigRequiredFields:
     """LogregAdversarialConfig's config-file-only fields have no default, so
     omitting one is a TypeError -- the mechanism
     train_adversarial_logreg.load_run_config relies on to fail loudly on a
-    --config file missing a required key (see plans/rare_flags_config_plan.md)."""
+    --config file missing a required key."""
 
     def test_missing_required_field_raises_type_error(self):
         kwargs = dataclasses.asdict(_make_logreg_config())

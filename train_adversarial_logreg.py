@@ -21,7 +21,7 @@ Each run is a standalone experiment with no automated pass/fail check. The
 deliverable is the trained checkpoint + diagnostics; run once, then stop and
 review.
 
-Three run modes (see plans/rare_flags_config_plan.md for the full design):
+Three run modes:
   - fresh run: hyperparameters are freshly resolved from `--config`'s JSON
     file. Writes `runs/<tag>/config.json` once.
   - `--resume <tag>`: strictly continues the same experiment. All
@@ -765,7 +765,7 @@ def train_steps(
         (loss, l_task, l_probe).
 
         task: noisy pass -- this is what forbids shrinking c's encoding below
-        the noise floor (see plans/resid_stream_noise_plan.md); `noise` is a
+        the noise floor; `noise` is a
         pre-drawn blob (see `model.generate_noise`) rather than a generator,
         so callers can replay the identical noise across multiple calls
         within one iteration (see the explode-check/redo passes below). probe:
@@ -847,7 +847,7 @@ def train_steps(
         # Drawn once per iteration and reused verbatim across every
         # forward_loss call below (initial, explode-check, explode-redo) --
         # an explicit, replayable blob instead of snapshotting/resetting
-        # `gen`'s RNG state around the draw (see plans/model_noise_blob_plan.md).
+        # `gen`'s RNG state around the draw.
         # probe_noise is a separate draw, same std, same reuse-across-calls
         # reasoning -- it's for the probe's forward, not the task pass `noise`
         # covers, and there's no reason to correlate the two. Only drawn when

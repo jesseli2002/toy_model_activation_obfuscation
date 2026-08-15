@@ -150,7 +150,7 @@ class LogregAdversarialConfig(_CheckpointConfigMixin):
     # resid_noise_std -- fit and penalty share that single noisy pass (not
     # noisy-eval-of-a-clean-fit), which is what keeps a clean-fitted w_eff
     # from blowing up on noise landing in near-zero-clean-variance
-    # directions (see plans/archive/resid_stream_noise_plan.md). The task
+    # directions. The task
     # pass is unaffected either way -- always noisy at resid_noise_std.
     probe_noise: bool
     # Clipped per-block, not whole-model: a global L2 norm sums correlated
