@@ -309,7 +309,20 @@ points have zero inbound refs by definition — neither is evidence of dead code
 
 ### `adversarial_report.py` retirement
 
-**Decided this session, not yet executed.** `adversarial_report.py` is the
+**Status: executed.** Commits d636cd7 (probe_lib.py symbol moves),
+51618cc (`paths.plot_dir` ckpt arg), 042911e (`make_one_run_plots.py`
+porting + `plot/` move), efd8e59 (`plot_train_dist_curve.py` `plot/`
+move), e668a3e (untrack), 2899347 (dangling-reference cleanup), ffca64c
+(`.gitignore`). `pytest`: 171 passed. Both open items below were
+resolved by the user rather than left to the executing agent: **ckpt
+nesting stays `plot/<tag>/<ckpt>/`** (unchanged from the old
+`publish/<tag>/<ckpt>/` shape, just the root renamed — `paths.plot_dir`
+grew the optional `ckpt` arg as anticipated); **`copy_plots.sh` in the
+blog checkout is explicitly out of scope** — the user will handle that
+cross-repo update separately, so it still points at `publish/` and will
+need fixing before the writeup's figure-refresh step works again.
+
+`adversarial_report.py` is the
 per-run diagnostic report (arbitrary `--tag`/`--ckpt`, `--detailed`, `--steer`,
 training-trace plots) that `make_one_run_plots.py` and `plot_train_dist_curve.py`
 were both built to specialize away from — see their docstrings. Since neither
@@ -389,11 +402,13 @@ scripts write their output. Concretely:
      with the rename, in the blog checkout, or the writeup's own figure-refresh
      step silently breaks. `.gitignore`'s `publish` line comes out once nothing
      writes there anymore.
-5. **Mechanical note for whoever executes this:** `.git/info/exclude` writes are
-   blocked inside a worktree (already hit in step 3 of the Suggested Order below,
-   deferred to merge-back) — `adversarial_report.py` joins that same deferred
-   list. `git commit -m ... -- <pathspec>` also reliably fails in this sandbox;
-   a plain `git commit` with nothing else staged is the workaround already in use.
+5. **Mechanical note, since revised:** `.git/info/exclude` was expected to be
+   blocked from this worktree (per step 3 of the Suggested Order below, which
+   had to defer it to merge-back) — that turned out not to apply here; the
+   write to `.git/info/exclude` for `adversarial_report.py` succeeded directly
+   from this worktree. `git commit -m ... -- <pathspec>` still reliably fails
+   in this sandbox; a plain `git commit` with nothing else staged remains the
+   workaround.
 
 **`analytic_feasibility/` — resolved, then fully untracked.** Assessed
 against what a reproducer needs per the user's two goals (an MWE linkable
