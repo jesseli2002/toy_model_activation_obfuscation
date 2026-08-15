@@ -26,17 +26,15 @@ import argparse
 
 # fmt: off
 
-# Model size (sweep7/11/14/17): does penalizing a wider model change the
-# task-loss/AUROC tradeoff?
-# PLOT_LAM = "0.1"  # or 0.01
+# Model size (sweep11/14/17): what happens with larger models?
 # GROUPS = {
-#     "nx32": [f"sweep17_lr0.0015_iter100k_lam{PLOT_LAM}_tr{i}" for i in range(10)],
-#     "nx64": [f"sweep11_lr0.0015_iter200k_lam{PLOT_LAM}_tr{i}" for i in range(10)],
-#     "nx128": [f"sweep14_lr0.0015_iter400k_lam{PLOT_LAM}_tr{i}" for i in range(10)],
+#     "nx32": [f"sweep17_lr0.0015_iter100k_lam0.1_tr{i}" for i in range(10)],
+#     "nx64": [f"sweep11_lr0.0015_iter200k_lam0.1_tr{i}" for i in range(10)],
+#     "nx128": [f"sweep14_lr0.0015_iter400k_lam0.1_tr{i}" for i in range(10)],
 # }
 
-# Layer scan (sweep18): which single probed layer is hardest to hide from?
-# The headline layer comparison; closest analogue to sweep_layer_analysis.py.
+# Layer scan (sweep18): what happens if you penalize different layers?
+# Closest analogue to sweep_layer_analysis.py.
 # GROUPS = {
 #     "layer2": [f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
 #     "layer4": [f"sweep18_layer4_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
@@ -45,8 +43,7 @@ import argparse
 #     "layer10": [f"sweep18_layer10_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
 # }
 
-# Layer pairs (sweep18 vs. sweep19): does penalizing two layers at once help
-# over penalizing either alone? Active by default.
+# Layer pairs (sweep18 vs. sweep19): what happens if you penalize multiple layers?
 GROUPS = {
     "2": [f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
     "8": [f"sweep18_layer8_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)],
