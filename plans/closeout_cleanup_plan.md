@@ -233,37 +233,31 @@ published data. Source is `runs_all/` throughout; target is `runs/`.
 
 Only once this is reviewed does anything get committed or uploaded.
 
-## 3. Make the shipped state usable without a GPU
+## 3. The metrics cache — resolved, no code change
 
-Not a compute-savings argument — the metric recompute is minutes, not GPU-hours,
-and the cache is a nice-to-have for iterating on plot layout. It's an
-**accessibility** argument: a reproducer with no GPU should still be able to
-redraw the aggregate figures, and today they can't.
+**Status: resolved.** This section originally proposed a code fix (content-hash
+the cache fingerprint instead of mtime) framed as a GPU-accessibility problem.
+Both premises turned out wrong on inspection, corrected here rather than left
+to mislead a later reader:
 
-Two independent blockers (`sweep_lib/metrics.py:136`, `sweep_lib/cache.py:33`):
+- **Not a GPU problem.** `has_checkpoint(tag)` (`sweep_lib/metrics.py:136`)
+  checks only whether the run's `.pt` file exists on disk; `MetricStore`
+  takes `device` as a plain string and every caller already does `"cuda" if
+  torch.cuda.is_available() else "cpu"`. Since §1/§2 ship the actual
+  checkpoints as part of the published `runs/`, a reproducer who downloads
+  the curated set has the `.pt` files, so `has_checkpoint()` is `True` and
+  the aggregate scripts already run end-to-end on CPU — nothing to fix.
+- **The mtime fingerprint (`sweep_lib/cache.py:33`) stays as-is.** It's a
+  deliberate design (built around `rsync -a`), not a bug; recompute is a
+  one-time cost the user is fine paying on first setup rather than
+  content-hashing checkpoints to make a copied cache portable.
 
-1. Every accessor (`task_loss`, `auroc`, `linear_y_r2`, …) early-returns `None`
-   on `not self.has_checkpoint(tag)` before consulting the cache.
-2. The cache key embeds `file_fingerprint = "{st_size}:{st_mtime_ns}"`. Any
-   transport that doesn't preserve mtime — a git clone, an HF download, a plain
-   `cp` — misses every entry. The scheme is built around `rsync -a`.
-
-Fix: content-hash the fingerprint (or fall back to one when mtime is
-unavailable), and let an accessor serve a cache hit without `has_checkpoint`.
-That's a genuine improvement regardless of publishing — the current scheme
-silently invalidates on any copy.
-
-Then ship `metrics_cache.json` alongside. Verify on a
-checkpoint-less tree that the aggregate scripts run to completion rather than
-skipping every tag. Note from §1 that groups A and B aren't in the cache, so
-either accept that the `sweep7` figure needs checkpoints, or regenerate the
-cache to cover them before shipping.
-
-**Decision (not yet implemented):** move `plot/metrics_cache.json` (200 KB)
-to `runs/metrics_cache.json` and keep it in the HF Hub repo alongside the run
-data, rather than shipping it separately from `plot/` (which stays gitignored
-per §6 and isn't part of the published dataset). Logged here as a to-do for
-when this step is actually executed; no move has happened yet.
+**Consequence: `metrics_cache.json` is not published.** A cache built from
+mtime fingerprints would miss nearly every entry after an HF download (which
+doesn't preserve mtime) — shipping it would just be 200KB of dead weight, not
+a head start. It stays local-only, in `plot/` (gitignored, as it already is).
+`CLAUDE.md` (§5) should say the cache rebuilds automatically and silently on
+first use; no separate step needed.
 
 ## 4. Scripts
 
@@ -560,11 +554,12 @@ or §6 has been touched yet.
    - **Open follow-up:** the reproducibility test this setup enables —
      wipe local `runs/` and re-download from the HF repo — hasn't been run
      yet. Worth doing once §2 step 3 (checkpoint load-check) also happens.
-   - **Also open, logged but not yet done:** move `plot/metrics_cache.json`
-     to `runs/metrics_cache.json` and include it in the HF repo (§3 above
-     has the full decision note).
-7. §3 cache-fingerprint fix; verify GPU-free aggregate plotting. **Not
-   started.**
+   - ~~Also open: move `plot/metrics_cache.json` to `runs/metrics_cache.json`
+     and include it in the HF repo.~~ **Reversed** — §3 (below) now says not
+     to publish it at all; an mtime-keyed cache would miss almost everything
+     after an HF download anyway.
+7. ~~§3.~~ **Resolved, no code change needed** — see §3 above. Folded into
+   §5's docs (note that the cache rebuilds silently on first use).
 8. §5 `README.md` (user) and `CLAUDE.md` (agent, describing the final tree).
    **Not started.**
 9. `pyproject.toml`. **Not started.**
