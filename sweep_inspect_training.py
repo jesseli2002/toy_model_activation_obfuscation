@@ -6,8 +6,11 @@ shape is still changing, so argparse would just be churn for now. Prints to
 console / plt.show() only; nothing is written to disk.
 """
 
-RUN_TAGS = ["sweep14_lr0.0015_iter400k_lam0.1_tr0"]
-# RUN_TAGS = [f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)]
+# # In a pinch, using a list of size 1 lets you check training results for one run
+# RUN_TAGS = ["sweep14_lr0.0015_iter400k_lam0.1_tr0"]
+
+# Compare multiple runs
+RUN_TAGS = [f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)]
 
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running mean of loss over the past this-many iters
