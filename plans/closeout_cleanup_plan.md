@@ -155,8 +155,15 @@ Findings from building the list, all now resolved:
 ### What to keep per run
 
 `checkpoints/best.pt`, `checkpoints/last.pt`, `config.json`,
-`input_config.json`, `logs/history.jsonl`, `logs/report.md`. Drop the
-`iter_*.pt` series.
+`input_config.json`, `logs/history.jsonl`, `logs/report.md` **if present**.
+Drop the `iter_*.pt` series.
+
+**Correction from the §2 build:** `logs/report.md` is not a training artifact
+— it's a saved dump from a manual `adversarial_report.py` invocation, so it
+only exists where someone happened to run and save one. Across the full 1423
+runs in `runs_all/`, only 122 have it; within the 525-run keep set, only 39
+do. Copy it when present, same as group H's reduced layout — don't treat its
+absence as an error.
 
 `config.json` and `input_config.json` are deliberately included: between them
 they are the ground truth of what a run actually ran with, which is why
