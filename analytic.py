@@ -1,5 +1,10 @@
 """
-Hand-built exact weights for saturation and obfuscation tasks.
+Closed-form reference constructions and checks for the toy task -- exact
+weights, exact loss floors, and exact linear-decodability tests -- none of
+which involve a trained model. Everything here answers "what does the math
+say should happen" independent of whether training actually finds it, and
+serves as ground truth that adversarial_report.py and analytic_demo.py
+compare trained-model results against.
 
 ### Saturation
 Identity used:  sat(x, c) = x - ReLU(x - c) + ReLU(-x - c)   (for c > 0).
@@ -37,6 +42,17 @@ land at chance. See analytic_demo.py's block 0 for where the v1/v2
 construction is actually used inside a network, and its "Decode" block for
 what it actually takes to read c out linearly (extra ReLU features, not just
 (x1, v1, v2)).
+
+### Ideal-y decodability
+sample_ideal_y()/verify_ideal_y_decodability() check whether c is linearly
+decodable from the *ideal* task output y = clamp(x,-c,c) itself, with no
+network involved. y|c is zero-mean and symmetric for every c (x is symmetric
+about 0), so no linear direction should separate two c values above chance --
+DoM and logistic regression are expected near chance, while a trivial
+nonlinear statistic (max_j|y_j|, which converges to c almost surely) is
+expected near-perfect. Confirms the task is solvable at all (c can be read
+out, just not linearly) and is a baseline for the same question asked of
+trained models' internal activations.
 
 Run this file directly to verify every construction above and save the
 supporting plots to plot/analytic/.
@@ -198,7 +214,6 @@ def reference_task_losses(
         "do_nothing": float(do_nothing),
         "linreg": float(linreg),
         "clamp": float(clamp),
-        "linreg_k": float(k_star),
     }
 
 
@@ -571,6 +586,91 @@ def verify_v_channels(
     return {"dom_auroc": dom_auroc, "logreg_auroc": logreg_auroc}
 
 
+def sample_ideal_y(
+    n: int,
+    num_x: int,
+    c: float,
+    x_low: float,
+    x_high: float,
+    rng: "np.random.Generator",
+) -> "Float[np.ndarray, 'n num_x']":
+    """y = clamp(x,-c,c), x ~ U[x_low,x_high]^num_x -- the data-generating
+    process's ideal output, with no network involved."""
+    import numpy as np
+
+    x = rng.uniform(x_low, x_high, size=(n, num_x))
+    return np.clip(x, -c, c)
+
+
+def verify_ideal_y_decodability(
+    num_x: int = 32,
+    c_lo: float = 1.0,
+    c_hi: float = 2.0,
+    x_low: float = -3.0,
+    x_high: float = 3.0,
+    n_train: int = 20_000,
+    n_test: int = 50_000,
+    seed: int = 0,
+) -> dict[str, float]:
+    """Is c linearly decodable from the *ideal* task output y alone? y|c is
+    zero-mean and symmetric for every c (x is symmetric about 0), so no
+    linear direction (raw DoM or logistic regression) should separate c_lo
+    from c_hi above chance -- the class-conditional means coincide. Contrast
+    with the nonlinear statistic max_j|y_j|, which converges to c almost
+    surely (c IS the clip boundary), to confirm the gap is "linear vs
+    nonlinear", not "no signal at all". Mirrors the probe harness's binary
+    dataset construction, minus any trained model.
+    """
+    import numpy as np
+    from sklearn.linear_model import LogisticRegression
+    from sklearn.pipeline import make_pipeline
+    from sklearn.preprocessing import StandardScaler
+
+    rng = np.random.default_rng(seed)
+
+    y_lo_tr = sample_ideal_y(n_train, num_x, c_lo, x_low, x_high, rng)
+    y_hi_tr = sample_ideal_y(n_train, num_x, c_hi, x_low, x_high, rng)
+    y_lo_te = sample_ideal_y(n_test, num_x, c_lo, x_low, x_high, rng)
+    y_hi_te = sample_ideal_y(n_test, num_x, c_hi, x_low, x_high, rng)
+
+    X_train = np.concatenate([y_lo_tr, y_hi_tr], axis=0)
+    y_train = np.concatenate([np.zeros(n_train), np.ones(n_train)])
+    X_test = np.concatenate([y_lo_te, y_hi_te], axis=0)
+    y_test = np.concatenate([np.zeros(n_test), np.ones(n_test)])
+
+    # --- raw difference-of-means ---
+    mu_lo, mu_hi = y_lo_tr.mean(axis=0), y_hi_tr.mean(axis=0)
+    w_dom = mu_hi - mu_lo
+    midpoint = ((mu_hi + mu_lo) / 2) @ w_dom
+    dom_acc = float(((X_test @ w_dom > midpoint).astype(float) == y_test).mean())
+
+    # --- logistic regression (linear, standardized) ---
+    logreg = make_pipeline(StandardScaler(), LogisticRegression(max_iter=2000))
+    logreg.fit(X_train, y_train)
+    logreg_acc = float(logreg.score(X_test, y_test))
+
+    # --- nonlinear contrast: max|y_j| as a trivial c-estimator ---
+    max_abs_lo = np.abs(y_lo_te).max(axis=1)
+    max_abs_hi = np.abs(y_hi_te).max(axis=1)
+    threshold = (c_lo + c_hi) / 2
+    nonlinear_pred = (np.concatenate([max_abs_lo, max_abs_hi]) > threshold).astype(
+        float
+    )
+    nonlinear_acc = float((nonlinear_pred == y_test).mean())
+
+    print(
+        f"[analytic] ideal-y decodability: num_x={num_x} x=[{x_low},{x_high}] "
+        f"c_lo={c_lo} c_hi={c_hi} n_train={n_train}/class n_test={n_test}/class: "
+        f"DoM acc={dom_acc:.4f}  logreg acc={logreg_acc:.4f}  "
+        f"max|y_j| acc={nonlinear_acc:.4f}"
+    )
+    return {
+        "dom_acc": dom_acc,
+        "logreg_acc": logreg_acc,
+        "nonlinear_acc": nonlinear_acc,
+    }
+
+
 def _run_checks(
     bounds: tuple[float, float, float, float],
 ) -> list[tuple[str, bool, str]]:
@@ -615,6 +715,29 @@ def _run_checks(
     ]:
         checks.append((name, abs(auroc - 0.5) < 0.15, f"AUROC={auroc:.4f}"))
 
+    iy = verify_ideal_y_decodability()
+    checks.append(
+        (
+            "ideal-y: DoM probe near chance",
+            abs(iy["dom_acc"] - 0.5) < 0.1,
+            f"acc={iy['dom_acc']:.4f}",
+        )
+    )
+    checks.append(
+        (
+            "ideal-y: logreg probe near chance",
+            abs(iy["logreg_acc"] - 0.5) < 0.1,
+            f"acc={iy['logreg_acc']:.4f}",
+        )
+    )
+    checks.append(
+        (
+            "ideal-y: max|y_j| nonlinear estimator near-perfect",
+            iy["nonlinear_acc"] > 0.95,
+            f"acc={iy['nonlinear_acc']:.4f}",
+        )
+    )
+
     return checks
 
 
@@ -625,7 +748,8 @@ if __name__ == "__main__":
 
     bounds = (config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH)
     print("reference task losses:")
-    print(reference_task_losses(*bounds))
+    for name, loss in reference_task_losses(*bounds).items():
+        print(f"  {name:<10} {loss:.6f}")
     print()
     print(f"[analytic] c-blind minimum L_task = {no_c_task_loss(*bounds):.6f}")
     print(f"[analytic] wrote {plot_no_c_predictor(*bounds)}")
