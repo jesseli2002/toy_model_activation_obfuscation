@@ -66,10 +66,10 @@ class TestHistoryEntry:
         d = _history_entry(_make_record())
         assert "affine" not in d
 
-    def test_iter_key_matches_adversarial_report_expectations(self):
-        # adversarial_report.py reads history[...]["iter"] -- TrainRecord's
-        # field is named `iter` (not `it`) precisely so asdict() lines up
-        # with this on-disk schema without any renaming.
+    def test_iter_key_matches_history_reader_expectations(self):
+        # sweep_lib.history.load_history reads history[...]["iter"] --
+        # TrainRecord's field is named `iter` (not `it`) precisely so
+        # asdict() lines up with this on-disk schema without any renaming.
         d = _history_entry(_make_record(iter=7))
         assert d["iter"] == 7
 

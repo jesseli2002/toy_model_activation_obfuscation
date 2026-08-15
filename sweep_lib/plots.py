@@ -20,7 +20,7 @@ from sweep_lib.outcomes import BandSpec
 _BOTTOM_UP = slice(None, None, -1)
 
 # Reference solutions plotted as vertical lines on loss_vs_auroc when
-# show_loss_refs=True, matching adversarial_report._plot_training_traces.
+# show_loss_refs=True.
 _LOSS_REF_STYLES = [
     ("linreg", "linear regression", "--"),
     ("clamp", "c-unaware optimum", "-."),

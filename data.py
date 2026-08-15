@@ -125,7 +125,7 @@ def eval_n_hot_loss(
 ) -> float:
     """Mean-squared task error with only `n_hot` input coordinates nonzero per
     example (the rest held at 0) -- the same input construction used by
-    adversarial_report.plot_learned_curves for n_hot=1, but scored as a loss
+    probe_lib.plot_learned_curves for n_hot=1, but scored as a loss
     instead of plotted. Every training example has all `num_x` coordinates
     simultaneously nonzero, so this checks generalization to an OOD corner of
     input space, with larger `n_hot` interpolating toward the training

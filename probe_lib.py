@@ -511,7 +511,7 @@ def forward_steered(
 def save_plot(fig, plot_dir: str, filename: str, close: bool = True) -> str:
     """Save a finished figure and log its path. Closes it by default; pass
     close=False to leave it open for a later plt.show() (only the plots
-    adversarial_report.main wants --show to actually pop should do this).
+    a caller's own --show wants to actually pop should do this).
     Resolution comes from rcParams["savefig.dpi"]; set that in a calling
     script to override matplotlib's default."""
     path = os.path.join(plot_dir, filename)
