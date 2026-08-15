@@ -124,12 +124,30 @@ Findings from building the list, all now resolved:
   cost is negligible and it makes the sweep19 layer-pair family complete
   (2-4, 2-6, 2-8, 2-10, 4-8) rather than arbitrarily missing one.
 - **Cache coverage cross-check:** of 795 `plot/metrics_cache.json` entries,
-  360 distinct tags. 330 are in the keep set; **the only 30 outside it are
-  exactly the `sweep19_layers2-6` runs** — a clean confirmation that the
-  enumeration has no missing consumer. Conversely 164 keep-set runs have no
-  cache entry at all: all of group A and all of group B, because
-  `sweep7_analysis.py` uses `CKPT="best"` and a different `MetricSpec`. Those
-  metrics recompute on first plot.
+  360 distinct tags. 330 are in the keep set, and **the only 30 outside it are
+  exactly the `sweep19_layers2-6` runs**. This says no *surprise* tag turned up,
+  which is a useful sanity check — but it is not proof the enumeration is
+  complete, because absence-from-cache clearly doesn't imply absence-of-consumer:
+  164 keep-set runs have no cache entry at all (all of group A and all of group
+  B, since `sweep7_analysis.py` uses `CKPT="best"` and a different
+  `MetricSpec`). Those metrics recompute on first plot.
+- **Kept scripts audited for run dependencies** (the goal statement puts the
+  background work in scope, but the run-list rule only named the four figure
+  script families, so these needed checking explicitly):
+  - `sweep_threshold_report.py` — reads `RUN_GLOB = "sweep7_lam*_tr*"` only,
+    entirely inside group B. No extra runs. (It uses `CKPT="last"` where
+    `sweep7_analysis.py` uses `"best"`; both are kept per run, so fine.)
+  - `sweep_group_report.py` — its three surviving examples (§4) point only at
+    groups C/D/E/F/G. No extra runs.
+  - `probe_ideal_y.py`, `analytic.py` — no run data at all; self-contained.
+  - **`train_no_c.py` needs `runs/baseline_no_c`, which is NOT yet in the
+    manifest.** As it stands the plan would ship a script whose only purpose is
+    a run it doesn't preserve. The run is 173 KB — four files
+    (`checkpoints/last.pt`, `logs/{report.md,README.md,history.jsonl}`) —
+    so the cost of keeping it is nil. **Recommend adding it**, with the caveat
+    that it doesn't fit the standard per-run shape: no `best.pt`, no
+    `config.json`, no `input_config.json` (it's a c-blind control trained by a
+    different script). *User decision: add it, or drop `train_no_c.py` with it?*
 
 ### What to keep per run
 
@@ -150,7 +168,13 @@ only if the chosen destination imposes a size limit.
 ## 2. Curate `runs_publish/`
 
 A staging directory, built and iterated on **outside `runs/`** so the live run
-tree is never mutated. Gitignored while it's being worked out.
+tree is never mutated.
+
+Note `runs_publish` matches **neither** `.gitignore` pattern (`runs` and
+`runs_tmp*`). Add it to `.git/info/exclude` as the very first action — per the
+§"How to execute" convention it's this working copy's staging state, not
+something a clone should carry — so that 764 MB never shows up as untracked and
+`git add`-able while it's being worked out.
 
 1. `mkdir runs_publish`
 2. For each kept tag, copy the six paths above, **dereferencing symlinks**.
@@ -216,7 +240,8 @@ points have zero inbound refs by definition — neither is evidence of dead code
 - `sweep_threshold_report.py` — how the loss/AUROC thresholds were chosen. This
   is the "background work" the goal statement calls for.
 - `analytic.py` — backs the publicly linked analytic-solution writeup.
-- `train_no_c.py` — the `baseline_no_c` control run.
+- `train_no_c.py` — trains the `baseline_no_c` c-blind control. Keeping it only
+  makes sense if `runs/baseline_no_c` is preserved too; see the open item in §1.
 - `sweep_group_report.py` — **keep, but clean up.** See below.
 
 **Untrack:**
@@ -333,7 +358,7 @@ benefit.
 - Then drop the `!.claude/skills` negation from `.gitignore` (it exists only to
   keep that skill tracked), and re-check whether `pytest.ini`'s
   `norecursedirs = references .claude` still earns its keep now that
-  `references/` is gone.
+  `references/` is gone (verified: untracked, and no longer on disk).
 - Footgun: `.claude/skills/` is write-blocked to Bash/git inside worktrees.
   `git rm --cached` only touches the index so it should be fine, but verify
   rather than assume, and confirm `pytest` is still green afterwards.
@@ -390,7 +415,8 @@ matplotlib, jaxtyping.
 Each step ends with a check-in. Nothing is pushed anywhere.
 
 1. ~~§1 — user reviews the run manifest.~~ **Done:** 524 runs agreed,
-   `sweep19_layers2-6` kept, `history.jsonl` kept in full.
+   `sweep19_layers2-6` kept, `history.jsonl` kept in full. **One open item:**
+   whether to add `runs/baseline_no_c` (and keep `train_no_c.py` with it).
 2. §6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
    orphaned tests). Confirm `pytest` green. Small local commits.
 3. §4 script decisions — untrack the agreed set, clean up
