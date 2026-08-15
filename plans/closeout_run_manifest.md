@@ -1,24 +1,26 @@
 # Candidate run manifest for `runs_publish/`
-Generated from the run-set rules in the closeout plan. Sizes are for the
-**kept subset only** (`checkpoints/{best,last}.pt` with `last` dereferenced,
-`config.json`, `input_config.json`, `logs/{history.jsonl,report.md}`) --
-not the full run directory, which also holds the `iter_*.pt` series.
+
+Generated from the run-set rules in `closeout_cleanup_plan.md` §1. Sizes are
+for the **kept subset only** (`checkpoints/{best,last}.pt` with `last`
+dereferenced, `config.json`, `input_config.json`,
+`logs/{history.jsonl,report.md}`) -- not the full run directory, which also
+holds the `iter_*.pt` series.
 
 ## Summary
 
 | Group | Consumer | Runs | ckpt | history | full dir on disk |
 |---|---|---|---|---|---|
 | A | sweep3_lam0 baseline (sweep7 lam=0 arm) | 15 | 11.0 MB | 2.2 MB | 1063.8 MB |
-| B | sweep7_* | 149 | 111.9 MB | 24.2 MB | 2882.3 MB |
+| B | sweep7_* (lambda sweep) | 149 | 111.9 MB | 24.2 MB | 2882.3 MB |
 | C | width num_x=32 (sweep17) | 20 | 15.0 MB | 4.1 MB | 1911.9 MB |
 | D | width num_x=64 (sweep11) | 20 | 52.9 MB | 6.9 MB | 291.2 MB |
 | E | width num_x=128 (sweep14) | 20 | 203.3 MB | 14.4 MB | 1419.2 MB |
 | F | layer single (sweep18) | 150 | 112.7 MB | 46.0 MB | 719.7 MB |
-| G | layer pair (sweep19) | 120 | 90.2 MB | 36.6 MB | 579.5 MB |
-| | **total** | **494** | **597.0 MB** | **134.4 MB** | **8867.6 MB** |
+| G | layer pair (sweep19) | 150 | 112.8 MB | 45.7 MB | 724.6 MB |
+| | **total** | **524** | **619.6 MB** | **143.5 MB** | **9012.7 MB** |
 
-Kept subset total (ckpt + history + configs/reports): **732.4 MB**.
-Without `history.jsonl`: **598.1 MB**.
+Kept-subset total (ckpt + history + configs/reports): **764.2 MB**.
+Full directories for the same runs: 9012.7 MB -- a 12x trim.
 
 ## Full tag list
 
@@ -40,7 +42,7 @@ Without `history.jsonl`: **598.1 MB**.
 - `sweep3_lam0_tr8` (0.7 MB ckpt, 0.1 MB history)
 - `sweep3_lam0_tr9` (0.7 MB ckpt, 0.1 MB history)
 
-### B. sweep7_* -- 149 runs
+### B. sweep7_* (lambda sweep) -- 149 runs
 
 - `sweep7_lam0.0001_tr0` (0.8 MB ckpt, 0.2 MB history)
 - `sweep7_lam0.0001_tr1` (0.8 MB ckpt, 0.2 MB history)
@@ -414,7 +416,7 @@ Without `history.jsonl`: **598.1 MB**.
 - `sweep18_layer8_lam0.1_ramp200k_noise0.01_tr8` (0.8 MB ckpt, 0.3 MB history)
 - `sweep18_layer8_lam0.1_ramp200k_noise0.01_tr9` (0.8 MB ckpt, 0.3 MB history)
 
-### G. layer pair (sweep19) -- 120 runs
+### G. layer pair (sweep19) -- 150 runs
 
 - `sweep19_layers2-10_lam0.01_noise0.01_tr0` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers2-10_lam0.01_noise0.01_tr1` (0.8 MB ckpt, 0.3 MB history)
@@ -476,6 +478,36 @@ Without `history.jsonl`: **598.1 MB**.
 - `sweep19_layers2-4_lam0.1_ramp200k_noise0.01_tr7` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers2-4_lam0.1_ramp200k_noise0.01_tr8` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers2-4_lam0.1_ramp200k_noise0.01_tr9` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr0` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr1` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr2` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr3` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr4` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr5` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr6` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr7` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr8` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.01_noise0.01_tr9` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr0` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr1` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr2` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr3` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr4` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr5` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr6` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr7` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr8` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.032_ramp200k_noise0.01_tr9` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr0` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr1` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr2` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr3` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr4` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr5` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr6` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr7` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr8` (0.8 MB ckpt, 0.3 MB history)
+- `sweep19_layers2-6_lam0.1_ramp200k_noise0.01_tr9` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers2-8_lam0.01_noise0.01_tr0` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers2-8_lam0.01_noise0.01_tr1` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers2-8_lam0.01_noise0.01_tr2` (0.8 MB ckpt, 0.3 MB history)

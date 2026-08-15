@@ -55,15 +55,15 @@ Measured, not estimated. Details per run in
 | | Size |
 |---|---|
 | `runs/` in full (1423 run dirs) | **70 GB** |
-| The 494 candidate runs, full directories | 8.9 GB |
-| The same 494, keeping only `{best,last}.pt` + configs + logs | **732 MB** |
-| …of which `checkpoints/{best,last}.pt` | 597 MB |
-| …of which `logs/history.jsonl` | 134 MB |
+| The 524 candidate runs, full directories | 9.0 GB |
+| The same 524, keeping only `{best,last}.pt` + configs + logs | **764 MB** |
+| …of which `checkpoints/{best,last}.pt` | 620 MB |
+| …of which `logs/history.jsonl` | 144 MB |
 | `plot/metrics_cache.json` | 200 KB |
 
 Two consequences:
 
-- **Dropping the `iter_*.pt` series is a 12× trim** (8.9 GB → 732 MB) and is
+- **Dropping the `iter_*.pt` series is a 12× trim** (9.0 GB → 764 MB) and is
   where essentially all the savings come from. Nothing else is worth optimising
   by comparison.
 - **Local disk is not a constraint.** 203 GB free on the volume. `runs_publish/`
@@ -72,9 +72,9 @@ Two consequences:
   reviewability and for whatever we eventually upload; being selective to save
   local disk does not.
 
-### Where the 732 MB should live
+### Where the 764 MB should live
 
-732 MB is too much for a plain git repo and awkward for Git LFS (quota, and
+764 MB is too much for a plain git repo and awkward for Git LFS (quota, and
 every `git clone` pays for it even for someone who only wants to read the code).
 **Recommend Hugging Face Hub** as the default: it is built for exactly this,
 has no per-clone tax, versions the data, and lets the repo stay small with a
@@ -92,7 +92,7 @@ tracking third — in that order, with a check-in between each.
 
 ## 1. Which runs to keep
 
-**Status: pending user review.** The full list — 494 runs, grouped, with
+**Status: reviewed and agreed.** The full list — 524 runs, grouped, with
 per-run sizes — is in [`plans/closeout_run_manifest.md`](closeout_run_manifest.md).
 Summary:
 
@@ -104,7 +104,7 @@ Summary:
 | D | `sweep11_lr0.0015_iter200k_lam{0.01,0.1}_tr{0..9}` — width, num_x=64 | 20 | 53 MB |
 | E | `sweep14_lr0.0015_iter400k_lam{0.01,0.1}_tr{0..9}` — width, num_x=128 | 20 | 203 MB |
 | F | `sweep18_layer{2,4,6,8,10}_lam{0.01,0.032,0.1}…_tr{0..9}` — probed layer | 150 | 113 MB |
-| G | `sweep19_layers{2-4,2-8,2-10,4-8}_lam{…}_tr{0..9}` — layer pairs, Pareto view | 120 | 90 MB |
+| G | `sweep19_layers{2-4,2-6,2-8,2-10,4-8}_lam{…}_tr{0..9}` — layer pairs, Pareto view | 150 | 113 MB |
 
 `make_publish_plots.py` (`sweep7_lam0.1_tr0`) and
 `make_publish_plot_train_dist_curve.py` (`sweep11_lr0.0015_iter200k_lam0.01_tr0`)
@@ -114,12 +114,15 @@ Findings from building the list — all need a user decision or at least a nod:
 
 - **`sweep7_lam0_*` no longer exists in `runs/`.** `sweep7_analysis.py` already
   reads its λ=0 arm from `LAM0_GLOB = "sweep3_lam0_tr*"`, so nothing is broken.
-  But `publish/sweep7_lam0_tr0/` still holds rendered figures under that name,
-  i.e. a published figure is attributed to a tag with no run behind it. The
-  reproducer docs must name that baseline `sweep3_lam0_tr0`.
-- **`sweep19_layers2-6` (30 runs) is in the keep set only if `sweep_group_report.py`
-  keeps its "2,6" example.** It appears in no `PARETO_COMPARISONS` entry, so
-  `sweep_layer_analysis.py` never touches it. See the §4 question.
+  `publish/sweep7_lam0_tr0/` still holds rendered figures under that name, but
+  the writeup's `copy_plots.sh` pulls the λ=0 comparison figures from
+  `publish/sweep3_lam0_tr0/best/` — so that `publish/` directory is stale
+  output, not a live dependency. Nothing to preserve; just don't let it confuse
+  the `CLAUDE.md` figure map.
+- **`sweep19_layers2-6` (30 runs, 23 MB) is kept**, even though it appears in no
+  `PARETO_COMPARISONS` entry and `sweep_layer_analysis.py` never touches it. The
+  cost is negligible and it makes the sweep19 layer-pair family complete
+  (2-4, 2-6, 2-8, 2-10, 4-8) rather than arbitrarily missing one.
 - **Cache coverage cross-check:** of 795 `plot/metrics_cache.json` entries,
   360 distinct tags. 330 are in the keep set; **the only 30 outside it are
   exactly the `sweep19_layers2-6` runs** — a clean confirmation that the
@@ -137,11 +140,11 @@ Findings from building the list — all need a user decision or at least a nod:
 `config.json` is deliberately included: it is the ground truth of what a run
 actually ran with, which is why `configs/` can be untracked (§6).
 
-`logs/history.jsonl` is 134 MB of the 732 MB and is **a separate decision**.
-Keeping it is what makes `sweep_group_report.py`'s curves view (and the
-train-loss trajectory figures) reproducible, since `load_history` reads it
-directly. Dropping it halves the upload but breaks a script §4 keeps. Default:
-keep, but flag it if the destination has a size limit.
+`logs/history.jsonl` is 144 MB of the 764 MB. **Decision: keep it, in full.**
+It's what makes `sweep_group_report.py`'s curves view and the train-loss
+trajectory figures reproducible (`load_history` reads it directly), and
+downsampling it would mean shipping something that isn't the raw log. Revisit
+only if the chosen destination imposes a size limit.
 
 ## 2. Curate `runs_publish/`
 
@@ -150,7 +153,7 @@ tree is never mutated. Gitignored while it's being worked out.
 
 1. `mkdir runs_publish`
 2. For each kept tag, copy the six paths above, **dereferencing symlinks**.
-   `checkpoints/last.pt` is a symlink to an `iter_N.pt` in 483 of the 494 runs;
+   `checkpoints/last.pt` is a symlink to an `iter_N.pt` in 513 of the 524 runs;
    copied as a link with `iter_*.pt` excluded, it dangles. `cp -L` (or
    `rsync -L`) fixes this — verify afterwards that `runs_publish` contains zero
    symlinks.
@@ -159,7 +162,7 @@ tree is never mutated. Gitignored while it's being worked out.
    - `best.pt` is a real file everywhere; `best` and `last` never resolve to the
      same file, so both are genuinely two checkpoints.
 3. Verify: every run has both `.pt` files non-empty, `config.json` parses, and
-   the total matches §0's 732 MB.
+   the total matches §0's 764 MB.
 4. Load one checkpoint per group and confirm it opens (**on the remote GPU box
    or by the user — not locally**; see the CPU/GPU rule in `CLAUDE.local.md`).
 
@@ -241,8 +244,16 @@ happening, which is squarely in scope for the guided-reproduction goal.
 - It currently assigns `GROUPS` **twice** (`sweep_group_report.py:27` and `:35`);
   the first — the sweep7/11/14/17 model-size comparison — is dead, shadowed by
   the second. Collapse to a single assignment.
-- Keep 2–3 examples, exactly one of them uncommented. Currently ~14 commented
-  blocks survive from live use. **Question for the user below.**
+- Keep exactly these three examples, discarding the other ~11 commented blocks:
+  1. **Layer pairs (sweep19)** — `"2"` / `"8"` / `"2,8"`. **This is the active,
+     uncommented one** (it already is). Shows the does-penalizing-two-layers-help
+     comparison.
+  2. **Layer scan (sweep18)** — `"layer2"`…`"layer10"` at one λ. The headline
+     layer comparison, and the closest analogue to `sweep_layer_analysis.py`.
+  3. **Model size** — `"nx32"` / `"nx64"` / `"nx128"`. This is the currently-dead
+     line-27 assignment; it moves in as a comment under the single `GROUPS`.
+  All three point only at runs already in the §1 keep set, so nothing extra
+  needs preserving.
 - The docstring should say what the script is *for* (ad-hoc cross-sweep
   comparison, edit `GROUPS` to point it at whatever you're comparing) rather
   than describing whichever comparison happens to be active.
@@ -254,14 +265,49 @@ happening, which is squarely in scope for the guided-reproduction goal.
   the current stub's Google Doc links are private and useless to an outside
   reader. The [analytic solution writeup](https://jesseli2002.github.io/blog/blog/activation_obfuscation_analytic/)
   is public and stays.
-- **`CLAUDE.md`** (tracked, new) — the operational half: what each script is,
-  how to run it, how to regenerate each writeup figure with exact commands,
-  where the run data lives and how to fetch it, and what `probe_ideal_y.py` /
-  `sweep_threshold_report.py` / `sweep_group_report.py` are for. This is where
-  the "guided" part of the goal actually gets delivered.
-  - Distinct from `CLAUDE.local.md`, which stays untracked and sandbox-specific.
-    Cross-check that no tracked file describes a workflow that only exists in
-    this sandbox.
+- **`CLAUDE.md`** (tracked, new) — the operational half, and where the "guided"
+  part of the goal actually gets delivered. Distinct from `CLAUDE.local.md`,
+  which stays untracked and sandbox-specific; cross-check that no tracked file
+  describes a workflow that only exists in this sandbox.
+
+  Required contents (non-exhaustive):
+
+  1. **Source structure** — what lives where and what each module is for.
+     Entry points (`train_adversarial_logreg.py`, `adversarial_report.py`,
+     the `sweep_*` and `make_publish_*` scripts) and how to invoke them; the
+     supporting libraries (`sweep_lib/`, `probe_*`, `model.py`, `data.py`, …)
+     as a second tier.
+  2. **What can be reproduced and how**, **ordered to match the writeup**
+     (`/work/blog/content/projects/toy-model-of-activation-obfuscation`, which
+     splits into three parts):
+     - *Part 1 — analytic construction*: `analytic.py`, and the
+       `analytic_feasibility/` material to the extent it survives §4's deferral.
+       No run data needed.
+     - *Part 2 — single-run empirical result*: `make_publish_plots.py`, run
+       against `sweep7_lam0.1_tr0` at `best` (the AUROC / curves / PCA / probe /
+       steering / ROC-grid figures) and against `sweep3_lam0_tr0` at `best` for
+       the two `L2_steer_dir_mag*` λ=0 comparisons.
+     - *Part 3 — hyperparameter sweeps*: `sweep7_analysis.py` (λ sweep →
+       `plot/sweep7/`), `make_publish_plot_train_dist_curve.py`
+       (`sweep11_…_lam0.01_tr0` at `last` → the ID-vs-OOD figure),
+       `sweep_width_analysis.py` (→ `plot/sweep_width/`),
+       `sweep_layer_analysis.py` (→ `plot/sweep_layer/`, including the Pareto
+       grid).
+
+     The blog's `copy_plots.sh` scripts (in each writeup part's directory) are
+     the authoritative figure→file map; use them to build this section rather
+     than re-deriving it, but state the *commands*, not just the output paths.
+  3. **The background work**, so the process is reproducible and not just the
+     figures: `sweep_threshold_report.py` for how the loss/AUROC thresholds were
+     chosen, `sweep_group_report.py` as the worked example of ad-hoc cross-sweep
+     comparison, `probe_ideal_y.py` for why the task is solvable at all.
+  4. **How run configs work** — the layering/default handling, that
+     `configs/*.json` are inputs you point training at, and that **the ground
+     truth for what a run actually used is `runs/<tag>/config.json`**, written
+     out per run and preserved in the published data. Also cover
+     `input_config.json` versus `config.json`.
+  5. **Where the run data lives and how to fetch it** (per §0's destination
+     decision).
 - `runs/runs_notes.md` was out of date and has been deleted — nothing to promote.
 - `references/` has been deleted.
 
@@ -288,9 +334,24 @@ benefit.
 - These have a natural home in the already-separate `vast_setup/` repo — worth
   keeping there rather than losing.
 
-**`configs/` (24 files)** — untrack all of it. A run's real config is
-`runs/<tag>/config.json`, which §1 keeps per run, so `configs/` is a redundant
-and partial second source of truth.
+**`configs/` (24 files)** — untrack all but **one worked example**. A run's real
+config is `runs/<tag>/config.json`, which §1 keeps per run, so the per-sweep
+files under `configs/sweep*/` are a redundant and partial second source of
+truth. But `configs/` shouldn't vanish entirely: keeping one file documents the
+*format* and the fact that this is where you put a config to train from.
+
+Note this is doubly redundant: `runs/<tag>/input_config.json` is already a
+*verbatim* copy of whatever `--config` file the run was launched with, and §1
+keeps it. So the published data carries both the input config and the resolved
+one for every run — `configs/` adds nothing but a stale partial index.
+
+- Keep `configs/default.json` as the one example. Each config file is a
+  complete, self-contained input to `--config` (not a layered override), so a
+  single file fully documents the format.
+- `CLAUDE.md` must state the distinction explicitly: `configs/` is *where you
+  put a config to train from*, and is **not** the record of what any run used —
+  that's `runs/<tag>/config.json` (resolved) and `runs/<tag>/input_config.json`
+  (the file as passed).
 
 **`plot/` and `publish/`** — stay gitignored. Figures are not committed; the
 point is that they regenerate.
@@ -322,8 +383,8 @@ matplotlib, jaxtyping.
 
 Each step ends with a check-in. Nothing is pushed anywhere.
 
-1. §1 — user reviews the run manifest; resolve `sweep19_layers2-6` and the
-   `history.jsonl` question.
+1. ~~§1 — user reviews the run manifest.~~ **Done:** 524 runs agreed,
+   `sweep19_layers2-6` kept, `history.jsonl` kept in full.
 2. §6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
    orphaned tests). Confirm `pytest` green. Small local commits.
 3. §4 script decisions — untrack the agreed set, clean up
