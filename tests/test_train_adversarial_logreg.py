@@ -17,7 +17,11 @@ import pytest
 import torch
 
 from config import ForkedFrom, LogregAdversarialConfig
-from conftest import _logreg_config_file_fields, _make_adv_config, _make_model_config
+from config_fixtures import (
+    _logreg_config_file_fields,
+    _make_adv_config,
+    _make_model_config,
+)
 from train_adversarial_logreg import (
     TrainRecord,
     _append_history,

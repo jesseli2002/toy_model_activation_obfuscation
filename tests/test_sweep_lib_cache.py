@@ -219,7 +219,7 @@ class FakeAdvCfg:
 
 
 def _ck(layers):
-    from conftest import _make_adv_config
+    from config_fixtures import _make_adv_config
 
     return {"adv_config": _make_adv_config(penalty_layers=layers).to_dict()}
 

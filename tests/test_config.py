@@ -12,7 +12,7 @@ from config import (
     LogregRunConfig,
     ResidualMLPConfig,
 )
-from conftest import _make_logreg_config, _make_model_config
+from config_fixtures import _make_logreg_config, _make_model_config
 
 # (config class, a field whose _LEGACY_DEFAULTS value diverges from the
 # dataclass field default -- used to distinguish "backfilled from legacy"
