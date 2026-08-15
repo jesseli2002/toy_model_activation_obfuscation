@@ -1,6 +1,4 @@
 __pycache__
-.claude/*
-!.claude/skills
 .vscode
 
 **/*.env
@@ -11,6 +9,10 @@ __pycache__
 # Result plots
 plot
 publish
+
+# No shared skills or anything for this repo
+.claude
+.agents
 
 # Per-run checkpoints & logs (ephemeral)
 runs
