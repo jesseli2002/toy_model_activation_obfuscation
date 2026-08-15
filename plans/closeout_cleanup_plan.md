@@ -536,7 +536,10 @@ or §6 has been touched yet.
      fails here ("no changes added to commit") even when exactly those paths
      are staged; a plain `git commit` with nothing else staged works. Worth
      remembering for future commits in this worktree.
-4. §6 `plans/*` reference rewrites. **Not started.**
+4. ~~§6 `plans/*` reference rewrites.~~ **Done** (65d88d4): all ten cited
+   sites rewritten to say the thing rather than cite the plan; verified with
+   `git grep plans/` across `*.py`/`*.md` that no tracked non-plan file
+   references `plans/` anymore.
 5. ~~§2 build and review `runs/`.~~ **Done** — see §2 status above.
 6. ~~§0 decide the destination, then wire up tracking.~~ **Done** — Hugging
    Face Hub, uploaded to the private repo
