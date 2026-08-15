@@ -3,7 +3,7 @@ checkpoint, build eval sets over them, fit/compare/score linear decision
 boundaries, and plot the result. (See checkpoint_lib.py for loading a
 checkpoint in the first place -- this module builds on top of that.)
 
-Used as a library by the reporting scripts (adversarial_report.py and the
+Used as a library by the reporting scripts (make_one_run_plots.py and the
 sweep_*.py family) and by analytic.py (activation capture for hand-built
 exact models). Anything a report needs in order to turn a checkpoint into a
 probe score belongs here rather than in one of those entry points, so the
@@ -677,3 +677,70 @@ def plot_probe_pca(
     fig.suptitle(f"probe separation, PCA ({tag}, layers={layer_str})")
     fig.tight_layout()
     return save_plot(fig, plot_dir, f"{tag}_L{layer_str}_probe_pca.png")
+
+
+def steer_vectors(w_dom, w_probe, scale):
+    """DoM steer vector = scale * (mu_hi - mu_lo), raw units. Logreg steer
+    vector = scale * ||w_dom|| * unit(w_probe) -- normalized to the SAME
+    causal magnitude as the DoM shift, so a difference in downstream effect
+    reflects the direction the probe found, not an arbitrary scale (w_probe's
+    own norm is set by the regularization strength, not a meaningful shift
+    size)."""
+    w_dom_vec = scale * w_dom
+    w_probe_unit = w_probe / np.linalg.norm(w_probe)
+    w_logreg_vec = scale * np.linalg.norm(w_dom) * w_probe_unit
+    return w_dom_vec, w_logreg_vec
+
+
+@torch.no_grad()
+def plot_learned_curves(
+    model,
+    tag,
+    plot_dir,
+    noise: Noise,
+    c_values=(1.0, 1.333, 1.667, 2.0),
+    show=False,
+    filename_tag=None,
+    generator: torch.Generator | None = None,
+):
+    """Plot learned y(x) per coordinate at fixed c, for an already-loaded model.
+    `tag` names the plot title; `filename_tag` (defaults to `tag`) names the
+    output file, for callers that want a shorter/different filename than the
+    title (e.g. sweep_threshold_report.py, where the title carries the full
+    run tag but the filename stays short). `noise`/`generator` are passed
+    straight through to `model.task_output` -- pass the checkpoint's own
+    resid_noise_std so the curves reflect what the model actually outputs."""
+    num_x = model.num_x
+    device = next(model.parameters()).device
+    xs = torch.linspace(-3, 3, 400, device=device)
+    fig, axes = plt.subplots(
+        1, len(c_values), figsize=(4 * len(c_values), 4), sharey=True
+    )
+    if len(c_values) == 1:
+        axes = [axes]
+    for ax, c in zip(axes, c_values):
+        # Build inputs: sweep x on every coordinate simultaneously is not valid
+        # (coords are independent), so sweep coordinate 0 and hold others at 0.
+        for j in range(num_x):
+            x = torch.zeros(len(xs), num_x, device=device)
+            x[:, j] = xs
+            x_full = torch.cat([x, torch.full((len(xs), 1), c, device=device)], dim=1)
+            y = model.task_output(x_full, noise=noise, generator=generator)[:, j]
+            ax.plot(xs.cpu().numpy(), y.cpu().numpy(), alpha=0.5, zorder=5)
+        ax.plot(
+            xs.cpu().numpy(),
+            torch.clamp(xs, -c, c).cpu().numpy(),
+            "k--",
+            lw=1,
+            label="target sat",
+            zorder=2,
+        )
+        ax.set_title(f"c = {c:.3f}")
+        ax.set_xlabel("x")
+        ax.grid(True, alpha=0.3)
+        ax.legend(loc="upper left", fontsize=8)
+    axes[0].set_ylabel("y")
+    fig.suptitle(f"learned y(x) per coordinate, fixed c ({tag}); {num_x} lines/panel")
+    fig.tight_layout()
+    fname = filename_tag if filename_tag is not None else tag
+    return save_plot(fig, plot_dir, f"{fname}_curves.png", close=not show)
