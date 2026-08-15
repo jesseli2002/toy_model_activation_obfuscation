@@ -302,14 +302,20 @@ points have zero inbound refs by definition — neither is evidence of dead code
   as the two above, but arguably an investigation tool like
   `sweep_threshold_report.py`.)*
 
-**`analytic_feasibility/` — resolved.** Assessed against what a reproducer
-needs per the user's two goals (an MWE linkable from the blog, and the code
-behind the blog's probe figures):
-- **Kept:** `simplified_demo.py` (byte-identical to the `demo.py` already
-  linked from the analytic blog post) and `probe_v_channels.py` (generates
-  the three `v_channels_{2d,hist,roc}.png` figures embedded in that post).
-  Both are self-contained — no imports from elsewhere in the repo or from
-  each other.
+**`analytic_feasibility/` — resolved, then fully untracked.** Assessed
+against what a reproducer needs per the user's two goals (an MWE linkable
+from the blog, and the code behind the blog's probe figures):
+- **Kept, then moved out:** `simplified_demo.py` (byte-identical to the
+  `demo.py` already linked from the analytic blog post) moved to
+  `analytic_demo.py` at the repo root; `probe_v_channels.py` (generates the
+  three `v_channels_{2d,hist,roc}.png` figures embedded in that post) merged
+  into `analytic.py` as `sample_v_channels()`/`verify_v_channels()`. With
+  both gone, `analytic_feasibility/` no longer has any tracked file — the
+  directory itself is untracked (nothing left to `git rm --cached`).
+  `analytic.py` now also runs every construction's verification as a
+  pass/fail report and saves all its plots (including the merged
+  `v_channels_*` figures) under `plot/analytic/`; `analytic_demo.py`'s
+  `--out-dir` default moved from `.` to `plot/analytic` to match.
 - **Untracked** (kept on disk, per the usual `git rm --cached` +
   `.git/info/exclude` convention): `README.md`, `initial_prompt.md`,
   `period2_decode.py`, `period2_net.py`, `search_exact.py`,

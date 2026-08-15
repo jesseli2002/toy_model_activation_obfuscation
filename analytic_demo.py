@@ -40,7 +40,10 @@ def parse_args():
     p.add_argument("--n", type=int, default=20_000, help="samples per class per split")
     p.add_argument("--seed", type=int, default=0)
     p.add_argument(
-        "--out-dir", type=str, default=".", help="Directory where plots are saved to"
+        "--out-dir",
+        type=str,
+        default="plot/analytic",
+        help="Directory where plots are saved to",
     )
     p.add_argument("--show", action="store_true")
     return p.parse_args()
