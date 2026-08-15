@@ -363,7 +363,7 @@ def _verify_model(
         # Exact construction requires d_mlp == num_x (build_exact_model asserts
         # d_mlp >= num_x, and num_x is the tight minimum).
         d_mlp = num_x
-    m = build_exact_model(num_x, d_model, d_mlp)
+    m = build_exact_model(num_x, d_model, d_mlp).to(device)
     x_full, y = sample_batch(n, num_x, generator=generator, device=device)
     with torch.no_grad():
         pred: Float[Tensor, "n num_x"] = m.task_output(x_full)
@@ -394,7 +394,7 @@ def _verify_obfuscator(
         d_mlp = num_x
 
     num_blocks = 4
-    m = build_exact_obfuscator(num_x, d_model, d_mlp, num_blocks=num_blocks)
+    m = build_exact_obfuscator(num_x, d_model, d_mlp, num_blocks=num_blocks).to(device)
     x_full, y = sample_batch(n, num_x, generator=generator, device=device)
     acts = capture_layers(m, x_full, layers=torch.arange(1, num_blocks + 1))
     acts = acts.reshape(n, num_blocks, d_model)
