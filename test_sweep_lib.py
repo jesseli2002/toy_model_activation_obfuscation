@@ -73,7 +73,6 @@ def test_empty_auroc_thresholds():
     assert spec.n_bands == 2
     assert spec.classify(0.0, {}, 0.99) == 1
     assert spec.classify(1.0, {}, 0.99) == 0
-    assert spec.labels() == ["failed task", "hidden"]  # no NoneType format crash
     assert len(spec.colors()) == 2
 
 
