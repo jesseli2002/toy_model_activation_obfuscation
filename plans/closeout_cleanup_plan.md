@@ -146,24 +146,25 @@ Findings from building the list, all now resolved:
     consumer.
 - **`runs/baseline_no_c` is added to the keep set** (group H). 192 KB, so
   free. It doesn't fit the standard per-run shape — `checkpoints/last.pt` and
-  `logs/{history.jsonl,report.md,README.md}`, but no `best.pt`,
-  `config.json`, or `input_config.json`, because `train_no_c.py` writes a
-  reduced layout. Copy what exists; don't synthesise the missing files.
-  `logs/README.md` records the exact command that produced it and should be
-  preserved as-is.
+  `logs/{history.jsonl,README.md}`, but no `best.pt`, `config.json`, or
+  `input_config.json`, because `train_no_c.py` writes a reduced layout. (It
+  happens to also have a `logs/report.md`, dropped per the correction below
+  like every other run's.) Copy what exists; don't synthesise the missing
+  files. `logs/README.md` records the exact command that produced it and
+  should be preserved as-is.
 
 ### What to keep per run
 
 `checkpoints/best.pt`, `checkpoints/last.pt`, `config.json`,
-`input_config.json`, `logs/history.jsonl`, `logs/report.md` **if present**.
-Drop the `iter_*.pt` series.
+`input_config.json`, `logs/history.jsonl`. Drop the `iter_*.pt` series.
 
-**Correction from the §2 build:** `logs/report.md` is not a training artifact
-— it's a saved dump from a manual `adversarial_report.py` invocation, so it
-only exists where someone happened to run and save one. Across the full 1423
-runs in `runs_all/`, only 122 have it; within the 525-run keep set, only 39
-do. Copy it when present, same as group H's reduced layout — don't treat its
-absence as an error.
+**Correction from the §2 build:** `logs/report.md` — originally in this list
+— is dropped entirely, not just "kept if present". It's not a training
+artifact; it's a saved dump from a manual `adversarial_report.py` invocation,
+so it only exists where someone happened to run and save one (122 of 1423
+runs in `runs_all/`; 39 of the 525-run keep set). Since it's a regenerable
+report rather than raw data, and its presence is arbitrary rather than
+meaningful, it doesn't belong in the published per-run file set.
 
 `config.json` and `input_config.json` are deliberately included: between them
 they are the ground truth of what a run actually ran with, which is why
