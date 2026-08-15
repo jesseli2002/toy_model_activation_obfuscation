@@ -173,6 +173,13 @@ only if the chosen destination imposes a size limit.
 A staging directory, built and iterated on **outside `runs/`** so the live run
 tree is never mutated.
 
+**Update:** the user has moved `runs/` to `runs_all/` on disk (source for
+curation below), reserving `runs/` as the download target for a reproducibility
+test — once the HF Hub repo is populated, `runs/` gets recreated by downloading
+from it, to confirm a fresh clone can actually reproduce from the published
+data rather than just from local state. So read §2 below as sourcing from
+`runs_all/`, not `runs/`.
+
 Note `runs_publish` matches **neither** `.gitignore` pattern (`runs` and
 `runs_tmp*`). Add it to `.git/info/exclude` as the very first action — per the
 §"How to execute" convention it's this working copy's staging state, not
@@ -220,11 +227,17 @@ unavailable), and let an accessor serve a cache hit without `has_checkpoint`.
 That's a genuine improvement regardless of publishing — the current scheme
 silently invalidates on any copy.
 
-Then ship `plot/metrics_cache.json` (200 KB) alongside. Verify on a
+Then ship `metrics_cache.json` alongside. Verify on a
 checkpoint-less tree that the aggregate scripts run to completion rather than
 skipping every tag. Note from §1 that groups A and B aren't in the cache, so
 either accept that the `sweep7` figure needs checkpoints, or regenerate the
 cache to cover them before shipping.
+
+**Decision (not yet implemented):** move `plot/metrics_cache.json` (200 KB)
+to `runs/metrics_cache.json` and keep it in the HF Hub repo alongside the run
+data, rather than shipping it separately from `plot/` (which stays gitignored
+per §6 and isn't part of the published dataset). Logged here as a to-do for
+when this step is actually executed; no move has happened yet.
 
 ## 4. Scripts
 
