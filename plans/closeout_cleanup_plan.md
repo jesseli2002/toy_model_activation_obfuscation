@@ -74,11 +74,27 @@ Two consequences:
 
 ### Where the 764 MB should live
 
+**Status: decided and done.** Hugging Face Hub, per the recommendation below.
+Uploaded to the private model repo `cooleytukey/toy_model_of_activation_obfuscation`
+(user created it and issued a repo-scoped fine-grained token), under a `runs/`
+path in the repo matching the local layout. Verified server-side: 2623 files
+across all 525 run tags, matching the local `runs/` build exactly. The repo
+was public by default when created; flipped to private before uploading.
+
+**Sandbox networking gotcha, for whoever runs the next upload/download:** this
+environment's outbound network is allowlisted per-host. `huggingface.co` is
+enough for auth and small-file (non-LFS) commits, but large files go through
+HF's **Xet** storage backend, not classic LFS — that needs
+`cas-server.xethub.hf.co` allowlisted too, or `hf upload`/`hf download` hangs
+at `0.00B/0.00B` indefinitely rather than failing fast (the sandbox denies the
+connection silently; the client has no way to distinguish that from a slow
+network). If large-file transfers stall with no byte progress after the
+hashing step, this is the first thing to check.
+
 764 MB is too much for a plain git repo and awkward for Git LFS (quota, and
 every `git clone` pays for it even for someone who only wants to read the code).
-**Recommend Hugging Face Hub** as the default: it is built for exactly this,
-has no per-clone tax, versions the data, and lets the repo stay small with a
-download snippet in `CLAUDE.md`.
+Hugging Face Hub is built for exactly this, has no per-clone tax, versions the
+data, and lets the repo stay small with a download snippet in `CLAUDE.md`.
 
 Alternatives, in rough order of preference if HF is rejected: a GitHub Release
 attachment (doesn't count against LFS quota, but unversioned and clumsy to
@@ -177,6 +193,15 @@ downsampling it would mean shipping something that isn't the raw log. Revisit
 only if the chosen destination imposes a size limit.
 
 ## 2. Curate `runs/`
+
+**Status: done.** Built from `runs_all/` into `runs/` in the main checkout
+(script: `build_runs.tmp.py`, left in place as a throwaway artifact — safe to
+delete). Verified: 525 run dirs, group counts match the manifest exactly
+(A:15 B:149 C:20 D:20 E:20 F:150 G:150 H:1), 0 symlinks, no zero-byte `.pt`
+files, all `config.json` parse, 741 MB total (vs. the 764 MB estimate — the
+gap is `logs/report.md`, see the correction above). User reviewed and
+confirmed ("runs looks good"). Step 3 below (load a checkpoint per group) is
+still open — needs the remote GPU box or the user, not an agent locally.
 
 **Update (supersedes the `runs_publish/` staging name below):** the user moved
 the live run tree from `runs/` to `runs_all/` on disk, freeing `runs/` up to be
@@ -460,19 +485,37 @@ matplotlib, jaxtyping.
 
 Each step ends with a check-in. Nothing is pushed anywhere.
 
+**Note for the next agent:** steps were done out of the order below, at the
+user's direction — §2 and §0 (run data + HF upload) went first, before the
+mechanical untracking in steps 2–4. Those are still fully open; nothing in §4
+or §6 has been touched yet.
+
 1. ~~§1 — user reviews the run manifest.~~ **Done:** 525 runs agreed —
    `sweep19_layers2-6` kept, `history.jsonl` kept in full, `baseline_no_c`
    added as group H. No open items.
 2. §6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
-   orphaned tests). Confirm `pytest` green. Small local commits.
+   orphaned tests). Confirm `pytest` green. Small local commits. **Not
+   started.**
 3. §4 script decisions — untrack the agreed set, clean up
-   `sweep_group_report.py`.
-4. §6 `plans/*` reference rewrites.
-5. §2 build and review `runs/`.
-6. §0 decide the destination (HF vs LFS vs Release), then wire up tracking.
-7. §3 cache-fingerprint fix; verify GPU-free aggregate plotting.
+   `sweep_group_report.py`. **Not started.**
+4. §6 `plans/*` reference rewrites. **Not started.**
+5. ~~§2 build and review `runs/`.~~ **Done** — see §2 status above.
+6. ~~§0 decide the destination, then wire up tracking.~~ **Done** — Hugging
+   Face Hub, uploaded to the private repo
+   `cooleytukey/toy_model_of_activation_obfuscation`. See §0 status above,
+   including the Xet networking gotcha if the next agent needs to
+   upload/download again.
+   - **Open follow-up:** the reproducibility test this setup enables —
+     wipe local `runs/` and re-download from the HF repo — hasn't been run
+     yet. Worth doing once §2 step 3 (checkpoint load-check) also happens.
+   - **Also open, logged but not yet done:** move `plot/metrics_cache.json`
+     to `runs/metrics_cache.json` and include it in the HF repo (§3 above
+     has the full decision note).
+7. §3 cache-fingerprint fix; verify GPU-free aggregate plotting. **Not
+   started.**
 8. §5 `README.md` (user) and `CLAUDE.md` (agent, describing the final tree).
-9. `pyproject.toml`.
+   **Not started.**
+9. `pyproject.toml`. **Not started.**
 10. Push — only on explicit user command.
 11. `plans/` — dropped only on explicit user command, possibly in a later round.
 
