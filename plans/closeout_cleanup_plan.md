@@ -55,8 +55,8 @@ Measured, not estimated. Details per run in
 | | Size |
 |---|---|
 | `runs/` in full (1423 run dirs) | **70 GB** |
-| The 524 candidate runs, full directories | 9.0 GB |
-| The same 524, keeping only `{best,last}.pt` + configs + logs | **764 MB** |
+| The 525 candidate runs, full directories | 9.0 GB |
+| The same 525, keeping only `{best,last}.pt` + configs + logs | **764 MB** |
 | …of which `checkpoints/{best,last}.pt` | 620 MB |
 | …of which `logs/history.jsonl` | 144 MB |
 | `plot/metrics_cache.json` | 200 KB |
@@ -92,7 +92,7 @@ tracking third — in that order, with a check-in between each.
 
 ## 1. Which runs to keep
 
-**Status: reviewed and agreed.** The full list — 524 runs, grouped, with
+**Status: reviewed and agreed.** The full list — 525 runs, grouped, with
 per-run sizes — is in [`plans/closeout_run_manifest.md`](closeout_run_manifest.md).
 Summary:
 
@@ -105,6 +105,7 @@ Summary:
 | E | `sweep14_lr0.0015_iter400k_lam{0.01,0.1}_tr{0..9}` — width, num_x=128 | 20 | 203 MB |
 | F | `sweep18_layer{2,4,6,8,10}_lam{0.01,0.032,0.1}…_tr{0..9}` — probed layer | 150 | 113 MB |
 | G | `sweep19_layers{2-4,2-6,2-8,2-10,4-8}_lam{…}_tr{0..9}` — layer pairs, Pareto view | 150 | 113 MB |
+| H | `baseline_no_c` — c-blind control, from `train_no_c.py` | 1 | 0.2 MB |
 
 `make_publish_plots.py` (`sweep7_lam0.1_tr0`) and
 `make_publish_plot_train_dist_curve.py` (`sweep11_lr0.0015_iter200k_lam0.01_tr0`)
@@ -139,15 +140,17 @@ Findings from building the list, all now resolved:
     `sweep7_analysis.py` uses `"best"`; both are kept per run, so fine.)
   - `sweep_group_report.py` — its three surviving examples (§4) point only at
     groups C/D/E/F/G. No extra runs.
-  - `probe_ideal_y.py`, `analytic.py` — no run data at all; self-contained.
-  - **`train_no_c.py` needs `runs/baseline_no_c`, which is NOT yet in the
-    manifest.** As it stands the plan would ship a script whose only purpose is
-    a run it doesn't preserve. The run is 173 KB — four files
-    (`checkpoints/last.pt`, `logs/{report.md,README.md,history.jsonl}`) —
-    so the cost of keeping it is nil. **Recommend adding it**, with the caveat
-    that it doesn't fit the standard per-run shape: no `best.pt`, no
-    `config.json`, no `input_config.json` (it's a c-blind control trained by a
-    different script). *User decision: add it, or drop `train_no_c.py` with it?*
+  - `probe_ideal_y.py`, `analytic.py`, `train_no_c.py` — no *existing* run data
+    needed. `train_no_c.py` is what *produces* `runs/baseline_no_c`; it's a
+    standalone trainer with its hyperparameters as module constants, not a
+    consumer.
+- **`runs/baseline_no_c` is added to the keep set** (group H). 192 KB, so
+  free. It doesn't fit the standard per-run shape — `checkpoints/last.pt` and
+  `logs/{history.jsonl,report.md,README.md}`, but no `best.pt`,
+  `config.json`, or `input_config.json`, because `train_no_c.py` writes a
+  reduced layout. Copy what exists; don't synthesise the missing files.
+  `logs/README.md` records the exact command that produced it and should be
+  preserved as-is.
 
 ### What to keep per run
 
@@ -178,7 +181,11 @@ something a clone should carry — so that 764 MB never shows up as untracked an
 
 1. `mkdir runs_publish`
 2. For each kept tag, copy the six paths above, **dereferencing symlinks**.
-   `checkpoints/last.pt` is a symlink to an `iter_N.pt` in 513 of the 524 runs;
+   Group H (`baseline_no_c`) has a reduced layout — no `best.pt`, no
+   `config.json`/`input_config.json`, plus an extra `logs/README.md` recording
+   its exact training command. Copy what exists rather than failing on the
+   missing files, and keep that README.
+   `checkpoints/last.pt` is a symlink to an `iter_N.pt` in 513 of the 525 runs;
    copied as a link with `iter_*.pt` excluded, it dangles. `cp -L` (or
    `rsync -L`) fixes this — verify afterwards that `runs_publish` contains zero
    symlinks.
@@ -240,8 +247,37 @@ points have zero inbound refs by definition — neither is evidence of dead code
 - `sweep_threshold_report.py` — how the loss/AUROC thresholds were chosen. This
   is the "background work" the goal statement calls for.
 - `analytic.py` — backs the publicly linked analytic-solution writeup.
-- `train_no_c.py` — trains the `baseline_no_c` c-blind control. Keeping it only
-  makes sense if `runs/baseline_no_c` is preserved too; see the open item in §1.
+- `train_no_c.py` — trains the `baseline_no_c` c-blind control, which
+  empirically confirms the analytic c-blind loss floor is reachable. That floor
+  is the certificate the whole experiment leans on ("a model scoring below it
+  must be reading c"), so it belongs in the reproducible set.
+
+### Print the c-blind baseline loss
+
+**New work item.** The baseline's achieved loss is currently only recoverable
+by reading raw artifacts — the last line of
+`runs/baseline_no_c/logs/history.jsonl` (`l_task = 5.563e-2` at iter 49999), or
+by re-running the 50k-iteration training and watching its final
+`[done]` line scroll past. `adversarial_report.py --tag baseline_no_c` prints a
+max-abs-error and then explicitly skips everything else as a c-blind run, so it
+doesn't surface the number either.
+
+A reproducer needs to see, in one command, **the achieved baseline loss next to
+the analytic floor it's testing** (`analytic.no_c_task_loss`), since the whole
+point is the comparison. Options, cheapest first:
+
+1. Teach `train_no_c.py` a `--report` flag that loads the existing run's
+   history/checkpoint and prints achieved-vs-bound without training. It already
+   computes `bound` and prints `eval/bound` during training, so the formatting
+   logic exists — this is mostly a matter of not requiring a training loop to
+   reach it.
+2. Have `adversarial_report.py` print the achieved-vs-bound comparison in its
+   §1 for c-blind runs, instead of only noting that probe analysis is skipped.
+
+Prefer (1): it keeps the c-blind logic in the c-blind script and leaves
+`adversarial_report.py` alone. Either way `CLAUDE.md` documents the command.
+This runs a checkpoint load, so **the user or the remote box runs it, not the
+agent locally.**
 - `sweep_group_report.py` — **keep, but clean up.** See below.
 
 **Untrack:**
@@ -302,7 +338,9 @@ happening, which is squarely in scope for the guided-reproduction goal.
      Entry points (`train_adversarial_logreg.py`, `adversarial_report.py`,
      the `sweep_*` and `make_publish_*` scripts) and how to invoke them; the
      supporting libraries (`sweep_lib/`, `probe_*`, `model.py`, `data.py`, …)
-     as a second tier.
+     as a second tier. Lead the training part with the one-command
+     `--config configs/example.json` invocation (§6), so a reproducer can
+     train something before understanding anything else.
   2. **What can be reproduced and how**, **ordered to match the writeup**. The
      writeup lives in a separate local checkout at
      `/work/blog/content/projects/toy-model-of-activation-obfuscation` (its
@@ -310,7 +348,9 @@ happening, which is squarely in scope for the guided-reproduction goal.
      `/work/blog/content/blog/`):
      - *Part 1 — analytic construction*: `analytic.py`, and the
        `analytic_feasibility/` material to the extent it survives §4's deferral.
-       No run data needed.
+       No run data needed. Alongside it, the **c-blind floor**: what
+       `analytic.no_c_task_loss` certifies, and the command that prints
+       `baseline_no_c`'s achieved loss against it (§4).
      - *Part 2 — single-run empirical result*: `make_publish_plots.py`, run
        against `sweep7_lam0.1_tr0` at `best` (the AUROC / curves / PCA / probe /
        steering / ROC-grid figures) and against `sweep3_lam0_tr0` at `best` for
@@ -365,24 +405,36 @@ benefit.
 - These have a natural home in the already-separate `vast_setup/` repo — worth
   keeping there rather than losing.
 
-**`configs/` (24 files)** — untrack all but **one worked example**. A run's real
-config is `runs/<tag>/config.json`, which §1 keeps per run, so the per-sweep
-files under `configs/sweep*/` are a redundant and partial second source of
-truth. But `configs/` shouldn't vanish entirely: keeping one file documents the
-*format* and the fact that this is where you put a config to train from.
+**`configs/` (24 files)** — untrack all but **one explicitly-named example**. A
+run's real config is `runs/<tag>/config.json`, which §1 keeps per run, so the
+per-sweep files under `configs/sweep*/` are a redundant and partial second
+source of truth. But `configs/` shouldn't vanish entirely: keeping one file
+documents the *format*, shows that this is where you put a config to train
+from, and gives a reproducer something to run on day one.
 
 Note this is doubly redundant: `runs/<tag>/input_config.json` is already a
 *verbatim* copy of whatever `--config` file the run was launched with, and §1
 keeps it. So the published data carries both the input config and the resolved
 one for every run — `configs/` adds nothing but a stale partial index.
 
-- Keep `configs/default.json` as the one example. Each config file is a
-  complete, self-contained input to `--config` (not a layered override), so a
-  single file fully documents the format.
-- `CLAUDE.md` must state the distinction explicitly: `configs/` is *where you
-  put a config to train from*, and is **not** the record of what any run used —
-  that's `runs/<tag>/config.json` (resolved) and `runs/<tag>/input_config.json`
-  (the file as passed).
+- Keep exactly one file, and **rename it so its role is unmistakable**:
+  `configs/default.json` → `configs/example.json`. "Default" invites the reading
+  that it's a baseline the code falls back to; it isn't, and nothing in the code
+  references the path (verified: only the `.tmp.py` throwaways mention
+  `configs/` at all, so the rename is free). Each config is a complete,
+  self-contained input to `--config` rather than a layered override, so one file
+  documents the format fully.
+- The point of keeping it is that **a reproducer can train something
+  immediately**, without first reverse-engineering the schema from a run
+  directory:
+  ```
+  python train_adversarial_logreg.py --config configs/example.json --tag my_first_run ...
+  ```
+  `CLAUDE.md` should lead the training section with exactly that command.
+- `CLAUDE.md` must also state the distinction explicitly: `configs/` is *where
+  you put a config to train from*, and is **not** the record of what any run
+  used — that's `runs/<tag>/config.json` (resolved) and
+  `runs/<tag>/input_config.json` (the file as passed).
 
 **`plot/` and `publish/`** — stay gitignored. Figures are not committed; the
 point is that they regenerate.
@@ -414,13 +466,14 @@ matplotlib, jaxtyping.
 
 Each step ends with a check-in. Nothing is pushed anywhere.
 
-1. ~~§1 — user reviews the run manifest.~~ **Done:** 524 runs agreed,
-   `sweep19_layers2-6` kept, `history.jsonl` kept in full. **One open item:**
-   whether to add `runs/baseline_no_c` (and keep `train_no_c.py` with it).
+1. ~~§1 — user reviews the run manifest.~~ **Done:** 525 runs agreed —
+   `sweep19_layers2-6` kept, `history.jsonl` kept in full, `baseline_no_c`
+   added as group H. No open items.
 2. §6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
    orphaned tests). Confirm `pytest` green. Small local commits.
 3. §4 script decisions — untrack the agreed set, clean up
-   `sweep_group_report.py`.
+   `sweep_group_report.py`, add the c-blind baseline-loss report (user or
+   remote box runs the verification).
 4. §6 `plans/*` reference rewrites.
 5. §2 build and review `runs_publish/`.
 6. §0 decide the destination (HF vs LFS vs Release), then wire up tracking.

@@ -17,10 +17,11 @@ holds the `iter_*.pt` series.
 | E | width num_x=128 (sweep14) | 20 | 203.3 MB | 14.4 MB | 1419.2 MB |
 | F | layer single (sweep18) | 150 | 112.7 MB | 46.0 MB | 719.7 MB |
 | G | layer pair (sweep19) | 150 | 112.8 MB | 45.7 MB | 724.6 MB |
-| | **total** | **524** | **619.6 MB** | **143.5 MB** | **9012.7 MB** |
+| H | c-blind control (train_no_c.py) | 1 | 0.1 MB | 0.1 MB | 0.2 MB |
+| | **total** | **525** | **619.7 MB** | **143.6 MB** | **9012.9 MB** |
 
-Kept-subset total (ckpt + history + configs/reports): **764.2 MB**.
-Full directories for the same runs: 9012.7 MB -- a 12x trim.
+Kept-subset total (ckpt + history + configs/reports): **764.3 MB**.
+Full directories for the same runs: 9012.9 MB -- a 12x trim.
 
 ## Full tag list
 
@@ -568,3 +569,7 @@ Full directories for the same runs: 9012.7 MB -- a 12x trim.
 - `sweep19_layers4-8_lam0.1_ramp200k_noise0.01_tr7` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers4-8_lam0.1_ramp200k_noise0.01_tr8` (0.8 MB ckpt, 0.3 MB history)
 - `sweep19_layers4-8_lam0.1_ramp200k_noise0.01_tr9` (0.8 MB ckpt, 0.3 MB history)
+
+### H. c-blind control (train_no_c.py) -- 1 runs
+
+- `baseline_no_c` (0.1 MB ckpt, 0.1 MB history)  -- no `best.pt`; reduced run layout, copy what exists
