@@ -7,7 +7,7 @@ Can you find an analytic solution to the task set out in this repository? The go
 - (the challenge) `c` is not recoverable using a linear probe at any of the hidden layers.
 
 
-Copying from plans/high_level_plan.md (the original human-written planning doc, although some parts of it are out of date):
+Following the original human-written design (some parts of it are out of date):
 - Inputs x_full = [x, c] (row-vector); note that this will be of size `len(x) + 1`
 - Embedding matrix W_E
     - W_E is a fixed matrix, with unit norm orthogonal rows. The easiest way to do this is to make W_E be a block matrix, concatenating an identity matrix and a zero matrix appropriately to get a `len(x)+1` by `d_model` sized matrix.

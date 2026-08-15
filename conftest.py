@@ -1,7 +1,7 @@
 """Shared config-fixture builders for test_config.py and
 test_train_adversarial_logreg.py -- kept in one place so that adding a new
 required field to a config dataclass (e.g. LogregAdversarialConfig's
-config-file-only fields, see plans/rare_flags_config_plan.md) only needs
+config-file-only fields) only needs
 updating here instead of at every test call site."""
 
 from config import LogregAdversarialConfig, ResidualMLPConfig
@@ -18,7 +18,7 @@ def _make_model_config(**overrides) -> ResidualMLPConfig:
 
 def _logreg_config_file_fields(**overrides) -> dict:
     """A valid --config JSON file's contents: every LogregAdversarialConfig
-    field that has no Python default (see plans/rare_flags_config_plan.md),
+    field that has no Python default,
     so `LogregAdversarialConfig()` alone isn't a valid construction and
     tests need a fully-specified set of fields."""
     d = dict(

@@ -1,11 +1,9 @@
-"""pytest unit tests for the pure-Python helpers in train_adversarial_logreg.py
-extracted/cleaned up per plans/train_adversarial_logreg_cleanup_plan.md:
+"""pytest unit tests for the pure-Python helpers in train_adversarial_logreg.py:
 _history_entry, _resolve_hidden_layers, and the Tier-2 --fork-from existence
 check (run as a subprocess so it exercises the real pre-heavy-import path).
 
-Also covers the --config/--fork-from machinery from
-plans/rare_flags_config_plan.md: load_run_config's missing-required-key
-error, and the config.json write/read helpers."""
+Also covers the --config/--fork-from machinery: load_run_config's
+missing-required-key error, and the config.json write/read helpers."""
 
 import json
 import os
@@ -606,7 +604,7 @@ def test_restore_rng_state_continues_gen_stream_not_reseeded():
 
 class TestNoiseBlobReplay:
     """The property the model-owned noise blob buys over the old gen-state
-    snapshot/reset dance (plans/model_noise_blob_plan.md): every forward_loss
+    snapshot/reset dance: every forward_loss
     call within one iteration -- including the explode-check and
     explode-redo passes -- sees bit-identical noise, assertable directly
     instead of relying on `gen` replay discipline."""
