@@ -15,12 +15,11 @@ Structured the same way as adversarial_report.py: a data-computation phase
 (`_make_plots`) turns it into figures -- so adding a plot never needs a new
 forward pass through data already computed, and vice versa.
 
-Run with no --tag to regenerate every figure the writeup uses, across all of
-TAGS, in one invocation; pass --tag (repeatable) to instead run only against
-specific tag(s), e.g. for exploring a run ad hoc. Not every plot produced ends
-up embedded in the writeup -- see copy_plots.sh in the blog's hiding_experiment
-directory for which ones do; the rest are cheap to produce alongside them and
-worth keeping in case the writeup grows.
+Regenerates every figure the writeup uses, across all of TAGS, in one
+invocation. Not every plot produced ends up embedded in the writeup -- see
+copy_plots.sh in the blog's hiding_experiment directory for which ones do; the
+rest are cheap to produce alongside them and worth keeping in case the
+writeup grows.
 """
 
 import argparse
@@ -55,13 +54,6 @@ def parse_args():
     p = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    p.add_argument(
-        "--tag",
-        type=str,
-        action="append",
-        help=f"run only against this tag; may be repeated. Default: every "
-        f"writeup tag, {TAGS}.",
     )
     p.add_argument(
         "--ckpt",
@@ -792,7 +784,7 @@ def _run_one(args, tag, ckpt, device):
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpts = ["last", "best"] if args.ckpt == "both" else [args.ckpt]
-    for tag in args.tag or TAGS:
+    for tag in TAGS:
         for ckpt in ckpts:
             _run_one(args, tag, ckpt, device)
 

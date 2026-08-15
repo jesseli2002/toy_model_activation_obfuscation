@@ -124,7 +124,8 @@ Summary:
 | H | `baseline_no_c` — c-blind control, from `train_no_c.py` | 1 | 0.2 MB |
 
 `make_one_run_plots.py` (`sweep7_lam0.1_tr0`, `sweep3_lam0_tr0`) and
-`make_publish_plot_train_dist_curve.py` (`sweep11_lr0.0015_iter200k_lam0.01_tr0`)
+`plot_train_dist_curve.py` (`sweep11_lr0.0015_iter200k_lam0.01_tr0`,
+renamed from `make_publish_plot_train_dist_curve.py`)
 are already covered by B and D.
 
 Findings from building the list, all now resolved:
@@ -266,7 +267,7 @@ figure scripts. (Docstring cross-references aren't import edges, and entry
 points have zero inbound refs by definition — neither is evidence of dead code.)
 
 **Keep — produces a writeup figure or is imported by one that does:**
-`make_one_run_plots.py`, `make_publish_plot_train_dist_curve.py`,
+`make_one_run_plots.py`, `plot_train_dist_curve.py`,
 `sweep7_analysis.py`, `sweep_width_analysis.py`, `sweep_layer_analysis.py`,
 `adversarial_report.py`, `train_adversarial_logreg.py`, `sweep_lib/*`,
 `probe_lib.py`, `probe_backend.py`, `probe_newton.py`, `torch_logreg.py`,
@@ -381,12 +382,12 @@ happening, which is squarely in scope for the guided-reproduction goal.
        `analytic.no_c_task_loss` certifies, and how to check `baseline_no_c`
        against it (`adversarial_report.py --tag baseline_no_c`, or the final
        `l_task` in its `history.jsonl`).
-     - *Part 2 — single-run empirical result*: `make_one_run_plots.py`, run
-       with no `--tag` (its default `TAGS` covers both `sweep7_lam0.1_tr0` —
-       the AUROC / curves / PCA / probe / steering / ROC-grid figures — and
-       `sweep3_lam0_tr0`, for the two `L2_steer_dir_mag*` λ=0 comparisons).
+     - *Part 2 — single-run empirical result*: `make_one_run_plots.py`, which
+       runs against both writeup tags in one invocation — `sweep7_lam0.1_tr0`
+       (the AUROC / curves / PCA / probe / steering / ROC-grid figures) and
+       `sweep3_lam0_tr0` (the two `L2_steer_dir_mag*` λ=0 comparisons).
      - *Part 3 — hyperparameter sweeps*: `sweep7_analysis.py` (λ sweep →
-       `plot/sweep7/`), `make_publish_plot_train_dist_curve.py`
+       `plot/sweep7/`), `plot_train_dist_curve.py`
        (`sweep11_…_lam0.01_tr0` at `last` → the ID-vs-OOD figure),
        `sweep_width_analysis.py` (→ `plot/sweep_width/`),
        `sweep_layer_analysis.py` (→ `plot/sweep_layer/`, including the Pareto
