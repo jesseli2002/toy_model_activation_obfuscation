@@ -110,7 +110,7 @@ Summary:
 `make_publish_plot_train_dist_curve.py` (`sweep11_lr0.0015_iter200k_lam0.01_tr0`)
 are already covered by B and D.
 
-Findings from building the list — all need a user decision or at least a nod:
+Findings from building the list, all now resolved:
 
 - **`sweep7_lam0_*` no longer exists in `runs/`.** `sweep7_analysis.py` already
   reads its λ=0 arm from `LAM0_GLOB = "sweep3_lam0_tr*"`, so nothing is broken.
@@ -137,8 +137,9 @@ Findings from building the list — all need a user decision or at least a nod:
 `input_config.json`, `logs/history.jsonl`, `logs/report.md`. Drop the
 `iter_*.pt` series.
 
-`config.json` is deliberately included: it is the ground truth of what a run
-actually ran with, which is why `configs/` can be untracked (§6).
+`config.json` and `input_config.json` are deliberately included: between them
+they are the ground truth of what a run actually ran with, which is why
+`configs/` can shrink to a single example (§6).
 
 `logs/history.jsonl` is 144 MB of the 764 MB. **Decision: keep it, in full.**
 It's what makes `sweep_group_report.py`'s curves view and the train-loss
@@ -277,9 +278,11 @@ happening, which is squarely in scope for the guided-reproduction goal.
      the `sweep_*` and `make_publish_*` scripts) and how to invoke them; the
      supporting libraries (`sweep_lib/`, `probe_*`, `model.py`, `data.py`, …)
      as a second tier.
-  2. **What can be reproduced and how**, **ordered to match the writeup**
-     (`/work/blog/content/projects/toy-model-of-activation-obfuscation`, which
-     splits into three parts):
+  2. **What can be reproduced and how**, **ordered to match the writeup**. The
+     writeup lives in a separate local checkout at
+     `/work/blog/content/projects/toy-model-of-activation-obfuscation` (its
+     Results section splits into three parts, each with its own page under
+     `/work/blog/content/blog/`):
      - *Part 1 — analytic construction*: `analytic.py`, and the
        `analytic_feasibility/` material to the extent it survives §4's deferral.
        No run data needed.
@@ -301,11 +304,14 @@ happening, which is squarely in scope for the guided-reproduction goal.
      figures: `sweep_threshold_report.py` for how the loss/AUROC thresholds were
      chosen, `sweep_group_report.py` as the worked example of ad-hoc cross-sweep
      comparison, `probe_ideal_y.py` for why the task is solvable at all.
-  4. **How run configs work** — the layering/default handling, that
-     `configs/*.json` are inputs you point training at, and that **the ground
-     truth for what a run actually used is `runs/<tag>/config.json`**, written
-     out per run and preserved in the published data. Also cover
-     `input_config.json` versus `config.json`.
+  4. **How run configs work** — how `--config` resolves hyperparameters and what
+     the defaults are; that `configs/*.json` are inputs you point training at
+     (see §6) and **not** a record of anything; and that **the ground truth for
+     what a run actually used lives in the run directory**, preserved in the
+     published data as two files: `input_config.json` (verbatim copy of the
+     `--config` file, reusable as a later `--config` argument) and `config.json`
+     (the fully-resolved config). Also cover the `--resume` / `--fork-from`
+     modes, which read these rather than `--config`.
   5. **Where the run data lives and how to fetch it** (per §0's destination
      decision).
 - `runs/runs_notes.md` was out of date and has been deleted — nothing to promote.
