@@ -1,113 +1,201 @@
 # Repo closeout cleanup plan
 
-Plan only — nothing here is implemented yet. Scope is git-tracked content only;
-gitignored files (`runs/`, `plot/`, `publish/`, `vast_setup/`) are out of scope
-except where a decision is to *start* tracking some of them.
+Plan only — nothing here is implemented yet.
 
-(Caveat: `plans/` is itself under review in item 5 below. If `plans/` is dropped,
-this file moves or goes with it.)
+## Goal
 
-## 0. Key finding, drives everything else
+A reproducer, starting from a fresh clone, should be able to **recreate the
+process that produced the writeup figures, in a guided manner**. "Guided" is the
+operative word: the repo should walk them through the background work too (how
+the loss/AUROC thresholds were picked, how sweeps were compared against each
+other), not just hand them a script that emits a PNG. Failed experiments are out
+of scope — they don't need to be reproducible, and mostly shouldn't be kept.
 
-The writeup figures split into two classes with very different data needs:
+A secondary goal, worth real effort on its own: **keep the trained models
+themselves.** A reproducer who wants to poke at a model that learned to hide
+from a probe should be able to load one and experiment, without a GPU-week.
+This is why checkpoints are kept even where a cached scalar would redraw the
+figure.
 
-- **Per-run publish plots** (`make_publish_plots.py`,
-  `make_publish_plot_train_dist_curve.py`) do probe refits / PCA / steering, so
-  they genuinely need the checkpoint `.pt`. Only **3-4 run tags** are involved.
-- **Aggregate sweep plots** (`by_layer`, `by_width`, `loss_vs_auroc*`,
-  `pareto_grid`, `lam_sweep_task0.01`) consume only scalars through
-  `sweep_lib/metrics.py`'s `MetricStore`, and those scalars are already
-  persisted in `plot/metrics_cache.json` — **200 KB, 795 entries**.
+## How to execute this plan
 
-But the cache cannot currently be used without the checkpoints, for two
-independent reasons (`sweep_lib/metrics.py:136`, `sweep_lib/cache.py:33`):
+Three things make this different from a normal plan, and an executing agent
+must respect all three:
 
-1. Every accessor (`task_loss`, `auroc`, `linear_y_r2`, ...) early-returns
-   `None` on `not self.has_checkpoint(tag)`, before consulting the cache.
-2. The cache key embeds `file_fingerprint` = `"{st_size}:{st_mtime_ns}"`. Git
-   does not preserve mtime, so **even a committed checkpoint would miss every
-   cache entry after a fresh clone** — the fingerprint scheme is built around
-   `rsync -a`, not git.
+1. **This is interactive, not autonomous.** Most steps involve a judgement call
+   about what's worth keeping — that judgement is the user's, not the agent's.
+   Check in at every step boundary and whenever a step turns up something the
+   plan didn't anticipate. Do not batch several steps and present a fait
+   accompli.
+2. **Commit locally; do not push to GitHub.** This plan puts potentially large
+   binary data under version control. A local commit is reviewable and
+   revertable; a push is neither. Nothing here goes to a remote — GitHub or
+   Hugging Face — until the user says so explicitly, after reviewing the local
+   commits. In particular, do *not* use the usual `git_push` / PR workflow.
+3. **"Untrack" never means "delete".** Every removal in this plan is:
+   ```
+   git rm --cached <path>          # or -r --cached for a directory
+   echo '<path>' >> .git/info/exclude
+   ```
+   The file stays on disk. `.git/info/exclude` (not `.gitignore`) is the right
+   home for these, because they're this working copy's private state, not
+   something a reproducer's clone should carry. Nothing in this plan authorises
+   an `rm`.
 
-This is the fork in the road for the LFS work:
+`plans/` is itself a staging ground for this work and is dropped only at the
+very end, on explicit user command — see §6. It is entirely possible that this
+plan finishes while `plans/` still exists, and that one or more further planning
+rounds happen first.
 
-| | Payload | Reproducer experience |
-|---|---|---|
-| **A. Commit slim checkpoints** for all 7 aggregate sweeps | ~370 MB `.pt` + ~220 MB `history.jsonl` | Plots regenerate, but every metric recomputes from scratch (GPU-hours) because fingerprints miss |
-| **B. Make the cache usable standalone** + commit it, and commit `.pt` only for the 3-4 per-run plots | **~2 MB** | Aggregate plots regenerate in seconds; per-run plots regenerate from real checkpoints |
+## 0. Sizing — what we're actually dealing with
 
-**Recommend B.** Two small changes unlock it: switch `file_fingerprint` to a
-content hash (or fall back to one when a `.pt` is absent), and let the
-accessors serve a cache hit without `has_checkpoint`. That is a genuine
-improvement to the code, not a hack for publishing — the current scheme
-silently invalidates on any file copy that doesn't preserve mtime.
+Measured, not estimated. Details per run in
+[`plans/closeout_run_manifest.md`](closeout_run_manifest.md).
 
-Verify before committing to B: that the 795 cache entries actually cover every
-tag/metric the four aggregate scripts request (run them against a
-checkpoint-less tree and count skips).
+| | Size |
+|---|---|
+| `runs/` in full (1423 run dirs) | **70 GB** |
+| The 494 candidate runs, full directories | 8.9 GB |
+| The same 494, keeping only `{best,last}.pt` + configs + logs | **732 MB** |
+| …of which `checkpoints/{best,last}.pt` | 597 MB |
+| …of which `logs/history.jsonl` | 134 MB |
+| `plot/metrics_cache.json` | 200 KB |
 
-## 1. Runs to keep, via Git LFS
+Two consequences:
 
-Under option B the required set is small:
+- **Dropping the `iter_*.pt` series is a 12× trim** (8.9 GB → 732 MB) and is
+  where essentially all the savings come from. Nothing else is worth optimising
+  by comparison.
+- **Local disk is not a constraint.** 203 GB free on the volume. `runs_publish/`
+  can be a plain dereferencing copy (`cp -L`) — no hardlink/symlink games
+  needed. Being selective about *which runs* get copied still matters for
+  reviewability and for whatever we eventually upload; being selective to save
+  local disk does not.
 
-- `sweep7_lam0.1_tr0` — most of the `sweep7_lam0.1_tr0_*` writeup figures
-- `sweep3_lam0_tr0` — the two `L2_steer_dir_mag*` comparison figures
-- `sweep11_lr0.0015_iter200k_lam0.01_tr0` — `id_vs_ood_result.png`
-- `sweep7_lam0_tr0` — present in `publish/`; confirm whether the writeup uses it
+### Where the 732 MB should live
 
-Per run, keep `checkpoints/{best,last}.pt`, `logs/{history.jsonl,report.md}`,
-`config.json`, `input_config.json`. Drop the `iter_*.pt` series (that is what
-makes a run 19 MB instead of ~1 MB).
+732 MB is too much for a plain git repo and awkward for Git LFS (quota, and
+every `git clone` pays for it even for someone who only wants to read the code).
+**Recommend Hugging Face Hub** as the default: it is built for exactly this,
+has no per-clone tax, versions the data, and lets the repo stay small with a
+download snippet in `CLAUDE.md`.
 
-Sequencing and footguns:
+Alternatives, in rough order of preference if HF is rejected: a GitHub Release
+attachment (doesn't count against LFS quota, but unversioned and clumsy to
+update); Git LFS in this repo (simplest to wire up, worst clone experience); a
+separate data-only git repo.
 
-1. **Add `*.pt` (and `*.jsonl` if kept) to `.gitattributes` BEFORE the first run
-   is committed.** Otherwise they land as plain blobs and only a history rewrite
-   fixes it.
-2. Smoke-test with one run: commit, push, confirm `git lfs ls-files` shows a
-   pointer. A prior LFS lock-verify failure on push was transient — retry, do
-   not reconfigure.
-3. **`last.pt` is a symlink to `iter_N.pt`.** Committed as-is while excluding
-   `iter_*.pt`, a clone gets a dangling link. Materialize it as a real file.
-4. `runs/` is in `.gitignore`; add negations for exactly the kept paths.
-5. `runs/CLAUDE.md` opens with "Not git-tracked" — false once this lands.
-6. Confirm the account's LFS storage/bandwidth allowance. If option A is chosen
-   after all, prefer a GitHub Release attachment or a data-only repo; Release
-   assets don't count against the LFS quota.
+**This decision gates any `git add` of a `.pt` file.** Because we're committing
+locally and not pushing, a mistaken LFS commit is a history rewrite to undo.
+Curate `runs_publish/` first (§2), decide the destination second, wire up
+tracking third — in that order, with a check-in between each.
 
-## 2. Untrack the sandbox / harness setup
+## 1. Which runs to keep
 
-Not just `project_utils/` — the same class of thing is tracked in two places.
-`.git` is only 8.6 MB and no secrets were found in history (`.mcp.json` was
-never tracked; no token-shaped strings), so **remove from HEAD only**; a history
-purge would break existing clones for no benefit.
+**Status: pending user review.** The full list — 494 runs, grouped, with
+per-run sizes — is in [`plans/closeout_run_manifest.md`](closeout_run_manifest.md).
+Summary:
 
-Remove:
-- `project_utils/mcp/{git_push_broker,vast_remote_broker}.py`
-- `project_utils/{check_sandbox_consistency,cleanup_worktrees}.py`
-- `.claude/skills/parallel-remote-training/` (9 files — vast.ai pool manager,
-  queue scripts; same "don't force my setup on reproducers" argument)
+| Group | Source of the requirement | Runs | ckpt |
+|---|---|---|---|
+| A | `sweep3_lam0_tr{0..14}` — the λ=0 baseline arm reused by `sweep7_analysis.py` | 15 | 11 MB |
+| B | `sweep7_lam{0.0001…0.5}_tr*` — the λ sweep | 149 | 112 MB |
+| C | `sweep17_lr0.0015_iter100k_lam{0.01,0.1}_tr{0..9}` — width, num_x=32 | 20 | 15 MB |
+| D | `sweep11_lr0.0015_iter200k_lam{0.01,0.1}_tr{0..9}` — width, num_x=64 | 20 | 53 MB |
+| E | `sweep14_lr0.0015_iter400k_lam{0.01,0.1}_tr{0..9}` — width, num_x=128 | 20 | 203 MB |
+| F | `sweep18_layer{2,4,6,8,10}_lam{0.01,0.032,0.1}…_tr{0..9}` — probed layer | 150 | 113 MB |
+| G | `sweep19_layers{2-4,2-8,2-10,4-8}_lam{…}_tr{0..9}` — layer pairs, Pareto view | 120 | 90 MB |
 
-And the four tests that orphan with them:
-- `test_git_push_broker.py`, `test_vast_remote_broker.py` (→ `project_utils/mcp`)
-- `test_pool_health_liveness.py`, `test_queue_audit.py` (→ the skill's scripts)
+`make_publish_plots.py` (`sweep7_lam0.1_tr0`) and
+`make_publish_plot_train_dist_curve.py` (`sweep11_lr0.0015_iter200k_lam0.01_tr0`)
+are already covered by B and D.
 
-Then:
-- Delete the `!.claude/skills` negation from `.gitignore` (it exists only to
-  keep that skill tracked, and the user wants sandbox setup out of the shared
-  gitignore).
-- Re-check whether `pytest.ini`'s `norecursedirs = references .claude` still
-  earns its keep.
+Findings from building the list — all need a user decision or at least a nod:
 
-Suggestion, not deletion: `project_utils/mcp/*` has a natural home in the
-already-separate `vast_setup/` repo — likely worth keeping for yourself.
+- **`sweep7_lam0_*` no longer exists in `runs/`.** `sweep7_analysis.py` already
+  reads its λ=0 arm from `LAM0_GLOB = "sweep3_lam0_tr*"`, so nothing is broken.
+  But `publish/sweep7_lam0_tr0/` still holds rendered figures under that name,
+  i.e. a published figure is attributed to a tag with no run behind it. The
+  reproducer docs must name that baseline `sweep3_lam0_tr0`.
+- **`sweep19_layers2-6` (30 runs) is in the keep set only if `sweep_group_report.py`
+  keeps its "2,6" example.** It appears in no `PARETO_COMPARISONS` entry, so
+  `sweep_layer_analysis.py` never touches it. See the §4 question.
+- **Cache coverage cross-check:** of 795 `plot/metrics_cache.json` entries,
+  360 distinct tags. 330 are in the keep set; **the only 30 outside it are
+  exactly the `sweep19_layers2-6` runs** — a clean confirmation that the
+  enumeration has no missing consumer. Conversely 164 keep-set runs have no
+  cache entry at all: all of group A and all of group B, because
+  `sweep7_analysis.py` uses `CKPT="best"` and a different `MetricSpec`. Those
+  metrics recompute on first plot.
 
-## 3. Old scripts
+### What to keep per run
 
-Built from an actual import graph over `git ls-files '*.py'`, rooted at the two
-writeup copy scripts. (Note: docstring cross-references are not import edges,
-and entry points have zero inbound refs by definition — neither is evidence of
-being dead.)
+`checkpoints/best.pt`, `checkpoints/last.pt`, `config.json`,
+`input_config.json`, `logs/history.jsonl`, `logs/report.md`. Drop the
+`iter_*.pt` series.
+
+`config.json` is deliberately included: it is the ground truth of what a run
+actually ran with, which is why `configs/` can be untracked (§6).
+
+`logs/history.jsonl` is 134 MB of the 732 MB and is **a separate decision**.
+Keeping it is what makes `sweep_group_report.py`'s curves view (and the
+train-loss trajectory figures) reproducible, since `load_history` reads it
+directly. Dropping it halves the upload but breaks a script §4 keeps. Default:
+keep, but flag it if the destination has a size limit.
+
+## 2. Curate `runs_publish/`
+
+A staging directory, built and iterated on **outside `runs/`** so the live run
+tree is never mutated. Gitignored while it's being worked out.
+
+1. `mkdir runs_publish`
+2. For each kept tag, copy the six paths above, **dereferencing symlinks**.
+   `checkpoints/last.pt` is a symlink to an `iter_N.pt` in 483 of the 494 runs;
+   copied as a link with `iter_*.pt` excluded, it dangles. `cp -L` (or
+   `rsync -L`) fixes this — verify afterwards that `runs_publish` contains zero
+   symlinks.
+   - The 11 exceptions are `sweep3_lam0_tr{0..10}`, whose `last.pt` is already
+     a real file.
+   - `best.pt` is a real file everywhere; `best` and `last` never resolve to the
+     same file, so both are genuinely two checkpoints.
+3. Verify: every run has both `.pt` files non-empty, `config.json` parses, and
+   the total matches §0's 732 MB.
+4. Load one checkpoint per group and confirm it opens (**on the remote GPU box
+   or by the user — not locally**; see the CPU/GPU rule in `CLAUDE.local.md`).
+
+Only once this is reviewed does anything get committed or uploaded.
+
+## 3. Make the shipped state usable without a GPU
+
+Not a compute-savings argument — the metric recompute is minutes, not GPU-hours,
+and the cache is a nice-to-have for iterating on plot layout. It's an
+**accessibility** argument: a reproducer with no GPU should still be able to
+redraw the aggregate figures, and today they can't.
+
+Two independent blockers (`sweep_lib/metrics.py:136`, `sweep_lib/cache.py:33`):
+
+1. Every accessor (`task_loss`, `auroc`, `linear_y_r2`, …) early-returns `None`
+   on `not self.has_checkpoint(tag)` before consulting the cache.
+2. The cache key embeds `file_fingerprint = "{st_size}:{st_mtime_ns}"`. Any
+   transport that doesn't preserve mtime — a git clone, an HF download, a plain
+   `cp` — misses every entry. The scheme is built around `rsync -a`.
+
+Fix: content-hash the fingerprint (or fall back to one when mtime is
+unavailable), and let an accessor serve a cache hit without `has_checkpoint`.
+That's a genuine improvement regardless of publishing — the current scheme
+silently invalidates on any copy.
+
+Then ship `plot/metrics_cache.json` (200 KB) alongside. Verify on a
+checkpoint-less tree that the aggregate scripts run to completion rather than
+skipping every tag. Note from §1 that groups A and B aren't in the cache, so
+either accept that the `sweep7` figure needs checkpoints, or regenerate the
+cache to cover them before shipping.
+
+## 4. Scripts
+
+Built from an import graph over `git ls-files '*.py'`, rooted at the writeup
+figure scripts. (Docstring cross-references aren't import edges, and entry
+points have zero inbound refs by definition — neither is evidence of dead code.)
 
 **Keep — produces a writeup figure or is imported by one that does:**
 `make_publish_plots.py`, `make_publish_plot_train_dist_curve.py`,
@@ -117,59 +205,137 @@ being dead.)
 `checkpoint_lib.py`, `model.py`, `data.py`, `config.py`, `paths.py`,
 `stableadamw.py`, `rate_meter.py`.
 
-**Delete — nothing imports them and they produce no writeup figure:**
-- `probe_ideal_y.py` (101 lines, zero refs anywhere)
-- `check_dead_relu.py` (88 lines, one-off diagnostic, Jul 22)
-- `benchmark_logreg_gpu.py` (219 lines, backend bake-off, decision long since made)
+**Keep — decided:**
+- `probe_ideal_y.py` — demonstrates the task is actually solvable, which is
+  exactly the kind of background work a reproducer needs. Document it in
+  `CLAUDE.md` (§5) so its purpose is discoverable; nothing imports it.
+- `sweep_threshold_report.py` — how the loss/AUROC thresholds were chosen. This
+  is the "background work" the goal statement calls for.
+- `analytic.py` — backs the publicly linked analytic-solution writeup.
+- `train_no_c.py` — the `baseline_no_c` control run.
+- `sweep_group_report.py` — **keep, but clean up.** See below.
 
-**Decide — orphaned analyses for superseded sweeps:**
-- `sweep8_analysis.py`, `sweep13_analysis.py` — imported by nothing; sweeps 8
-  and 13 don't appear in the writeup. Likely delete.
-- `sweep_threshold_report.py`, `sweep_group_report.py`,
-  `sweep_inspect_training.py` — no inbound imports, but they're interactive
-  investigation tools rather than dead code. Keep if the repo is meant to show
-  method, delete if it's meant to show only results.
-- `train_no_c.py` + `analytic.py` — feed the `baseline_no_c` control run and the
-  published analytic-solution writeup. Keep `analytic.py`; `train_no_c.py` is
-  only useful with the baseline run, so it goes or stays with that run.
+**Untrack:**
+- `sweep8_analysis.py`, `sweep13_analysis.py` — superseded sweeps, absent from
+  the writeup, imported by nothing.
+- `check_dead_relu.py`, `benchmark_logreg_gpu.py` — one-off diagnostic and a
+  backend bake-off whose decision is long since made. *(Confirm: these were in
+  the original delete list and weren't explicitly ruled on.)*
+- `sweep_inspect_training.py` — *(confirm; not explicitly ruled on. Same class
+  as the two above, but arguably an investigation tool like
+  `sweep_threshold_report.py`.)*
+
+**Defer — needs a closer look later:**
 - `analytic_feasibility/` (8 files) — exploratory sympy work behind the analytic
-  writeup, which is publicly linked. Keep, but it needs its README checked.
+  writeup. Some of it is worth keeping and some isn't; that assessment hasn't
+  been made yet. Leave tracked and untouched for now, and revisit in a later
+  round. Note `analytic_feasibility/initial_prompt.md` references
+  `plans/high_level_plan.md`, so it's also a §6 dangling-reference site.
 
-## 4. README — highest-leverage item for "presentable"
+### `sweep_group_report.py` cleanup
 
-Currently a WIP stub pointing at three Google Docs, at least two of which are
-probably private, i.e. useless to an outside reader. Replace with: what the
-experiment is, the headline result, how to regenerate each writeup figure
-(exact commands), what's in `runs/`, and a link to the public analytic writeup
-only. Keep the project-log links only if they're actually shareable.
+Reframe it as **the documented example of ad-hoc comparison between sweeps** —
+this is the script that shows *how* runs were compared while the research was
+happening, which is squarely in scope for the guided-reproduction goal.
 
-Also: `runs/runs_notes.md` is a genuinely valuable lab notebook that is
-currently untracked — worth promoting to a tracked `docs/` file.
+- It currently assigns `GROUPS` **twice** (`sweep_group_report.py:27` and `:35`);
+  the first — the sweep7/11/14/17 model-size comparison — is dead, shadowed by
+  the second. Collapse to a single assignment.
+- Keep 2–3 examples, exactly one of them uncommented. Currently ~14 commented
+  blocks survive from live use. **Question for the user below.**
+- The docstring should say what the script is *for* (ad-hoc cross-sweep
+  comparison, edit `GROUPS` to point it at whatever you're comparing) rather
+  than describing whichever comparison happens to be active.
 
-## 5. Remaining judgement calls
+## 5. Docs
 
-- **`plans/` (17 archived plan docs + 2 `CLAUDE.md`s):** keep as project
-  history, or drop? If dropping, `grep -rn 'plans/' $(git ls-files)` first —
-  `conftest.py` docstrings cite `plans/rare_flags_config_plan.md` and would
-  dangle. `plans/CLAUDE.md` and `plans/archive/CLAUDE.md` are agent-workflow
-  instructions and should go regardless of the above.
-- **`configs/` (24 files across sweeps 9-18):** keep only the ones matching runs
-  that survive item 1, or keep all as an experiment record?
-- **`.gitattributes`:** the existing `*.png filter=lfs` line currently matches
-  zero files (`plot/` and `publish/` are gitignored). Either drop it or start
-  committing the writeup PNGs deliberately.
-- **`CLAUDE.local.md` is untracked and stays that way** — but confirm no tracked
-  file references sandbox-only workflow that won't exist for a reproducer.
-- Consider adding a LICENSE and a `requirements.txt` / `pyproject.toml`; there
-  is currently no dependency manifest, which blocks reproduction outright.
+- **`README.md`** — human-written by the user, not generated. A project summary
+  plus links to the full writeup. Only the publicly readable links belong here;
+  the current stub's Google Doc links are private and useless to an outside
+  reader. The [analytic solution writeup](https://jesseli2002.github.io/blog/blog/activation_obfuscation_analytic/)
+  is public and stays.
+- **`CLAUDE.md`** (tracked, new) — the operational half: what each script is,
+  how to run it, how to regenerate each writeup figure with exact commands,
+  where the run data lives and how to fetch it, and what `probe_ideal_y.py` /
+  `sweep_threshold_report.py` / `sweep_group_report.py` are for. This is where
+  the "guided" part of the goal actually gets delivered.
+  - Distinct from `CLAUDE.local.md`, which stays untracked and sandbox-specific.
+    Cross-check that no tracked file describes a workflow that only exists in
+    this sandbox.
+- `runs/runs_notes.md` was out of date and has been deleted — nothing to promote.
+- `references/` has been deleted.
+
+## 6. Repo hygiene
+
+**Untrack the sandbox / harness setup.** `.git` is only 8.6 MB and no secrets
+were found in history (`.mcp.json` was never tracked; no token-shaped strings),
+so remove from HEAD only — a history purge would break existing clones for no
+benefit.
+
+- `project_utils/mcp/{git_push_broker,vast_remote_broker}.py`
+- `project_utils/{check_sandbox_consistency,cleanup_worktrees}.py`
+- `.claude/skills/parallel-remote-training/` (9 files)
+- The four tests that orphan with them: `test_git_push_broker.py`,
+  `test_vast_remote_broker.py`, `test_pool_health_liveness.py`,
+  `test_queue_audit.py`
+- Then drop the `!.claude/skills` negation from `.gitignore` (it exists only to
+  keep that skill tracked), and re-check whether `pytest.ini`'s
+  `norecursedirs = references .claude` still earns its keep now that
+  `references/` is gone.
+- Footgun: `.claude/skills/` is write-blocked to Bash/git inside worktrees.
+  `git rm --cached` only touches the index so it should be fine, but verify
+  rather than assume, and confirm `pytest` is still green afterwards.
+- These have a natural home in the already-separate `vast_setup/` repo — worth
+  keeping there rather than losing.
+
+**`configs/` (24 files)** — untrack all of it. A run's real config is
+`runs/<tag>/config.json`, which §1 keeps per run, so `configs/` is a redundant
+and partial second source of truth.
+
+**`plot/` and `publish/`** — stay gitignored. Figures are not committed; the
+point is that they regenerate.
+
+**`.gitattributes`** — the `*.png filter=lfs` line currently matches zero
+tracked files. Since plots aren't being committed, drop it. If §0 lands on Git
+LFS for the run data, this file gets rewritten for `*.pt` anyway — and that
+must happen **before** the first `.pt` is committed, or it lands as a plain blob
+and only a history rewrite fixes it.
+
+**`plans/`** — dropped at the very end, on explicit user command, and possibly
+not during this plan at all. Until then it's the staging ground for this work.
+Independently of that: **references to `plans/*` from tracked non-plan files
+should go now**, since they'll dangle. Current sites:
+`config.py:153`, `conftest.py:4,21`, `test_config.py:62`,
+`test_train_adversarial_logreg.py:2,7,609`,
+`train_adversarial_logreg.py:24,768,850`,
+`analytic_feasibility/initial_prompt.md:10`.
+Rewrite each to say the thing rather than cite the plan — most are one-line
+design notes where the citation is the only fragile part.
+
+**Add `pyproject.toml`.** There is currently no dependency manifest at all,
+which blocks reproduction outright. Pin at least torch, numpy, scipy,
+matplotlib, jaxtyping.
+
+**LICENSE** — MIT, already added.
 
 ## Suggested order
 
-1. Decide A vs B (item 0) — everything about `runs/` depends on it.
-2. Untrack sandbox setup + orphaned tests (item 2); confirm `pytest` still green.
-3. Delete dead scripts (item 3, the unambiguous three first).
-4. `.gitattributes` + LFS smoke test, then commit the kept runs (item 1).
-5. README rewrite (item 4) last, so it describes the final tree.
+Each step ends with a check-in. Nothing is pushed anywhere.
 
-Keep these as separate small PRs — the deletions are mechanical and the LFS work
-is not.
+1. §1 — user reviews the run manifest; resolve `sweep19_layers2-6` and the
+   `history.jsonl` question.
+2. §6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
+   orphaned tests). Confirm `pytest` green. Small local commits.
+3. §4 script decisions — untrack the agreed set, clean up
+   `sweep_group_report.py`.
+4. §6 `plans/*` reference rewrites.
+5. §2 build and review `runs_publish/`.
+6. §0 decide the destination (HF vs LFS vs Release), then wire up tracking.
+7. §3 cache-fingerprint fix; verify GPU-free aggregate plotting.
+8. §5 `README.md` (user) and `CLAUDE.md` (agent, describing the final tree).
+9. `pyproject.toml`.
+10. Push — only on explicit user command.
+11. `plans/` — dropped only on explicit user command, possibly in a later round.
+
+Keep commits small and self-contained; the untracking steps are mechanical and
+the run-data work is not.
