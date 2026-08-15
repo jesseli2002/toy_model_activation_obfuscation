@@ -1,0 +1,26 @@
+# Closeout follow-up review
+
+Small items spun out of `closeout_cleanup_plan.md` §4 that need a closer look
+later rather than a decision now. Not a full plan on its own — a parking lot,
+in the same spirit as that plan's `analytic_feasibility/` deferral.
+
+## `sweep_inspect_training.py`
+
+Undecided between untrack (same class as `check_dead_relu.py` /
+`benchmark_logreg_gpu.py` — one-off, imported by nothing) and keep-as-background-work
+(same class as `sweep_threshold_report.py`, which §4 keeps and documents).
+Kept tracked for now, pending review.
+
+Notes for whoever picks this up:
+
+- It's an earlier, near-duplicate version of `sweep_group_report.py` — same
+  shape (constants instead of a CLI, `RUN_TAGS`/curves+scatter over
+  `history.jsonl` and checkpoints), before it grew into the `GROUPS`-based
+  multi-comparison tool. Worth checking whether it predates
+  `sweep_group_report.py` in git history and is fully superseded, rather than
+  a genuinely separate use case.
+- Its default `RUN_TAGS` (`sweep9_iter200k_tr*`) point at runs **outside**
+  the §1 keep set — `sweep9` isn't one of the eight kept groups. So as
+  checked in, it wouldn't run against the published `runs/` even if kept.
+  If kept, either repoint the default at a kept run family or document that
+  it needs `RUN_TAGS` edited first, same as `sweep_group_report.py`'s `GROUPS`.

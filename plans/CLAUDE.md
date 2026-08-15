@@ -14,6 +14,10 @@ This directory contains plans for agents.
 - closeout_run_manifest.md
     - Companion data for the above: the 494 candidate runs to preserve, grouped
       by which analysis script needs them, with per-run sizes.
+- closeout_followup_review.md
+    - Parking lot for small closeout items spun out of closeout_cleanup_plan.md
+      that need a closer look later rather than a decision now (currently just
+      sweep_inspect_training.py's untrack-or-keep call).
 
 Completed plans live in `plans/archive/` and are not summarized here to keep this
 index short. Only open one if you specifically need the history behind a past
