@@ -124,7 +124,7 @@ from sklearn.metrics import roc_auc_score, roc_curve
 from tqdm import tqdm
 
 import config
-from adversarial_report import _linear_y_reconstruction, _steer_vectors
+from adversarial_report import _steer_vectors
 from data import eval_task_loss, sample_batch
 from model import Noise
 from probe_backend import resolve_probe_backend
@@ -133,6 +133,7 @@ from probe_lib import (
     binary_probe_metrics_all_layers,
     boundary_auroc,
     forward_steered,
+    linear_y_reconstruction,
     load_model,
     resolve_adv_config,
     save_plot,
@@ -277,7 +278,7 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
             "logreg": boundary_auroc(probe_boundary, pi["X_te"], pi["y_te"]),
         }
 
-    linear_y_r2 = _linear_y_reconstruction(
+    linear_y_r2 = linear_y_reconstruction(
         model, model.num_x, model.num_blocks, args.n_train, args.n_test, g, device
     )
 
