@@ -510,8 +510,32 @@ or §6 has been touched yet.
      session per `git log`, unrelated to anything touched here) — flagging
      per `CLAUDE.local.md`'s "don't ignore warnings/failures" rule rather
      than silently treating it as green.
-3. §4 script decisions — untrack the agreed set, clean up
-   `sweep_group_report.py`. **Not started.**
+3. ~~§4 script decisions.~~ **Done**, in four commits (a0f6f2f, 5cf5245,
+   1edeb95, 860919b — hashes on branch `worktree-golden-herding-nest`, not
+   yet merged to `master`): untracked `sweep8_analysis.py`,
+   `sweep13_analysis.py` (no confirmation needed), reframed
+   `sweep_group_report.py` per spec, and — after checking in with the user —
+   untracked `check_dead_relu.py`/`benchmark_logreg_gpu.py` and kept
+   `sweep_inspect_training.py` tracked, parked in the new
+   `plans/closeout_followup_review.md` for a later ambiguous-call review.
+   `pytest`: 171 passed (this worktree's tracked-file count; no failures).
+   - **Found but not fixed:** `sweep_layer_analysis.py` and
+     `sweep_width_analysis.py` (both kept) have docstring lines
+     ("see sweep13_analysis.py for why") that will dangle for a fresh-clone
+     reproducer now that `sweep13_analysis.py` is untracked. Not blocking,
+     not in the plan's original scope — flagging for a follow-up docstring
+     edit.
+   - **`.git/info/exclude` entries deferred**, across all four §4 commits —
+     this worktree's isolation guard blocks writes to the shared common-dir
+     file. Needed at merge-back: `sweep8_analysis.py`, `sweep13_analysis.py`,
+     `check_dead_relu.py`, `benchmark_logreg_gpu.py` (same deferral already
+     applies to §6's untracked files from step 2, done in the non-worktree
+     checkout where the exclude file *was* writable — only step 3's files
+     are affected).
+   - **Sandbox quirk hit twice:** `git commit -m ... -- <pathspec>` reliably
+     fails here ("no changes added to commit") even when exactly those paths
+     are staged; a plain `git commit` with nothing else staged works. Worth
+     remembering for future commits in this worktree.
 4. §6 `plans/*` reference rewrites. **Not started.**
 5. ~~§2 build and review `runs/`.~~ **Done** — see §2 status above.
 6. ~~§0 decide the destination, then wire up tracking.~~ **Done** — Hugging
