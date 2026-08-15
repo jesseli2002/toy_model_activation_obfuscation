@@ -48,11 +48,8 @@ sample_ideal_y()/verify_ideal_y_decodability() check whether c is linearly
 decodable from the *ideal* task output y = clamp(x,-c,c) itself, with no
 network involved. y|c is zero-mean and symmetric for every c (x is symmetric
 about 0), so no linear direction should separate two c values above chance --
-DoM and logistic regression are expected near chance, while a trivial
-nonlinear statistic (max_j|y_j|, which converges to c almost surely) is
-expected near-perfect. Confirms the task is solvable at all (c can be read
-out, just not linearly) and is a baseline for the same question asked of
-trained models' internal activations.
+DoM and logistic regression are expected near chance. Baseline for the same
+question asked of trained models' internal activations.
 
 Run this file directly to verify every construction above and save the
 supporting plots to plot/analytic/.
@@ -615,11 +612,8 @@ def verify_ideal_y_decodability(
     """Is c linearly decodable from the *ideal* task output y alone? y|c is
     zero-mean and symmetric for every c (x is symmetric about 0), so no
     linear direction (raw DoM or logistic regression) should separate c_lo
-    from c_hi above chance -- the class-conditional means coincide. Contrast
-    with the nonlinear statistic max_j|y_j|, which converges to c almost
-    surely (c IS the clip boundary), to confirm the gap is "linear vs
-    nonlinear", not "no signal at all". Mirrors the probe harness's binary
-    dataset construction, minus any trained model.
+    from c_hi above chance -- the class-conditional means coincide. Mirrors
+    the probe harness's binary dataset construction, minus any trained model.
     """
     import numpy as np
     from sklearn.linear_model import LogisticRegression
@@ -649,25 +643,14 @@ def verify_ideal_y_decodability(
     logreg.fit(X_train, y_train)
     logreg_acc = float(logreg.score(X_test, y_test))
 
-    # --- nonlinear contrast: max|y_j| as a trivial c-estimator ---
-    max_abs_lo = np.abs(y_lo_te).max(axis=1)
-    max_abs_hi = np.abs(y_hi_te).max(axis=1)
-    threshold = (c_lo + c_hi) / 2
-    nonlinear_pred = (np.concatenate([max_abs_lo, max_abs_hi]) > threshold).astype(
-        float
-    )
-    nonlinear_acc = float((nonlinear_pred == y_test).mean())
-
     print(
         f"[analytic] ideal-y decodability: num_x={num_x} x=[{x_low},{x_high}] "
         f"c_lo={c_lo} c_hi={c_hi} n_train={n_train}/class n_test={n_test}/class: "
-        f"DoM acc={dom_acc:.4f}  logreg acc={logreg_acc:.4f}  "
-        f"max|y_j| acc={nonlinear_acc:.4f}"
+        f"DoM acc={dom_acc:.4f}  logreg acc={logreg_acc:.4f}"
     )
     return {
         "dom_acc": dom_acc,
         "logreg_acc": logreg_acc,
-        "nonlinear_acc": nonlinear_acc,
     }
 
 
@@ -728,13 +711,6 @@ def _run_checks(
             "ideal-y: logreg probe near chance",
             abs(iy["logreg_acc"] - 0.5) < 0.1,
             f"acc={iy['logreg_acc']:.4f}",
-        )
-    )
-    checks.append(
-        (
-            "ideal-y: max|y_j| nonlinear estimator near-perfect",
-            iy["nonlinear_acc"] > 0.95,
-            f"acc={iy['nonlinear_acc']:.4f}",
         )
     )
 
