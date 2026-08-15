@@ -66,7 +66,7 @@ Two consequences:
 - **Dropping the `iter_*.pt` series is a 12× trim** (9.0 GB → 764 MB) and is
   where essentially all the savings come from. Nothing else is worth optimising
   by comparison.
-- **Local disk is not a constraint.** 203 GB free on the volume. `runs_publish/`
+- **Local disk is not a constraint.** 203 GB free on the volume. `runs/`
   can be a plain dereferencing copy (`cp -L`) — no hardlink/symlink games
   needed. Being selective about *which runs* get copied still matters for
   reviewability and for whatever we eventually upload; being selective to save
@@ -87,7 +87,7 @@ separate data-only git repo.
 
 **This decision gates any `git add` of a `.pt` file.** Because we're committing
 locally and not pushing, a mistaken LFS commit is a history rewrite to undo.
-Curate `runs_publish/` first (§2), decide the destination second, wire up
+Curate `runs/` first (§2), decide the destination second, wire up
 tracking third — in that order, with a check-in between each.
 
 ## 1. Which runs to keep
@@ -168,41 +168,34 @@ trajectory figures reproducible (`load_history` reads it directly), and
 downsampling it would mean shipping something that isn't the raw log. Revisit
 only if the chosen destination imposes a size limit.
 
-## 2. Curate `runs_publish/`
+## 2. Curate `runs/`
 
-A staging directory, built and iterated on **outside `runs/`** so the live run
-tree is never mutated.
+**Update (supersedes the `runs_publish/` staging name below):** the user moved
+the live run tree from `runs/` to `runs_all/` on disk, freeing `runs/` up to be
+built *directly* as the curated set — no separately-named staging directory
+needed, since `runs_all/` now plays that "don't mutate the live tree" role and
+`runs/` already matches `.gitignore`'s `runs` pattern (inert to git until
+deliberately tracked). This also sets up §0's reproducibility test for free:
+once the curated `runs/` has been pushed to HF Hub, wiping and re-downloading
+`runs/` from the Hub confirms a fresh clone can actually reproduce from the
+published data. Source is `runs_all/` throughout; target is `runs/`.
 
-**Update:** the user has moved `runs/` to `runs_all/` on disk (source for
-curation below), reserving `runs/` as the download target for a reproducibility
-test — once the HF Hub repo is populated, `runs/` gets recreated by downloading
-from it, to confirm a fresh clone can actually reproduce from the published
-data rather than just from local state. So read §2 below as sourcing from
-`runs_all/`, not `runs/`.
-
-Note `runs_publish` matches **neither** `.gitignore` pattern (`runs` and
-`runs_tmp*`). Add it to `.git/info/exclude` as the very first action — per the
-§"How to execute" convention it's this working copy's staging state, not
-something a clone should carry — so that 764 MB never shows up as untracked and
-`git add`-able while it's being worked out.
-
-1. `mkdir runs_publish`
-2. For each kept tag, copy the six paths above, **dereferencing symlinks**.
+1. For each kept tag, copy the six paths above, **dereferencing symlinks**.
    Group H (`baseline_no_c`) has a reduced layout — no `best.pt`, no
    `config.json`/`input_config.json`, plus an extra `logs/README.md` recording
    its exact training command. Copy what exists rather than failing on the
    missing files, and keep that README.
    `checkpoints/last.pt` is a symlink to an `iter_N.pt` in 513 of the 525 runs;
    copied as a link with `iter_*.pt` excluded, it dangles. `cp -L` (or
-   `rsync -L`) fixes this — verify afterwards that `runs_publish` contains zero
+   `rsync -L`) fixes this — verify afterwards that `runs/` contains zero
    symlinks.
    - The 11 exceptions are `sweep3_lam0_tr{0..10}`, whose `last.pt` is already
      a real file.
    - `best.pt` is a real file everywhere; `best` and `last` never resolve to the
      same file, so both are genuinely two checkpoints.
-3. Verify: every run has both `.pt` files non-empty, `config.json` parses, and
+2. Verify: every run has both `.pt` files non-empty, `config.json` parses, and
    the total matches §0's 764 MB.
-4. Load one checkpoint per group and confirm it opens (**on the remote GPU box
+3. Load one checkpoint per group and confirm it opens (**on the remote GPU box
    or by the user — not locally**; see the CPU/GPU rule in `CLAUDE.local.md`).
 
 Only once this is reviewed does anything get committed or uploaded.
@@ -467,7 +460,7 @@ Each step ends with a check-in. Nothing is pushed anywhere.
 3. §4 script decisions — untrack the agreed set, clean up
    `sweep_group_report.py`.
 4. §6 `plans/*` reference rewrites.
-5. §2 build and review `runs_publish/`.
+5. §2 build and review `runs/`.
 6. §0 decide the destination (HF vs LFS vs Release), then wire up tracking.
 7. §3 cache-fingerprint fix; verify GPU-free aggregate plotting.
 8. §5 `README.md` (user) and `CLAUDE.md` (agent, describing the final tree).
