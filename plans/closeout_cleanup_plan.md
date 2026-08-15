@@ -493,9 +493,23 @@ or §6 has been touched yet.
 1. ~~§1 — user reviews the run manifest.~~ **Done:** 525 runs agreed —
    `sweep19_layers2-6` kept, `history.jsonl` kept in full, `baseline_no_c`
    added as group H. No open items.
-2. §6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
-   orphaned tests). Confirm `pytest` green. Small local commits. **Not
-   started.**
+2. ~~§6 mechanical untracking (sandbox setup, `configs/`, `.gitattributes`,
+   orphaned tests).~~ **Done** in three small commits (587585b, 7b9205b,
+   30d5b3e): sandbox/harness files + the parallel-remote-training skill +
+   4 orphaned tests; `configs/` down to a renamed `example.json`;
+   `.gitattributes`'s dead `*.png filter=lfs` line. All index-only removal,
+   files left on disk, recorded in `.git/info/exclude`.
+   - The `!.claude/skills` negation was already dropped in `969a851`
+     (before this session) — nothing left to do there.
+   - `pytest.ini`'s `norecursedirs = references .claude` re-check: `references/`
+     is untracked and empty on disk (not literally absent, as the §6 note
+     assumed, but inert) — leaving the entry is harmless either way, not
+     changed.
+   - `pytest` after: 303 passed, 1 pre-existing failure
+     (`test_sweep_lib.py::test_empty_auroc_thresholds`, predates this
+     session per `git log`, unrelated to anything touched here) — flagging
+     per `CLAUDE.local.md`'s "don't ignore warnings/failures" rule rather
+     than silently treating it as green.
 3. §4 script decisions — untrack the agreed set, clean up
    `sweep_group_report.py`. **Not started.**
 4. §6 `plans/*` reference rewrites. **Not started.**
