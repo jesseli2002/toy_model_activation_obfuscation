@@ -308,12 +308,23 @@ points have zero inbound refs by definition — neither is evidence of dead code
   as the two above, but arguably an investigation tool like
   `sweep_threshold_report.py`.)*
 
-**Defer — needs a closer look later:**
-- `analytic_feasibility/` (8 files) — exploratory sympy work behind the analytic
-  writeup. Some of it is worth keeping and some isn't; that assessment hasn't
-  been made yet. Leave tracked and untouched for now, and revisit in a later
-  round. Note `analytic_feasibility/initial_prompt.md` references
-  `plans/high_level_plan.md`, so it's also a §6 dangling-reference site.
+**`analytic_feasibility/` — resolved.** Assessed against what a reproducer
+needs per the user's two goals (an MWE linkable from the blog, and the code
+behind the blog's probe figures):
+- **Kept:** `simplified_demo.py` (byte-identical to the `demo.py` already
+  linked from the analytic blog post) and `probe_v_channels.py` (generates
+  the three `v_channels_{2d,hist,roc}.png` figures embedded in that post).
+  Both are self-contained — no imports from elsewhere in the repo or from
+  each other.
+- **Untracked** (kept on disk, per the usual `git rm --cached` +
+  `.git/info/exclude` convention): `README.md`, `initial_prompt.md`,
+  `period2_decode.py`, `period2_net.py`, `search_exact.py`,
+  `search_results.json`, `verify_feasibility.py`. None feed a blog figure or
+  are imported by the two keepers. `README.md`'s untrack was an explicit
+  user call (it's the only record of the feasibility investigation's
+  no-go-theorem narrative, but out of scope for both stated goals).
+  `initial_prompt.md`'s dangling reference to `plans/high_level_plan.md`
+  (the §6 concern) is now moot since the file is untracked, not deleted.
 
 ### `sweep_group_report.py` cleanup
 
