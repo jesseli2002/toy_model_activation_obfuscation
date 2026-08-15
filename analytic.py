@@ -214,7 +214,6 @@ def reference_task_losses(
         "do_nothing": float(do_nothing),
         "linreg": float(linreg),
         "clamp": float(clamp),
-        "linreg_k": float(k_star),
     }
 
 
@@ -749,7 +748,8 @@ if __name__ == "__main__":
 
     bounds = (config.X_LOW, config.X_HIGH, config.C_LOW, config.C_HIGH)
     print("reference task losses:")
-    print(reference_task_losses(*bounds))
+    for name, loss in reference_task_losses(*bounds).items():
+        print(f"  {name:<10} {loss:.6f}")
     print()
     print(f"[analytic] c-blind minimum L_task = {no_c_task_loss(*bounds):.6f}")
     print(f"[analytic] wrote {plot_no_c_predictor(*bounds)}")
