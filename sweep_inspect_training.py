@@ -6,11 +6,9 @@ shape is still changing, so argparse would just be churn for now. Prints to
 console / plt.show() only; nothing is written to disk.
 """
 
-# RUN_TAGS = [f"sweep3_lam0_tr{i}" for i in range(10)]
-# RUN_TAGS = [f"sweep8_nx64_dm128_mlp32_lam0.01_tr{i}" for i in range(10)]
-RUN_TAGS = [f"sweep9_iter200k_tr{i}" for i in range(10)]
-# RUN_TAGS = [f"sweep9_lam0.1_iter200k_tr{i}" for i in range(10)]
-# RUN_TAGS = [f"sweep3_lam0.003_tr{i}" for i in range(10)]
+RUN_TAGS = ["sweep14_lr0.0015_iter400k_lam0.1_tr0"]
+# RUN_TAGS = [f"sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{i}" for i in range(10)]
+
 CKPT = "last"  # "last" or "best", matching runs/<tag>/checkpoints/<CKPT>.pt
 LOSS_LOWPASS_WINDOW = 2000  # running mean of loss over the past this-many iters
 TRAIN_NOISE_MULT = 1.0  # see adversarial_report.py's --train-noise-mult
