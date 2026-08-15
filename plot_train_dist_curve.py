@@ -10,7 +10,7 @@ example actually occupies). Two versions are written: one with the OOD sweep
 shown noise-free and at the checkpoint's own noise level superimposed (so the
 noise's effect on the OOD extrapolation is visible directly), and a
 noise-free-only variant. Titles are quieted for a writeup (no tag, no
-per-panel MSE) -- see make_publish_plots.py for the same convention.
+per-panel MSE) -- see make_one_run_plots.py for the same convention.
 """
 
 import argparse

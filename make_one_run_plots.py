@@ -1,5 +1,6 @@
-"""Publication plots for a single tag: clean, presentation-ready figures with
-no debugging info (tag names, checkpoint iters, ...) baked into their titles.
+"""Publication plots for the hiding_experiment writeup's single-run result
+(Results part 2): clean, presentation-ready figures with no debugging info
+(tag names, checkpoint iters, ...) baked into their titles.
 
 adversarial_report.py and the sweep_*.py scripts are diagnostic tools -- their
 titles deliberately embed the tag/run so a reader flipping between many runs
@@ -14,12 +15,18 @@ Structured the same way as adversarial_report.py: a data-computation phase
 (`_make_plots`) turns it into figures -- so adding a plot never needs a new
 forward pass through data already computed, and vice versa.
 
-Currently hard-codes a single tag; broaden once more tags need plots.
+Run with no --tag to regenerate every figure the writeup uses, across all of
+TAGS, in one invocation; pass --tag (repeatable) to instead run only against
+specific tag(s), e.g. for exploring a run ad hoc. Not every plot produced ends
+up embedded in the writeup -- see copy_plots.sh in the blog's hiding_experiment
+directory for which ones do; the rest are cheap to produce alongside them and
+worth keeping in case the writeup grows.
 """
 
 import argparse
 
-TAG = "sweep7_lam0.1_tr0"
+# Every tag the hiding_experiment writeup draws figures from.
+TAGS = ["sweep7_lam0.1_tr0", "sweep3_lam0_tr0"]
 STEER_LAYERS = [1, 2, 3, 4, 5]
 # Eval-noise multipliers swept by the noise-isolation ROC plot, independent of
 # --train-noise-mult/--eval-noise-mult (which set the noise regime for every
@@ -33,13 +40,29 @@ PLOT_LEARNED_CURVES_NOISE_MULT = 1
 # actual (noisy) forward pass instead of an unrealistically clean one.
 PLOT_STEER_NOISE_MULT = 1
 
+# Direction-magnitude multiples plotted by _plot_steer_direction_magnitude,
+# keyed by tag. sweep3_lam0_tr0 (no probe optimization pressure) is the
+# writeup's demonstration that 1x DoM steering alone already matches theory
+# exactly; the default 2x line has nothing to add there and only clutters
+# that specific figure.
+DEFAULT_STEER_MAGS = [1.0, 2.0]
+STEER_MAGS_BY_TAG = {
+    "sweep3_lam0_tr0": [1.0],
+}
+
 
 def parse_args():
     p = argparse.ArgumentParser(
         description=__doc__.splitlines()[0],
         formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     )
-    p.add_argument("--tag", type=str, default=TAG)
+    p.add_argument(
+        "--tag",
+        type=str,
+        action="append",
+        help=f"run only against this tag; may be repeated. Default: every "
+        f"writeup tag, {TAGS}.",
+    )
     p.add_argument(
         "--ckpt",
         choices=["last", "best", "both"],
@@ -577,10 +600,11 @@ def _plot_steer_direction_magnitude(
     device,
     noise: Noise,
     filename: str,
+    mags: list[float],
     show=False,
 ):
     """DoM-direction steering, forward (c=1 -> c=2) vs reverse (c=2 -> c=1),
-    each at 1x and 2x the DoM shift magnitude. Complements
+    at each multiple of the DoM shift magnitude in `mags`. Complements
     _plot_steer_comparison (which fixes magnitude at 1x and instead compares
     DoM vs logreg direction): here direction is the fixed axis (one panel
     per start point) and magnitude is the swept variable."""
@@ -591,14 +615,11 @@ def _plot_steer_direction_magnitude(
         ("forward", 1, 2),  # start c=1, steer toward c=2
         ("reverse", 2, 1),  # start c=2, steer toward c=1
     ]
-    mags = [
-        (1.0, "blue", 1.0),
-        (2.0, "green", 1),
-    ]
+    colors = ["blue", "green", "purple", "orange"]
     fig, axes = plt.subplots(1, 2, figsize=(10, 4.2), sharey=True)
     for ax, (label, c_start, c_end) in zip(axes, panels):
         sign = c_end - c_start
-        for mag, color, alpha in mags:
+        for mag, color in zip(mags, colors):
             vec = sign * mag * w_dom_t
             for j in range(num_x):
                 x = torch.zeros(len(xs), num_x, device=device)
@@ -611,7 +632,7 @@ def _plot_steer_direction_magnitude(
                     xs.cpu().numpy(),
                     y.cpu().numpy(),
                     color=color,
-                    alpha=alpha * 0.3,
+                    alpha=0.3,
                     zorder=5,
                     label=f"{mag:g}x" if j == 0 else None,
                 )
@@ -659,6 +680,7 @@ def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
 
 
 def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
+    steer_mags = STEER_MAGS_BY_TAG.get(tag, DEFAULT_STEER_MAGS)
     _plot_learned_curves(
         model,
         data.task_loss,
@@ -713,6 +735,7 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
             device,
             noise=data.noise * PLOT_STEER_NOISE_MULT,
             filename=f"{tag}_L{lyr}_steer_dir_mag.png",
+            mags=steer_mags,
             show=show,
         )
         _plot_steer_comparison(
@@ -738,6 +761,7 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
             device,
             noise=0.0,
             filename=f"{tag}_L{lyr}_steer_dir_mag_noisefree.png",
+            mags=steer_mags,
             show=show,
         )
 
@@ -747,28 +771,29 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
 
 
 # ----------------------------------------------------------------------------
-def _run_one(args, ckpt, device):
-    model, ck = load_model(args.tag, ckpt, device)
+def _run_one(args, tag, ckpt, device):
+    model, ck = load_model(tag, ckpt, device)
     adv_cfg = resolve_adv_config(ck)
     assert adv_cfg is not None, (
-        f"{args.tag}/{ckpt} has no adv_config (c-blind demonstration run) -- "
+        f"{tag}/{ckpt} has no adv_config (c-blind demonstration run) -- "
         "nothing to probe or steer."
     )
-    plot_dir = os.path.join(PUBLISH_DIR, args.tag, ckpt)
+    plot_dir = os.path.join(PUBLISH_DIR, tag, ckpt)
     os.makedirs(plot_dir, exist_ok=True)
 
     g = torch.Generator(device=device).manual_seed(args.seed)
     probe_backend_name = resolve_probe_backend(args.probe_backend, device)
 
     data = _run_analysis(model, adv_cfg, args, g, device, probe_backend_name)
-    _make_plots(model, data, plot_dir, args.tag, device, show=args.show)
+    _make_plots(model, data, plot_dir, tag, device, show=args.show)
 
 
 def main(args):
     device = "cuda" if torch.cuda.is_available() else "cpu"
     ckpts = ["last", "best"] if args.ckpt == "both" else [args.ckpt]
-    for ckpt in ckpts:
-        _run_one(args, ckpt, device)
+    for tag in args.tag or TAGS:
+        for ckpt in ckpts:
+            _run_one(args, tag, ckpt, device)
 
 
 if __name__ == "__main__":
