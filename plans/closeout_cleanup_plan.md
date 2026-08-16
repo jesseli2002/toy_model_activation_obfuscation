@@ -276,8 +276,11 @@ points have zero inbound refs by definition — neither is evidence of dead code
 
 **Keep — decided:**
 - `probe_ideal_y.py` — demonstrates the task is actually solvable, which is
-  exactly the kind of background work a reproducer needs. Document it in
-  `CLAUDE.md` (§5) so its purpose is discoverable; nothing imports it.
+  exactly the kind of background work a reproducer needs. **Since merged into
+  `analytic.py`** (as `sample_ideal_y`/`verify_ideal_y_decodability`) rather
+  than kept as a standalone file — no separate entry point survives, so drop
+  this bullet's file name where §5 documents it and point at `analytic.py`
+  instead.
 - `sweep_threshold_report.py` — how the loss/AUROC thresholds were chosen. This
   is the "background work" the goal statement calls for.
 - `analytic.py` — backs the publicly linked analytic-solution writeup.
@@ -507,7 +510,8 @@ happening, which is squarely in scope for the guided-reproduction goal.
   3. **The background work**, so the process is reproducible and not just the
      figures: `sweep_threshold_report.py` for how the loss/AUROC thresholds were
      chosen, `sweep_group_report.py` as the worked example of ad-hoc cross-sweep
-     comparison, `probe_ideal_y.py` for why the task is solvable at all.
+     comparison, `analytic.py`'s `sample_ideal_y`/`verify_ideal_y_decodability`
+     for why the task is solvable at all.
   4. **How run configs work** — how `--config` resolves hyperparameters and what
      the defaults are; that `configs/*.json` are inputs you point training at
      (see §6) and **not** a record of anything; and that **the ground truth for
@@ -639,12 +643,13 @@ or §6 has been touched yet.
    `sweep_inspect_training.py` tracked, parked in the new
    `plans/closeout_followup_review.md` for a later ambiguous-call review.
    `pytest`: 171 passed (this worktree's tracked-file count; no failures).
-   - **Found but not fixed:** `sweep_layer_analysis.py` and
+   - ~~**Found but not fixed:** `sweep_layer_analysis.py` and
      `sweep_width_analysis.py` (both kept) have docstring lines
      ("see sweep13_analysis.py for why") that will dangle for a fresh-clone
-     reproducer now that `sweep13_analysis.py` is untracked. Not blocking,
-     not in the plan's original scope — flagging for a follow-up docstring
-     edit.
+     reproducer now that `sweep13_analysis.py` is untracked.~~ **Fixed** in a
+     follow-up commit: both docstrings now state the reason inline (some
+     runs' final checkpoint predates their last logged history entry) instead
+     of citing the untracked file.
    - **`.git/info/exclude` entries deferred**, across all four §4 commits —
      this worktree's isolation guard blocks writes to the shared common-dir
      file. Needed at merge-back: `sweep8_analysis.py`, `sweep13_analysis.py`,

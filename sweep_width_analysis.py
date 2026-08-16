@@ -25,8 +25,9 @@ adversarial.penalty_layers for every run in this sweep.
 "Loss" and "AUROC" are both freshly recomputed at CKPT -- loss via
 data.eval_task_loss (deliberately excluding the adversarial/probe penalty,
 since this only cares about task performance), and AUROC via a freshly refit
-probe (see sweep13_analysis.py for why) -- rather than read from
-history.jsonl or the checkpoint's own stored training-time probe.
+probe -- rather than read from history.jsonl or the checkpoint's own stored
+training-time probe, since some runs' final checkpoint predates their last
+logged history entry.
 
 Recomputing over a whole sweep is slow, so results are cached to CACHE_PATH
 keyed by the settings they depend on; changing any of those settings misses
