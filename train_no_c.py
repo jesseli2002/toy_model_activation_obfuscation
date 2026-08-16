@@ -203,9 +203,7 @@ def main(args):
                     f"eval {ev_loss:.6e}  "
                     f"eval/bound {ev_loss / bound:.4f}"
                 )
-                # Same keys train_adversarial_logreg.py's history.jsonl
-                # entries have (see TrainRecord/_history_entry) -- no probe
-                # here, so l_probe/lam_eff/n_exploded are nan/None/0.
+                # Writing nan/None/0 for unused keys (no probe here).
                 entry = {
                     "iter": it,
                     "loss": loss.item(),

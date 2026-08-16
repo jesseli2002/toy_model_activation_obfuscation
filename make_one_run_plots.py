@@ -154,12 +154,11 @@ class PublishData:
     the checkpoint rather than pulled from training history."""
 
     task_loss: float
-    err_samples: np.ndarray  # (n_err_samples,) per-input Euclidean error
+    err_samples: np.ndarray  # (n_err_samples,) per-input RMS error
     noise: Noise  # adv_cfg.resid_noise_std -- see _plot_learned_curves
     hidden_layers: list[int]
-    gap_plot_inputs: (
-        dict  # {layer: {"w_dom", "midpoint", "w_probe", "b_probe", "X_te", "y_te"}}
-    )
+    # {layer: {"w_dom", "midpoint", "w_probe", "b_probe", "X_te", "y_te", "dist_lo", "dist_hi"}}
+    gap_plot_inputs: dict
     auroc: dict  # {layer: {"dom": auroc, "logreg": auroc}}
     linear_y_r2: dict  # {layer: R^2}
     noise_roc: dict  # {eval_mult: {"fpr", "tpr", "auroc"}}, NOISE_GRID_LAYER only

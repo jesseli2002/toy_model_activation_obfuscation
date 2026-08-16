@@ -6,7 +6,7 @@ there is no separate list of settings to keep in sync, and a key covers only
 what its own metric depends on. Lookups are exact: a key either matches or
 the value is recomputed.
 
-Values are floats stored as JSON, so the cache stays greppable and diffable.
+Values are stored as JSON, so the cache stays greppable and diffable.
 """
 
 import hashlib

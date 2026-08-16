@@ -15,8 +15,7 @@ legend:
 Each width's runs come from a different sweep (num_x=32/64/128 also vary
 iters and, since they're separate sweeps, the runs aren't discoverable by a
 single glob+regex the way an in-sweep parameter is), so `_groups` below lists
-tags explicitly rather than deriving them from sweep_lib.discovery -- same
-approach as sweep_group_report.py, which covers this exact sweep.
+tags explicitly rather than deriving them from sweep_lib.discovery.
 
 LOSS_THRESHOLD / AUROC_THRESHOLDS match the other sweep_*_analysis.py
 scripts' provisional values. PROBE_LAYER=2 matches

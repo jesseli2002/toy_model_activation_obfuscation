@@ -3,12 +3,11 @@ chart: for each lambda, what fraction of its trials failed the task (loss), and
 among those that succeeded, how well they hid from the layer-PROBE_LAYER
 linear probe (AUROC), at one or more AUROC thresholds.
 
-x-axis is lam / (1 - lam) -- the probe-to-task loss weight ratio (see
-`(1 - lam_eff) * l_task + lam_eff * l_probe` in
-train_adversarial_logreg._compute_losses) -- rather than lam itself, since
-it's unbounded above (lam is capped at 1) and matches what the adversarial
-penalty actually trades off against. Plotted symlog so lam=0 (ratio 0) has a
-finite position while still spreading out the many-orders-of-magnitude tail.
+x-axis is lam / (1 - lam) -- the probe-to-task loss weight ratio -- rather
+than lam itself, since it's unbounded above (lam is capped at 1) and matches
+what the adversarial penalty actually trades off against. Plotted symlog so
+lam=0 (ratio 0) has a finite position while still spreading out the
+many-orders-of-magnitude tail.
 
 LOSS_THRESHOLD / AUROC_THRESHOLDS are provisional -- a separate exercise is
 picking the final values -- so they're constants here, not a CLI, alongside

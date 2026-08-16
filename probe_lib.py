@@ -245,8 +245,7 @@ def raw_signed_distance(
     w_probe: Float[np.ndarray, "d"], b_probe: float, X: Float[np.ndarray, "n d"]
 ) -> Float[np.ndarray, "n"]:
     """Signed distance to the probe's decision boundary in raw
-    (unstandardized) data units, boundary at 0 -- same fold as `plot_probe`'s
-    raw-space panel."""
+    (unstandardized) data units, boundary at 0."""
     w_hat = w_probe / np.linalg.norm(w_probe)
     threshold = -b_probe / np.linalg.norm(w_probe)
     return X @ w_hat - threshold
@@ -720,7 +719,8 @@ def plot_learned_curves(
         axes = [axes]
     for ax, c in zip(axes, c_values):
         # Build inputs: sweep x on every coordinate simultaneously is not valid
-        # (coords are independent), so sweep coordinate 0 and hold others at 0.
+        # (coords are independent), so sweep one coordinate at a time, holding
+        # others at 0.
         for j in range(num_x):
             x = torch.zeros(len(xs), num_x, device=device)
             x[:, j] = xs

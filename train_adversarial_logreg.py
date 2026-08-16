@@ -112,7 +112,7 @@ from rate_meter import EMARateMeter
 # Per-step warm-started solver iterations for the probe update (small: the
 # solver resumes from last step's coefficients, so a handful of lbfgs steps
 # is enough to track the model). The init fit (before the training loop) uses
-# --probe-init-iters instead, since it starts from scratch.
+# config's probe_init_iters instead, since it starts from scratch.
 PROBE_STEP_MAX_ITER = 100
 
 
@@ -701,8 +701,7 @@ class TrainRecord:
 
 def _history_entry(record: TrainRecord, **extra) -> dict:
     """Build one `history.jsonl` entry from a `TrainRecord`, overridden/extended
-    by `**extra` -- the single schema shared by the log-interval and final
-    sites, rather than two hand-built dicts drifting independently."""
+    by `**extra`."""
     d = dataclasses.asdict(record)
     del d["affine"]  # tensors aren't JSON-serializable, not needed in history
     d.update(extra)
@@ -745,7 +744,7 @@ def train_steps(
         maxlen=max(0, adv_config.explode_window_iters - 1)
     )
     # lam=0 means the probe penalty never enters the loss (see lam_eff below,
-    # which is always 0 too regardless of --lam-warmup-iters) -- skip probe
+    # which is always 0 too regardless of lam_warmup_iters) -- skip probe
     # resampling/refitting/scoring entirely rather than paying for a value
     # that gets multiplied by zero.
     skip_probe = adv_config.lam == 0
@@ -792,7 +791,7 @@ def train_steps(
             label_fit = probe_label[:: adv_config.probe_subsample]
             assert label_fit.any() and (~label_fit).any(), (
                 "subsampled probe batch has only one class present -- lower "
-                "--probe-subsample or raise --batch-size."
+                "config's probe_subsample or raise batch_size."
             )
             fit_probe(probe, X_fit, label_fit, PROBE_STEP_MAX_ITER)
             affine = probe.get_affine(device)
@@ -836,7 +835,7 @@ def train_steps(
             probe_label = probe_x[:, num_x] >= adv_config.class_threshold
             assert probe_label.any() and (~probe_label).any(), (
                 "resampled probe batch has only one class present -- check "
-                "--class-threshold against c's range."
+                "config's class_threshold against c's range."
             )
         lam_eff = _lam_at(it, adv_config)
 
@@ -1185,8 +1184,8 @@ def main(args):
     )
     probe_label = probe_x[:, num_x] >= adv_config.class_threshold
     assert probe_label.any() and (~probe_label).any(), (
-        "fixed probe batch has only one class present -- check --class-threshold "
-        "against c's range."
+        "fixed probe batch has only one class present -- check config's "
+        "class_threshold against c's range."
     )
     with torch.no_grad():
         _, init_caches = model.forward(probe_x, return_cache=True)
