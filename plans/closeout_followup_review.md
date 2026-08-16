@@ -11,6 +11,13 @@ Undecided between untrack (same class as `check_dead_relu.py` /
 (same class as `sweep_threshold_report.py`, which §4 keeps and documents).
 Kept tracked for now, pending review.
 
+**This call is now load-bearing, not just pending.** `closeout_cleanup_plan.md`
+§4's `adversarial_report.py` retirement drops `_plot_training_traces`'s
+loss-curve-over-iterations coverage on the strength of this script already
+covering the same use case (superimposed, smoothed `L_task` vs. iter across
+same-settings runs). If this script is later untracked, that coverage claim
+goes with it — re-check §4's retirement section before untracking this.
+
 Notes for whoever picks this up:
 
 - It's an earlier, near-duplicate version of `sweep_group_report.py` — same

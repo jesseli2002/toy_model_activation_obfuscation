@@ -2,18 +2,18 @@
 (Results part 2): clean, presentation-ready figures with no debugging info
 (tag names, checkpoint iters, ...) baked into their titles.
 
-adversarial_report.py and the sweep_*.py scripts are diagnostic tools -- their
-titles deliberately embed the tag/run so a reader flipping between many runs
-knows which is which. This script is for the opposite situation: one run,
-already chosen, going into a writeup. It reuses adversarial_report.py's and
-probe_lib.py's data-computation helpers directly (so the numbers agree with
-the diagnostic reports) but supplies its own plotting code with quieter
-titles and different layouts (e.g. 2x2 instead of 1x4).
+The sweep_*.py scripts are diagnostic tools -- their titles deliberately
+embed the tag/run so a reader flipping between many runs knows which is
+which. This script is for the opposite situation: one run, already chosen,
+going into a writeup. It reuses probe_lib.py's data-computation helpers
+directly (so the numbers agree with the diagnostic reports) but supplies its
+own plotting code with quieter titles and different layouts (e.g. 2x2
+instead of 1x4).
 
-Structured the same way as adversarial_report.py: a data-computation phase
-(`_run_analysis`) produces a `PublishData`, then a separate plotting phase
-(`_make_plots`) turns it into figures -- so adding a plot never needs a new
-forward pass through data already computed, and vice versa.
+A data-computation phase (`_run_analysis`) produces a `PublishData`, then a
+separate plotting phase (`_make_plots`) turns it into figures -- so adding a
+plot never needs a new forward pass through data already computed, and vice
+versa.
 
 Regenerates every figure the writeup uses, across all of TAGS, in one
 invocation. Not every plot produced ends up embedded in the writeup -- see
@@ -27,6 +27,10 @@ import argparse
 # Every tag the hiding_experiment writeup draws figures from.
 TAGS = ["sweep7_lam0.1_tr0", "sweep3_lam0_tr0"]
 STEER_LAYERS = [1, 2, 3, 4, 5]
+# Binary c pairs for the held-out-gap plot, kept ASYMMETRIC about the {1,2}
+# midpoint (1.5) on purpose -- otherwise an affine cancellation could
+# masquerade as a genuinely weakened probe.
+HELD_OUT_PAIRS = [(1.0, 1.5), (1.0, 1.75), (1.25, 2.0)]
 # Eval-noise multipliers swept by the noise-isolation ROC plot, independent of
 # --train-noise-mult/--eval-noise-mult (which set the noise regime for every
 # other plot) -- see _run_noise_grid_analysis for the rationale.
@@ -60,7 +64,7 @@ def parse_args():
         choices=["last", "best", "both"],
         default="both",
         help="which checkpoint(s) to plot; 'both' writes to separate "
-        "publish/<tag>/<ckpt>/ subdirectories.",
+        "plot/<tag>/<ckpt>/ subdirectories.",
     )
     p.add_argument(
         "--n-train",
@@ -111,14 +115,17 @@ import os
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
+from matplotlib.collections import PolyCollection
 from sklearn.metrics import roc_auc_score, roc_curve
 from tqdm import tqdm
 
 import config
-from adversarial_report import _steer_vectors
 from data import eval_task_loss, sample_batch
 from model import Noise
+from paths import plot_dir as get_plot_dir
 from probe_backend import resolve_probe_backend
 from probe_lib import (
     LinearBoundary,
@@ -129,9 +136,8 @@ from probe_lib import (
     load_model,
     resolve_adv_config,
     save_plot,
+    steer_vectors,
 )
-
-PUBLISH_DIR = "publish"
 
 # Single knob for output resolution of every plot in this file. probe_lib.save_plot
 # defers to rcParams["savefig.dpi"], so bumping this (e.g. to 300 for print-quality
@@ -157,6 +163,8 @@ class PublishData:
     auroc: dict  # {layer: {"dom": auroc, "logreg": auroc}}
     linear_y_r2: dict  # {layer: R^2}
     noise_roc: dict  # {eval_mult: {"fpr", "tpr", "auroc"}}, NOISE_GRID_LAYER only
+    gap: dict  # {layer: {"dom", "delta_norm", "logreg", "lda"}} accuracy @ c in {1,2}
+    heldout: dict  # {(c_lo, c_hi, layer): {"dom", "delta_norm", "logreg", "lda"}}
 
 
 @torch.no_grad()
@@ -258,7 +266,9 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         train_noise=train_noise_std,
         eval_noise=eval_noise_std,
     )
-    del gap  # accuracy metrics; unused here (AUROC is recomputed below instead)
+    # `gap` is fixed-threshold accuracy (AUROC is recomputed below instead for
+    # the main probe-strength comparison); kept for the held-out-gap plot,
+    # which compares it against the same accuracy metric at held-out c pairs.
 
     auroc = {}
     for lyr in hidden_layers:
@@ -278,6 +288,24 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         model, adv_cfg, args, g, device, probe_backend_name
     )
 
+    heldout = {}
+    for c_lo, c_hi in tqdm(HELD_OUT_PAIRS, desc="held-out pairs"):
+        pair_metrics, _ = binary_probe_metrics_all_layers(
+            model,
+            c_lo,
+            c_hi,
+            hidden_layers,
+            g,
+            probe_backend_name,
+            n_train=args.n_train,
+            n_test=args.n_test,
+            desc=f"held-out {c_lo:g}-{c_hi:g}",
+            train_noise=train_noise_std,
+            eval_noise=eval_noise_std,
+        )
+        for lyr in hidden_layers:
+            heldout[(c_lo, c_hi, lyr)] = pair_metrics[lyr]
+
     return PublishData(
         task_loss=task_loss,
         err_samples=err_samples,
@@ -287,6 +315,8 @@ def _run_analysis(model, adv_cfg, args, g, device, probe_backend_name) -> Publis
         auroc=auroc,
         linear_y_r2=linear_y_r2,
         noise_roc=noise_roc,
+        gap=gap,
+        heldout=heldout,
     )
 
 
@@ -538,9 +568,9 @@ def _plot_steer_comparison(
     filename: str,
     show=False,
 ):
-    """Same content as adversarial_report._plot_steer_comparison, minus the
-    tag in the title."""
-    w_dom_vec, w_logreg_vec = _steer_vectors(w_dom, w_probe, 1.0)
+    """Causal steering test, DoM direction vs logreg direction side by side,
+    for a writeup (no tag in the title)."""
+    w_dom_vec, w_logreg_vec = steer_vectors(w_dom, w_probe, 1.0)
     dtype = next(model.parameters()).dtype
     vecs = {
         "DoM": torch.tensor(w_dom_vec, dtype=dtype, device=device),
@@ -672,6 +702,156 @@ def _plot_linear_y_reconstruction(r2, plot_dir, tag, show=False):
     return save_plot(fig, plot_dir, f"{tag}_linear_y.png", close=not show)
 
 
+def _plot_layer_distributions(
+    c_lo, c_hi, layers, plot_inputs, plot_dir, tag, show=False
+):
+    """Per-layer, per-class signed-distance-to-boundary distributions (raw
+    data units, boundary at 0, shared y-axis across layers -- so a collapse
+    in spread at a penalized layer is visually comparable to neighboring
+    layers), plus a companion panel tracking the mean-gap/pooled-std collapse
+    numerically."""
+    lo_label, hi_label = f"c={c_lo:g}", f"c={c_hi:g}"
+    rows = []
+    for lyr in layers:
+        for dist, label in (
+            (plot_inputs[lyr]["dist_lo"], lo_label),
+            (plot_inputs[lyr]["dist_hi"], hi_label),
+        ):
+            rows.extend(
+                {"layer": f"L{lyr}", "distance": d, "class": label} for d in dist
+            )
+    df = pd.DataFrame(rows)
+
+    layer_gap = [
+        float(plot_inputs[l]["dist_hi"].mean() - plot_inputs[l]["dist_lo"].mean())
+        for l in layers
+    ]
+    pooled_std = [
+        float(
+            np.sqrt(
+                (
+                    plot_inputs[l]["dist_lo"].std() ** 2
+                    + plot_inputs[l]["dist_hi"].std() ** 2
+                )
+                / 2
+            )
+        )
+        for l in layers
+    ]
+
+    fig_width = round(max(7, 1.4 * len(layers)) * 2 / 3)
+    fig, (ax_top, ax_bot) = plt.subplots(
+        2,
+        1,
+        figsize=(fig_width, 7.5),
+        sharex=True,
+        gridspec_kw={"height_ratios": [3, 1]},
+    )
+
+    # density_norm="width" caps every violin at the same max width regardless
+    # of how peaked/spread its KDE is -- otherwise a near-degenerate layer
+    # (tiny std) balloons to full width in a sliver of y-range (reads as a
+    # flat horizontal bar) while a widely-spread layer's per-point density is
+    # low and shrinks to a near-invisible vertical thread, under the default
+    # "area" normalization (equal probability mass -> equal area).
+    sns.violinplot(
+        data=df,
+        x="layer",
+        y="distance",
+        hue="class",
+        split=True,
+        density_norm="width",
+        inner=None,
+        linewidth=1.5,
+        ax=ax_top,
+    )
+    # Force each violin's outline to match its own fill color: seaborn's
+    # linecolor="auto" default renders dark/near-black, which swallows the
+    # class color-coding entirely once a violin collapses to a thin sliver
+    # (the fill area vanishes and only the outline remains visible).
+    for artist in ax_top.collections:
+        if isinstance(artist, PolyCollection):
+            artist.set_edgecolor(artist.get_facecolor())
+    ax_top.axhline(0.0, color="k", ls="--", lw=1, label="boundary")
+    ax_top.set_title(
+        f"Probe signed distance to boundary, per layer ({lo_label} vs {hi_label})"
+    )
+    ax_top.set_xlabel("")
+    ax_top.set_ylabel("signed distance (data units)")
+    ax_top.legend(fontsize=8)
+    ax_top.grid(True, alpha=0.3)
+
+    # Twin-x: mean gap and pooled std differ by ~an order of magnitude, so a
+    # shared axis makes pooled std unreadable -- each line gets its own axis,
+    # color-matched to its label so the split reads unambiguously.
+    x = np.arange(len(layers))
+    ax_bot2 = ax_bot.twinx()
+    (line_gap,) = ax_bot.plot(
+        x, layer_gap, marker="o", color="tab:blue", label="mean gap"
+    )
+    (line_std,) = ax_bot2.plot(
+        x, pooled_std, marker="o", color="tab:orange", label="pooled std"
+    )
+    ax_bot.axhline(0.0, color="k", lw=0.8)
+    ax_bot.set_xticks(x)
+    ax_bot.set_xticklabels([f"L{l}" for l in layers])
+    ax_bot.set_xlabel("layer")
+    ax_bot.set_ylabel("mean gap (data units)", color="tab:blue")
+    ax_bot.tick_params(axis="y", labelcolor="tab:blue")
+    ax_bot2.set_ylabel("pooled std (data units)", color="tab:orange")
+    ax_bot2.tick_params(axis="y", labelcolor="tab:orange")
+    ax_bot.legend(
+        [line_gap, line_std], [line_gap.get_label(), line_std.get_label()], fontsize=8
+    )
+    ax_bot.grid(True, alpha=0.3)
+
+    fig.tight_layout()
+    return save_plot(
+        fig, plot_dir, f"{tag}_c{c_lo:g}-{c_hi:g}_layer_dist.png", close=not show
+    )
+
+
+def _plot_heldout_gap(
+    hidden_layers,
+    held_out_pairs,
+    gap,
+    heldout,
+    plot_dir,
+    tag,
+    metric="logreg",
+    show=False,
+):
+    """Bar chart analogous to _plot_auroc_line, but grouped by c-pair instead
+    of by probe type -- one metric (logreg accuracy) compared across the
+    baseline {1,2} pair and every entry in `held_out_pairs`, per layer."""
+    groups = [(1.0, 2.0, gap)] + [
+        (lo, hi, {lyr: heldout[(lo, hi, lyr)] for lyr in hidden_layers})
+        for lo, hi in held_out_pairs
+    ]
+    n = len(groups)
+    x = np.arange(len(hidden_layers))
+    width = 0.8 / n
+    offsets = (np.arange(n) - (n - 1) / 2) * width
+    fig, ax = plt.subplots(figsize=(max(7, 1.3 * len(hidden_layers)), 4.2))
+    for off, (lo, hi, m) in zip(offsets, groups):
+        ax.bar(
+            x + off,
+            [m[l][metric] for l in hidden_layers],
+            width,
+            label=f"c={lo:g}/{hi:g}",
+        )
+    ax.axhline(0.5, color="k", ls="--", lw=1, label="chance")
+    ax.set_ylim(0.4, 1.02)
+    ax.set_xticks(x)
+    ax.set_xticklabels([f"L{l}" for l in hidden_layers])
+    ax.set_ylabel(f"{metric} accuracy")
+    ax.set_title("Held-out c-pair probe gap")
+    ax.legend(fontsize=8)
+    ax.grid(True, axis="y", alpha=0.3)
+    fig.tight_layout()
+    return save_plot(fig, plot_dir, f"{tag}_heldout_gap.png", close=not show)
+
+
 def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
     steer_mags = STEER_MAGS_BY_TAG.get(tag, DEFAULT_STEER_MAGS)
     _plot_learned_curves(
@@ -699,6 +879,18 @@ def _make_plots(model, data: PublishData, plot_dir, tag, device, show=False):
         _plot_pca_scatter(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
         _plot_probe_hist_roc(lyr, data.gap_plot_inputs[lyr], plot_dir, tag, show=show)
     _plot_linear_y_reconstruction(data.linear_y_r2, plot_dir, tag, show=show)
+    _plot_layer_distributions(
+        1.0, 2.0, data.hidden_layers, data.gap_plot_inputs, plot_dir, tag, show=show
+    )
+    _plot_heldout_gap(
+        data.hidden_layers,
+        HELD_OUT_PAIRS,
+        data.gap,
+        data.heldout,
+        plot_dir,
+        tag,
+        show=show,
+    )
     for lyr in STEER_LAYERS:
         assert lyr in data.hidden_layers, (
             f"steer layer {lyr} must be one of the hidden layers "
@@ -771,7 +963,7 @@ def _run_one(args, tag, ckpt, device):
         f"{tag}/{ckpt} has no adv_config (c-blind demonstration run) -- "
         "nothing to probe or steer."
     )
-    plot_dir = os.path.join(PUBLISH_DIR, tag, ckpt)
+    plot_dir = get_plot_dir(tag, ckpt)
     os.makedirs(plot_dir, exist_ok=True)
 
     g = torch.Generator(device=device).manual_seed(args.seed)

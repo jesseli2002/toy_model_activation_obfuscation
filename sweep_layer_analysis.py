@@ -22,7 +22,7 @@ and runs/sweep19_layers{L1}-{L2}_* into four views:
   added.
 - Linear-y reconstruction: per qualifying run (task loss < LOSS_THRESHOLD,
   probe AUROC < LINEAR_Y_AUROC_MAX -- solves the task and at least partially
-  hides), the same per-layer R² curve adversarial_report._plot_linear_y_reconstruction
+  hides), the same per-layer R² curve make_one_run_plots._plot_linear_y_reconstruction
   draws for one run, overlaid for every qualifying run in GROUPS (pooled
   across lambda -- how to aggregate across runs is still open, so this starts
   by just showing all of them), one color per probed layer via a discrete

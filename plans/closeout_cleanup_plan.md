@@ -269,7 +269,7 @@ points have zero inbound refs by definition — neither is evidence of dead code
 **Keep — produces a writeup figure or is imported by one that does:**
 `make_one_run_plots.py`, `plot_train_dist_curve.py`,
 `sweep7_analysis.py`, `sweep_width_analysis.py`, `sweep_layer_analysis.py`,
-`adversarial_report.py`, `train_adversarial_logreg.py`, `sweep_lib/*`,
+`train_adversarial_logreg.py`, `sweep_lib/*`,
 `probe_lib.py`, `probe_backend.py`, `probe_newton.py`, `torch_logreg.py`,
 `checkpoint_lib.py`, `model.py`, `data.py`, `config.py`, `paths.py`,
 `stableadamw.py`, `rate_meter.py`.
@@ -286,11 +286,12 @@ points have zero inbound refs by definition — neither is evidence of dead code
   is the certificate the whole experiment leans on ("a model scoring below it
   must be reading c"), so it belongs in the reproducible set.
 
-  No new tooling is needed to read its result: `adversarial_report.py --tag
-  baseline_no_c` plots it, and `logs/history.jsonl`'s last line carries the
-  achieved `l_task` (5.563e-2 at iter 49999) to read off directly. `CLAUDE.md`
-  just needs to point at both, and at `analytic.no_c_task_loss` for the floor
-  being compared against.
+  No new tooling is needed to read its result: `logs/history.jsonl`'s last
+  line carries the achieved `l_task` (5.563e-2 at iter 49999) to read off
+  directly (the earlier draft of this note also pointed at `adversarial_report.py
+  --tag baseline_no_c`; that script is retired below, so the history.jsonl
+  route is now the only one). `CLAUDE.md` just needs to point at it, and at
+  `analytic.no_c_task_loss` for the floor being compared against.
 - `sweep_group_report.py` — **keep, but clean up.** See below.
 
 **Untrack:**
@@ -302,6 +303,112 @@ points have zero inbound refs by definition — neither is evidence of dead code
 - `sweep_inspect_training.py` — *(confirm; not explicitly ruled on. Same class
   as the two above, but arguably an investigation tool like
   `sweep_threshold_report.py`.)*
+- `adversarial_report.py` — **newly decided (this session).** See
+  "`adversarial_report.py` retirement" below for the full rationale and the
+  fallout it requires elsewhere in this plan.
+
+### `adversarial_report.py` retirement
+
+**Status: executed.** Commits d636cd7 (probe_lib.py symbol moves),
+51618cc (`paths.plot_dir` ckpt arg), 042911e (`make_one_run_plots.py`
+porting + `plot/` move), efd8e59 (`plot_train_dist_curve.py` `plot/`
+move), e668a3e (untrack), 2899347 (dangling-reference cleanup), ffca64c
+(`.gitignore`). `pytest`: 171 passed. Both open items below were
+resolved by the user rather than left to the executing agent: **ckpt
+nesting stays `plot/<tag>/<ckpt>/`** (unchanged from the old
+`publish/<tag>/<ckpt>/` shape, just the root renamed — `paths.plot_dir`
+grew the optional `ckpt` arg as anticipated); **`copy_plots.sh` in the
+blog checkout is explicitly out of scope** — the user will handle that
+cross-repo update separately, so it still points at `publish/` and will
+need fixing before the writeup's figure-refresh step works again.
+
+`adversarial_report.py` is the
+per-run diagnostic report (arbitrary `--tag`/`--ckpt`, `--detailed`, `--steer`,
+training-trace plots) that `make_one_run_plots.py` and `plot_train_dist_curve.py`
+were both built to specialize away from — see their docstrings. Since neither
+kept script covers the training-trace / probe-AUROC-over-training plot (and it
+was assessed as unreliable in practice — see below), and `sweep_group_report.py`
+already covers cross-run loss-curve comparison, nothing left depends on
+`adversarial_report.py` staying a standalone entry point. It moves to
+**Untrack**, alongside `sweep8_analysis.py` etc. above.
+
+This is a bigger untrack than the others in this section — it's imported by
+two scripts this plan keeps, and it currently determines where two kept
+scripts write their output. Concretely:
+
+1. **Two symbols need a new home before the untrack lands, or `make_one_run_plots.py`
+   and `sweep_threshold_report.py` break on import:**
+   - `_steer_vectors` — imported by `make_one_run_plots.py`. Move into
+     `probe_lib.py` (where the rest of the shared plotting/analysis helpers
+     already live) rather than inlining it into `make_one_run_plots.py`, since
+     nothing about it is writeup-specific.
+   - `plot_learned_curves` — imported by `sweep_threshold_report.py`. Same
+     move, into `probe_lib.py`. (`analytic_demo.py` has a same-named function,
+     but it's a different signature over the analytic — not adversarially
+     trained — model with no noise argument; a naming coincidence, not a
+     duplicate to merge.)
+2. **Two plots need porting into `make_one_run_plots.py`**, per the earlier
+   report-tool assessment in this session — and they're not equal-effort:
+   - **Layer distributions** (`_plot_layer_distributions`, → `{tag}_c{lo}-{hi}_layer_dist.png`)
+     is nearly free: `make_one_run_plots.py`'s `_run_analysis` already computes
+     `gap_plot_inputs` for every hidden layer, which is all this plot consumes.
+   - **Held-out gap** (`_plot_heldout_gap`, → `{tag}_heldout_gap.png`,
+     currently only drawn under `adversarial_report.py --detailed`) needs the
+     *computation* ported too, not just the plot — `make_one_run_plots.py`'s
+     `_run_analysis` has no held-out-pairs analysis at all today. Since
+     `make_one_run_plots.py` has no CLI surface for this kind of per-run
+     parameter (it dropped `--tag` for the same reason — see
+     `7e5e51a`), `held_out_pairs` becomes a module constant there, matching
+     `STEER_LAYERS`/`NOISE_GRID_EVAL_MULTS`'s existing convention, not a new flag.
+3. **Training traces are dropped, not ported**, on the assessment from this
+   session: the probe-AUROC-over-training half of `_plot_training_traces` is
+   unreliable in practice, and the loss-curve half is already covered for the
+   multi-run comparison use case by `sweep_inspect_training.py` (superimposed,
+   smoothed `L_task` vs. iter from `history.jsonl`, same as `_plot_training_traces`
+   minus the reference-loss overlay lines). **This makes `sweep_inspect_training.py`'s
+   keep/untrack call in `closeout_followup_review.md` load-bearing** — it must stay
+   tracked, or this coverage claim silently stops being true for a later reviewer.
+   `_plot_probe_gap` (`{tag}_probe_gap.png`) is dropped too, for the DoM/logreg
+   series specifically because `make_one_run_plots.py`'s existing `_plot_auroc_line`
+   (`{tag}_auroc_bar.png`) already covers the same DoM-vs-logreg-per-layer
+   comparison, just as AUROC instead of fixed-threshold accuracy — accepted as
+   the better metric. The one thing `_plot_auroc_line` doesn't carry over is the
+   LDA series (`_plot_probe_gap` has DoM/logreg/LDA; `_plot_auroc_line` has no LDA
+   AUROC computed at all) — dropped, not ported; flag if that turns out to matter
+   for a specific writeup figure later.
+4. **`publish/` → `plot/`, and `make_one_run_plots.py` takes over `plot/<tag>`
+   directly.** `make_one_run_plots.py` and `plot_train_dist_curve.py` currently
+   write to `publish/<tag>/<ckpt>/` (`PUBLISH_DIR` module constant in each) —
+   a separate namespace from `paths.plot_dir(tag)` (`plot/<tag>/`), which today
+   only `adversarial_report.py` writes to. That separation existed to avoid the
+   two tools' outputs colliding in the same directory; once `adversarial_report.py`
+   is retired, `plot/<tag>/` has exactly one writer per tag again, so both
+   scripts move onto `paths.plot_dir(tag)` and `publish/` goes away — bringing
+   them inline with how `sweep7_analysis.py` etc. already write straight to
+   `plot/sweep7/` with no intermediate namespace.
+   - **Open question, not yet decided:** both scripts support `--ckpt both`
+     (writing best- and last-checkpoint figures in the same invocation) and
+     every filename is `{tag}_*.png` with no checkpoint discriminator, so a
+     flat `plot/<tag>/` would silently let one checkpoint's figures overwrite
+     the other's. Whether to keep a `plot/<tag>/<ckpt>/` subdirectory (in which
+     case `paths.plot_dir` is the natural place to grow an optional `ckpt`
+     argument, since retiring `adversarial_report.py` leaves it with no other
+     caller) or fold `ckpt` into the filename instead needs a call before this
+     step is implemented.
+   - The **cross-repo fallout**: the blog's `copy_plots.sh` scripts
+     (`/work/blog/content/blog/hiding_experiment/copy_plots.sh`,
+     `.../hiding_sweep/copy_plots.sh`) hardcode `~/ml/toy_probe_hiding/publish/<tag>/<ckpt>/...`
+     source paths for every figure they copy. These must be updated in lockstep
+     with the rename, in the blog checkout, or the writeup's own figure-refresh
+     step silently breaks. `.gitignore`'s `publish` line comes out once nothing
+     writes there anymore.
+5. **Mechanical note, since revised:** `.git/info/exclude` was expected to be
+   blocked from this worktree (per step 3 of the Suggested Order below, which
+   had to defer it to merge-back) — that turned out not to apply here; the
+   write to `.git/info/exclude` for `adversarial_report.py` succeeded directly
+   from this worktree. `git commit -m ... -- <pathspec>` still reliably fails
+   in this sandbox; a plain `git commit` with nothing else staged remains the
+   workaround.
 
 **`analytic_feasibility/` — resolved, then fully untracked.** Assessed
 against what a reproducer needs per the user's two goals (an MWE linkable
@@ -365,7 +472,7 @@ happening, which is squarely in scope for the guided-reproduction goal.
   Required contents (non-exhaustive):
 
   1. **Source structure** — what lives where and what each module is for.
-     Entry points (`train_adversarial_logreg.py`, `adversarial_report.py`,
+     Entry points (`train_adversarial_logreg.py`,
      the `sweep_*` and `make_publish_*` scripts) and how to invoke them; the
      supporting libraries (`sweep_lib/`, `probe_*`, `model.py`, `data.py`, …)
      as a second tier. Lead the training part with the one-command
@@ -380,12 +487,13 @@ happening, which is squarely in scope for the guided-reproduction goal.
        `analytic_feasibility/` material to the extent it survives §4's deferral.
        No run data needed. Alongside it, the **c-blind floor**: what
        `analytic.no_c_task_loss` certifies, and how to check `baseline_no_c`
-       against it (`adversarial_report.py --tag baseline_no_c`, or the final
-       `l_task` in its `history.jsonl`).
+       against it (the final `l_task` in its `history.jsonl`).
      - *Part 2 — single-run empirical result*: `make_one_run_plots.py`, which
        runs against both writeup tags in one invocation — `sweep7_lam0.1_tr0`
-       (the AUROC / curves / PCA / probe / steering / ROC-grid figures) and
-       `sweep3_lam0_tr0` (the two `L2_steer_dir_mag*` λ=0 comparisons).
+       (the AUROC / curves / PCA / probe / steering / ROC-grid / layer-distribution
+       / held-out-gap figures) and `sweep3_lam0_tr0` (the two
+       `L2_steer_dir_mag*` λ=0 comparisons). Output moves to `plot/<tag>/`
+       (see "`adversarial_report.py` retirement" in §4) once that lands.
      - *Part 3 — hyperparameter sweeps*: `sweep7_analysis.py` (λ sweep →
        `plot/sweep7/`), `plot_train_dist_curve.py`
        (`sweep11_…_lam0.01_tr0` at `last` → the ID-vs-OOD figure),

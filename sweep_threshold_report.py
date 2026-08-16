@@ -4,7 +4,7 @@ plots for every RANK_STEP-th run in each metric's sorted order, across a
 lambda-sweep (see RUN_GLOB below, and EXCLUDE_LAMBDAS for any arm excluded).
 
 Loss and one-hot-loss ranks each get a learned-function-curves plot (from
-adversarial_report.plot_learned_curves); AUROC ranks get a probe
+probe_lib.plot_learned_curves); AUROC ranks get a probe
 histogram+ROC plot and a PCA/residual plot (local, logreg-only trims of
 probe_lib.plot_probe / plot_probe_pca, which also plot a difference-of-means
 comparison this report doesn't need), both scored at PROBE_LAYER -- the layer
@@ -47,9 +47,8 @@ import os
 import matplotlib.pyplot as plt
 import torch
 
-from adversarial_report import plot_learned_curves
 from checkpoint_lib import load_model, resolve_adv_config
-from probe_lib import LinearBoundary, save_plot
+from probe_lib import LinearBoundary, plot_learned_curves, save_plot
 from sweep_lib.discovery import matching_tags
 from sweep_lib.metrics import CACHE_PATH, MetricSpec, MetricStore
 

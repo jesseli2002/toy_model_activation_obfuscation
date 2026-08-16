@@ -1317,7 +1317,10 @@ def main(args):
         f"elapsed {time.time()-t0:.1f}s"
     )
     print(f"[done] checkpoints in {run_ckpt_dir}, history in {hist_path}")
-    print(f"[next] python adversarial_report.py --tag {args.tag}")
+    print(
+        f"[next] inspect {hist_path} directly, or point sweep_inspect_training.py's "
+        f"RUN_TAGS / sweep_group_report.py's GROUPS at {args.tag!r}"
+    )
 
 
 if __name__ == "__main__":

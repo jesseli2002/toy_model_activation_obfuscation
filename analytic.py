@@ -3,7 +3,7 @@ Closed-form reference constructions and checks for the toy task -- exact
 weights, exact loss floors, and exact linear-decodability tests -- none of
 which involve a trained model. Everything here answers "what does the math
 say should happen" independent of whether training actually finds it, and
-serves as ground truth that adversarial_report.py and analytic_demo.py
+serves as ground truth that the sweep reports and analytic_demo.py
 compare trained-model results against.
 
 ### Saturation
@@ -152,7 +152,7 @@ def reference_task_losses(
     - linreg: pred = k*x, with k chosen to minimize the loss (best linear fit)
     - clamp: pred = clip(x, -c_avg, c_avg), c_avg = mean(c)
 
-    Used as reference lines on the training-loss plot in adversarial_report.py.
+    Used as reference lines on sweep_lib.plots.loss_vs_auroc.
     """
     assert x_low == -x_high and 0 < c_low <= c_high <= x_high
     x, c = sp.symbols("x c", real=True)

@@ -4,7 +4,7 @@ fixed tag.
 2x2 grid: top row samples x on the TRAINING distribution (x ~ U[X_LOW,
 X_HIGH]^num_x, c pinned) and scatters (x, y_pred) pooled over every
 coordinate -- see plot_train_dist_curves.tmp.py, which this supersedes.
-Bottom row is adversarial_report.plot_learned_curves' OOD sweep: one
+Bottom row is probe_lib.plot_learned_curves' OOD sweep: one
 coordinate swept at a time with the rest held at 0 (a corner no training
 example actually occupies). Two versions are written: one with the OOD sweep
 shown noise-free and at the checkpoint's own noise level superimposed (so the
@@ -17,7 +17,6 @@ import argparse
 
 TAG = "sweep11_lr0.0015_iter200k_lam0.01_tr0"
 C_VALUES = (1.0, 2.0)
-PUBLISH_DIR = "publish"
 
 LEARNED_COLOR = "tab:blue"
 NOISEFREE_ALPHA = 1
@@ -55,6 +54,7 @@ from checkpoint_lib import load_model, resolve_adv_config
 from config import X_LOW, X_HIGH
 from data import sample_fixed_c
 from model import Noise
+from paths import plot_dir as get_plot_dir
 from probe_lib import save_plot
 
 plt.rcParams["savefig.dpi"] = 200
@@ -158,7 +158,7 @@ def _run_one(args, ckpt, device):
     model, ck = load_model(TAG, ckpt, device)
     adv_cfg = resolve_adv_config(ck)
     assert adv_cfg is not None, f"{TAG}/{ckpt} has no adv_config -- nothing to plot."
-    plot_dir = os.path.join(PUBLISH_DIR, TAG, ckpt)
+    plot_dir = get_plot_dir(TAG, ckpt)
     os.makedirs(plot_dir, exist_ok=True)
 
     g = torch.Generator(device=device).manual_seed(args.seed)

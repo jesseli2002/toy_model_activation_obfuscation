@@ -17,8 +17,8 @@ noise can only raise the achievable loss, so the bound stays one-sided.
 There is no probe and no adversarial penalty here -- pure task training. The
 output is the per-iteration loss log plus a periodic `last.pt` checkpoint
 (same on-disk layout as `train_adversarial_logreg.py`'s minus the
-adversarial-only fields, so `adversarial_report.py --tag <tag>` still loads
-it); there's no pass/fail check.
+adversarial-only fields, so `checkpoint_lib.load_model` still loads it);
+there's no pass/fail check.
 
 Deliberately standalone rather than a mode of train_adversarial_logreg.py:
 every hyperparameter besides the architecture is a module-level constant
@@ -166,7 +166,7 @@ def main(args):
     os.makedirs(out_dir, exist_ok=True)
     # Same name/schema train_adversarial_logreg.py writes (minus the
     # adversarial-only fields, nan/None instead), so
-    # adversarial_report.py's training-trace plot picks it up unmodified.
+    # sweep_lib.history.load_history picks it up unmodified.
     hist_path = os.path.join(out_dir, "history.jsonl")
     out_ckpt_dir = ckpt_dir(args.tag)
     os.makedirs(out_ckpt_dir, exist_ok=True)
@@ -222,7 +222,6 @@ def main(args):
     model.save(last_path, iter=args.max_iters - 1, best_loss=best)
     print(f"[done] best per-iter loss {best:.6e}  vs bound {bound:.6e}")
     print(f"[done] loss log in {hist_path}, checkpoint in {last_path}")
-    print(f"[next] python adversarial_report.py --tag {args.tag}")
 
 
 if __name__ == "__main__":
