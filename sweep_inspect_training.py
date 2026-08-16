@@ -120,7 +120,12 @@ def main():
     ax_auroc.set_ylim(0.45, 1.02)
     ax_auroc.set_ylabel("AUROC")
     ax_auroc.set_title(f"probe AUROC ({CKPT} checkpoint)")
-    ax_auroc.tick_params(axis="x", rotation=45)
+    # tick_params(rotation=...) rotates labels around their center, which
+    # visually drags long labels away from their tick; anchor at the label's
+    # right edge instead so each label lines up with its bar.
+    plt.setp(
+        ax_auroc.get_xticklabels(), rotation=45, ha="right", rotation_mode="anchor"
+    )
     ax_auroc.legend(fontsize=8)
 
     plt.tight_layout()
