@@ -12,8 +12,8 @@ finite position while still spreading out the many-orders-of-magnitude tail.
 
 LOSS_THRESHOLD / AUROC_THRESHOLDS are provisional -- a separate exercise is
 picking the final values -- so they're constants here, not a CLI, alongside
-everything else that may still change. Prints a summary table; plt.show()
-only, nothing written to disk.
+everything else that may still change. Prints a summary table and saves
+figures to PLOT_DIR, then plt.show()s.
 
 "Loss", "N-hot loss", and "AUROC" are all freshly recomputed at CKPT --
 task loss via data.eval_task_loss (deliberately excluding the
@@ -203,6 +203,7 @@ def main(clear_cache: bool = False):
     if clear_cache and os.path.exists(CACHE_PATH):
         os.remove(CACHE_PATH)
 
+    os.makedirs(PLOT_DIR, exist_ok=True)
     ratios, fractions, scatter_points = _gather_sweep()
 
     _plot_stacked_fractions(ratios, fractions)
