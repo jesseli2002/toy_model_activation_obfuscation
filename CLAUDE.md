@@ -98,6 +98,9 @@ matching the local layout — no auth needed to download:
 ```
 hf download cooleytukey/toy_model_of_activation_obfuscation --type model --local-dir .
 ```
-`plot/metrics_cache.json` is not published — it's keyed by checkpoint mtime,
-which a download doesn't preserve, so it silently rebuilds (slowly, once) on
-first use rather than being shipped stale.
+The sweep reporting scripts (`sweep7_analysis.py` etc., via `sweep_lib/`)
+cache computed metrics per run in `plot/metrics_cache.json`, keyed by
+checkpoint mtime — a deliberate choice, since the cache is meant to survive
+an `rsync -a` copy of `runs/`, not an mtime-losing transfer. That cache is
+not published — a download doesn't preserve mtime, so it would silently
+rebuild (slowly, once) on first use rather than being shipped stale.
