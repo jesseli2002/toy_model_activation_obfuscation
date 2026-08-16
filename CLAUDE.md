@@ -27,16 +27,20 @@ probe quickly.
 
 ## Reproducing the writeup
 
-The writeup is a separate local checkout at
-`/work/blog/content/projects/toy-model-of-activation-obfuscation`, split into
-three parts under `/work/blog/content/blog/`. Each part's `copy_plots.sh`
-is the authoritative figure→file map.
+The writeup (linked from `README.md`) splits its Results section into three
+parts; this section is ordered to match, one command per part.
 
-**Part 1 — analytic construction.** `analytic.py`: closed-form weights, loss
-floors, and decodability checks, no trained model involved. Its
-`sample_ideal_y`/`verify_ideal_y_decodability` establish the task is solvable
-at all. `analytic_demo.py` is the minimal, self-contained construction linked
-directly from the analytic blog post.
+**Part 1 — analytic construction, and the analytic blog post's figures.**
+```
+python analytic.py        # verification report + plot/analytic/*.png
+python analytic_demo.py   # -> plot/analytic/simplified_*.png
+```
+Both are closed-form checks, no trained model involved. `analytic.py`'s
+docstring documents exactly what each check verifies (Saturation,
+Obfuscation, v-channels, ideal-y decodability) — not duplicated here.
+`analytic_demo.py` is the minimal, self-contained construction linked
+directly from the analytic blog post; `sample_ideal_y`/`verify_ideal_y_decodability`
+in `analytic.py` establish the task is solvable at all.
 
 The **c-blind floor**: `analytic.no_c_task_loss` is the lowest task loss any
 predictor of `x` alone can reach — a model scoring below it must be reading
@@ -56,7 +60,7 @@ a module constant, since this script targets exactly the writeup's runs.
 python sweep7_analysis.py                 # lambda sweep -> plot/sweep7/
 python plot_train_dist_curve.py            # ID-vs-OOD curve for sweep11_..._tr0
 python sweep_width_analysis.py             # -> plot/sweep_width/
-python sweep_layer_analysis.py             # -> plot/sweep_layer/ (incl. Pareto grid)
+python sweep_layer_analysis.py             # -> plot/sweep_layer/
 ```
 
 ## The background work
@@ -69,8 +73,7 @@ result:
   comparison (edit its `GROUPS` constant to point at whatever you're
   comparing; three examples are kept as templates).
 - `sweep_inspect_training.py` — superimposed loss curves + final AUROC across
-  same-settings runs; edit `RUN_TAGS` first, its default points outside the
-  kept run set.
+  same-settings runs; edit `RUN_TAGS` to point at whatever you're inspecting.
 
 All three, like the sweep `*_analysis.py` scripts, take their settings from
 module constants rather than a CLI — argparse would be churn for shapes that
@@ -89,9 +92,9 @@ from immediately — it is **not** a record of what any run used. That's
 
 525 curated runs (`checkpoints/{best,last}.pt`, `config.json`,
 `input_config.json`, `logs/history.jsonl` — the `iter_*.pt` series is
-dropped) live on Hugging Face Hub, private repo
+dropped) live on Hugging Face Hub, public repo
 `cooleytukey/toy_model_of_activation_obfuscation`, under a `runs/` path
-matching the local layout:
+matching the local layout — no auth needed to download:
 ```
 hf download cooleytukey/toy_model_of_activation_obfuscation --type model --local-dir .
 ```
