@@ -222,7 +222,6 @@ def main(args):
     model.save(last_path, iter=args.max_iters - 1, best_loss=best)
     print(f"[done] best per-iter loss {best:.6e}  vs bound {bound:.6e}")
     print(f"[done] loss log in {hist_path}, checkpoint in {last_path}")
-    print(f"[next] check the last line of {hist_path} for the achieved l_task")
 
 
 if __name__ == "__main__":
