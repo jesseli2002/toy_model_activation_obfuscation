@@ -680,8 +680,14 @@ or §6 has been touched yet.
      after an HF download anyway.
 7. ~~§3.~~ **Resolved, no code change needed** — see §3 above. Folded into
    §5's docs (note that the cache rebuilds silently on first use).
-8. §5 `README.md` (user) and `CLAUDE.md` (agent, describing the final tree).
-   **Not started.**
+8. ~~§5 `README.md` (user) and `CLAUDE.md` (agent, describing the final tree).~~
+   **Done.** `README.md` is a short, user-written stub pointing at the
+   writeup and `CLAUDE.md`. `CLAUDE.md` covers source structure (entry point
+   + one-command training invocation), the writeup's three parts in order
+   with the exact commands per `copy_plots.sh`, the background-work scripts,
+   the config/run-config distinction, and the HF Hub download command —
+   kept intentionally short per the user (agents read it in full; humans are
+   pointed there too).
 9. `pyproject.toml`. **Not started.**
 10. Push — only on explicit user command.
 11. `plans/` — dropped only on explicit user command, possibly in a later round.
