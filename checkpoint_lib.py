@@ -1,11 +1,10 @@
 """Checkpoint I/O: load a run's saved model/config off disk, and recompute
 loss metrics fresh against it.
 
-Used by the reporting scripts (make_one_run_plots.py, probe_lib.py, and the
-sweep_*.py family) whenever they need to turn a run tag into a loaded model
-or a freshly-evaluated loss, as opposed to reading history.jsonl or a
-checkpoint's own stored training-time metrics (which can predate a run's
-last checkpoint, or reflect stale settings).
+For turning a run tag into a loaded model or a freshly-evaluated loss, as
+opposed to reading history.jsonl or a checkpoint's own stored training-time
+metrics (which can predate a run's last checkpoint, or reflect stale
+settings).
 """
 
 import os
