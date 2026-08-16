@@ -26,8 +26,8 @@ Notes for whoever picks this up:
   multi-comparison tool. Worth checking whether it predates
   `sweep_group_report.py` in git history and is fully superseded, rather than
   a genuinely separate use case.
-- Its default `RUN_TAGS` (`sweep9_iter200k_tr*`) point at runs **outside**
-  the §1 keep set — `sweep9` isn't one of the eight kept groups. So as
-  checked in, it wouldn't run against the published `runs/` even if kept.
-  If kept, either repoint the default at a kept run family or document that
-  it needs `RUN_TAGS` edited first, same as `sweep_group_report.py`'s `GROUPS`.
+- ~~Its default `RUN_TAGS` (`sweep9_iter200k_tr*`) point at runs **outside**
+  the §1 keep set...~~ **Fixed** (commit 544f4dc, by the user directly): the
+  default is now `sweep18_layer2_lam0.1_ramp200k_noise0.01_tr{0..9}`, inside
+  group F. `CLAUDE.md` documents it as background work alongside
+  `sweep_group_report.py`, edit `RUN_TAGS`-first, same convention.
