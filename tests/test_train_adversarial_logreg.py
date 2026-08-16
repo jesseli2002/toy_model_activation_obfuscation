@@ -17,7 +17,11 @@ import pytest
 import torch
 
 from config import ForkedFrom, LogregAdversarialConfig
-from conftest import _logreg_config_file_fields, _make_adv_config, _make_model_config
+from config_fixtures import (
+    _logreg_config_file_fields,
+    _make_adv_config,
+    _make_model_config,
+)
 from train_adversarial_logreg import (
     TrainRecord,
     _append_history,
@@ -36,6 +40,11 @@ from train_adversarial_logreg import (
     train_steps,
     write_checkpoint,
 )
+
+# The script under test is invoked as a subprocess (to exercise its CLI/exit
+# behavior) rather than imported, so it needs an absolute path -- it lives at
+# the repo root, one level up from this test file.
+SCRIPT = Path(__file__).resolve().parent.parent / "train_adversarial_logreg.py"
 
 
 def _make_record(**overrides):
@@ -97,7 +106,7 @@ def test_bad_fork_from_tag_exits_before_touching_run_dir(tmp_path):
     --fork-from tag with no checkpoint can never let --tag-force delete an
     existing runs/<tag> directory. Runs as a subprocess since the check
     lives in module-level `if __name__ == "__main__":` code."""
-    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    script = SCRIPT
     result = subprocess.run(
         [
             sys.executable,
@@ -131,7 +140,7 @@ def test_arch_flag_with_resume_or_fork_from_exits_naming_the_flag(tmp_path, mode
     in parse_args) rather than being silently ignored. --fork-from's mode_args
     supplies --seed (required for it) so that check doesn't mask this one;
     --resume's leaves it out since --seed is forbidden there."""
-    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    script = SCRIPT
     result = subprocess.run(
         [
             sys.executable,
@@ -157,7 +166,7 @@ def test_missing_arch_flag_on_fresh_run_exits_naming_the_flag(tmp_path):
     """num_x/d_model/d_mlp/num_blocks have no default (see ResidualMLPConfig)
     -- a fresh run (no --resume/--fork-from) must name whichever is missing,
     rather than silently falling back to some value."""
-    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    script = SCRIPT
     result = subprocess.run(
         [
             sys.executable,
@@ -478,7 +487,7 @@ class TestAdvConfigCheckpointExtraction:
 def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
     """A checkpoint predating the nested adv_config layout (no "adv_config"
     key) must fail loudly under --resume, not raise a raw KeyError."""
-    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    script = SCRIPT
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(_logreg_config_file_fields()))
     fresh = subprocess.run(
@@ -530,7 +539,7 @@ def test_resume_missing_adv_config_key_exits_with_error(tmp_path):
 def test_resume_missing_rng_state_exits_with_error(tmp_path):
     """A checkpoint predating RNG-state checkpointing (no "rng_state" key)
     must fail loudly under --resume, not raise a raw KeyError."""
-    script = Path(__file__).parent / "train_adversarial_logreg.py"
+    script = SCRIPT
     config_path = tmp_path / "config.json"
     config_path.write_text(json.dumps(_logreg_config_file_fields()))
     fresh = subprocess.run(
