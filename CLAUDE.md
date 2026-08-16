@@ -96,7 +96,7 @@ dropped) live on Hugging Face Hub, public repo
 `cooleytukey/toy_model_of_activation_obfuscation`, under a `runs/` path
 matching the local layout — no auth needed to download:
 ```
-hf download cooleytukey/toy_model_of_activation_obfuscation --type model --local-dir .
+hf download cooleytukey/toy_model_of_activation_obfuscation --repo-type model --local-dir . --include "runs/*"
 ```
 `plot/metrics_cache.json` is not published — it's keyed by checkpoint mtime,
 which a download doesn't preserve, so it silently rebuilds (slowly, once) on
