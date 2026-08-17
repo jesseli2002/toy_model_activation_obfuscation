@@ -688,7 +688,39 @@ or §6 has been touched yet.
    the config/run-config distinction, and the HF Hub download command —
    kept intentionally short per the user (agents read it in full; humans are
    pointed there too).
-9. `pyproject.toml`. **Not started.**
+9. ~~Dependency manifest.~~ **Done** (branch `worktree-closeout-pyproject`,
+   PR #269, not yet merged to `master`), as `requirements.txt` — the plan's
+   text said `pyproject.toml`, but that was never load-bearing; **the goal is
+   "make it easy to get started,"** and for a bundle of scripts nobody
+   imports or installs as a package, `pip install -r requirements.txt` is the
+   more direct match than `pyproject.toml`'s `[project]`/`[build-system]`
+   ceremony. (Two earlier iterations, both reverted: a `pyproject.toml` with
+   `[build-system]`/hatchling to make the repo `pip install -e .`-able, then
+   one with that dropped in favor of `[tool.uv] package = false` — both still
+   solving a packaging problem this repo doesn't have.) Lists torch, numpy,
+   scipy, matplotlib, jaxtyping, pandas, seaborn, scikit-learn, sympy, tqdm,
+   plus pytest under a `# dev / test only` comment.
+
+   **Pinning, revised once more:** the first cut left every version unpinned.
+   On reflection (prompted by the user, who then agreed to switch) exact pins
+   fit this repo better — it's a frozen research artifact, not a maintained
+   library, so a pin has no ongoing bump cost, while `numpy`/`scipy`'s history
+   of breaking API changes means unpinned deps risk a reproducer's install
+   silently drifting or breaking outright, years after the fact. Exact
+   versions are `pip freeze` from this sandbox's env
+   (`torch==2.12.1`, `numpy==2.4.4`, `scipy==1.18.0`, `matplotlib==3.11.0`,
+   `jaxtyping==0.3.11`, `pandas==3.0.3`, `seaborn==0.13.2`,
+   `scikit-learn==1.9.0`, `sympy==1.14.0`, `tqdm==4.68.3`, `pytest==9.1.1`) —
+   with the caveat that this sandbox is CPU-only and never runs training or
+   the sweep-analysis scripts, so these weren't vetted end-to-end against
+   them, just a "known reasonably-modern working set." `torch`'s local
+   `+cu132` build suffix is stripped from the pin (user doesn't need a
+   specific CUDA build matched — they already train across heterogeneous
+   machines/CUDA versions), since a suffixed spec might not resolve to any
+   wheel on someone else's platform and could break the install outright.
+   Not installed end-to-end anywhere: PyPI isn't on this sandbox's network
+   allowlist, so `pip install -r requirements.txt` still needs a real try by
+   the user or on the remote box.
 10. Push — only on explicit user command.
 11. `plans/` — dropped only on explicit user command, possibly in a later round.
 
