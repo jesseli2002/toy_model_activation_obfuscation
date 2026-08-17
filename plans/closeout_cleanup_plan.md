@@ -202,7 +202,7 @@ delete). Verified: 525 run dirs, group counts match the manifest exactly
 files, all `config.json` parse, 741 MB total (vs. the 764 MB estimate — the
 gap is `logs/report.md`, see the correction above). User reviewed and
 confirmed ("runs looks good"). Step 3 below (load a checkpoint per group) is
-still open — needs the remote GPU box or the user, not an agent locally.
+also done — see its status note.
 
 **Update (supersedes the `runs_publish/` staging name below):** the user moved
 the live run tree from `runs/` to `runs_all/` on disk, freeing `runs/` up to be
@@ -229,8 +229,16 @@ published data. Source is `runs_all/` throughout; target is `runs/`.
      same file, so both are genuinely two checkpoints.
 2. Verify: every run has both `.pt` files non-empty, `config.json` parses, and
    the total matches §0's 764 MB.
-3. Load one checkpoint per group and confirm it opens (**on the remote GPU box
-   or by the user — not locally**; see the CPU/GPU rule in `CLAUDE.local.md`).
+3. **Status: done.** Load one checkpoint per group and confirm it opens.
+   Checkpoint loading (`ResidualMLP.load` via `checkpoint_lib.load_model`) is
+   cheap deserialization, not training/inference, so it ran locally on CPU
+   rather than needing the remote GPU box — confirmed with the user before
+   running. Loaded both `best.pt` and `last.pt` for groups A–G plus `last.pt`
+   for H (15 checkpoints total, `runs/` copy in the main checkout): all
+   opened, params ranged 17k (H) to 397k (E, the widest arch), checkpoint
+   dict keys matched the expected schema (`adv_config`, `model`, `probe_*`,
+   etc. for A–G; the reduced `train_no_c.py` layout — `model`/`config`/`iter`/
+   `best_loss`, no `adv_config`/probe fields — for H).
 
 Only once this is reviewed does anything get committed or uploaded.
 
@@ -671,9 +679,9 @@ or §6 has been touched yet.
    `cooleytukey/toy_model_of_activation_obfuscation`. See §0 status above,
    including the Xet networking gotcha if the next agent needs to
    upload/download again.
-   - **Open follow-up:** the reproducibility test this setup enables —
-     wipe local `runs/` and re-download from the HF repo — hasn't been run
-     yet. Worth doing once §2 step 3 (checkpoint load-check) also happens.
+   - **Done:** the reproducibility test this setup enables — wipe local
+     `runs/` and re-download from the HF repo — has been run by the user,
+     confirming a fresh clone can reproduce from the published data.
    - ~~Also open: move `plot/metrics_cache.json` to `runs/metrics_cache.json`
      and include it in the HF repo.~~ **Reversed** — §3 (below) now says not
      to publish it at all; an mtime-keyed cache would miss almost everything
@@ -689,7 +697,7 @@ or §6 has been touched yet.
    kept intentionally short per the user (agents read it in full; humans are
    pointed there too).
 9. ~~Dependency manifest.~~ **Done** (branch `worktree-closeout-pyproject`,
-   PR #269, not yet merged to `master`), as `requirements.txt` — the plan's
+   PR #269, merged to `master` in 4b6d8bd), as `requirements.txt` — the plan's
    text said `pyproject.toml`, but that was never load-bearing; **the goal is
    "make it easy to get started,"** and for a bundle of scripts nobody
    imports or installs as a package, `pip install -r requirements.txt` is the

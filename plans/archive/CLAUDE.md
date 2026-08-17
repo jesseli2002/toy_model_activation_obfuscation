@@ -53,3 +53,8 @@ current code before reusing it.
       copy of the --config input and a fully-resolved config.json that finally includes the
       model architecture -- with the schema owned by one new dataclass in config.py.
       Also makes architecture flags an error under --resume/--fork-from.
+- closeout_followup_review.md
+    - Parking lot spun out of closeout_cleanup_plan.md §4. Its one item --
+      keep-or-untrack sweep_inspect_training.py -- resolved as keep: the user
+      curated its RUN_TAGS onto an in-keep-set sweep, and it's documented in
+      CLAUDE.md's background-work section.
